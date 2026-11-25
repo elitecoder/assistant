@@ -71,13 +71,18 @@ START_FAILED = {"session_tool_down": f"{STARTING}: cmux didn't answer. {RETRY}",
 # the task then stays open and the next round tries again. The record shows which: a workspace only when it was stamped.
 BLOCKED_HOW = ('The task is marked blocked. To run it again, close the workspace it opened and press "Queue to start" '
                "on {task} on the Tasks tab of the Assistant dashboard.")
-REFUSED = {"typing_refused": ("Assistant opened a session but wouldn't type into it, because it couldn't record what it types.",
-                              "Assistant couldn't record what it types, so it didn't start an agent. " + "It will try again by itself."),
+# A `typing_refused` start with no workspace on its record either never opened a session (nothing was typed, so no
+# typing is shown for it) or opened one and failed to stamp the task; the typings shown for it tell which.
+NOT_STARTED = "Assistant couldn't record what it types, so it didn't start an agent. It will try again by itself."
+OPENED_NOT_TYPED = ("Assistant opened a session but didn't type the task's instruction into it, because it couldn't "
+                    "record what it types. It will try again by itself.")
+REFUSED = {"typing_refused": ("Assistant opened a session but wouldn't type the task's instruction into it, because it "
+                              "couldn't record what it types.", NOT_STARTED),
            "session_refused_text": ("cmux refused the instruction, so nothing was typed.",
                                     "cmux refused the instruction, so nothing was typed. It will try again by itself.")}
 # What a failed start says it did about what was typed, so its typings need not be shown again: only a typing that
 # failed, and only of these sources.
-ACCOUNTS_FOR = {"typing_refused": ("task", "trust"), "session_refused_text": ("task",)}
+ACCOUNTS_FOR = {"typing_refused": ("task",), "session_refused_text": ("task",)}
 TASK_SAYS = {"done": "The agent reported it finished.", "blocked": "The agent reported it is blocked.",
              "removed": "The task was removed.", "deferred": "The task was put off."}
 # Who made a task that wasn't made from the row. `manual` is a person, or an agent running the /todo skill.
@@ -184,7 +189,7 @@ def _task(record: dict) -> str | None:
     return TASK_SAYS.get(state)
 
 
-def _dispatch(record: dict, typed=None) -> str | None:
+def _dispatch(record: dict, typed=None, alone: bool = False) -> str | None:
     """`typed` is the typings the ledger holds for this start, by source (see `_pair_typings`): a start that typed the
     task's instruction says so in the same sentence, and says it once whether the ledger or the start's own record is
     the one that couldn't tell whether it arrived."""
@@ -206,7 +211,9 @@ def _dispatch(record: dict, typed=None) -> str | None:
         parked = WORKSPACE.fullmatch(fields.get("workspace") or "") is not None
         task = record["subject"] if TASK_ID.fullmatch(record["subject"] or "") else ""
         said, retry = REFUSED[reason]
-        return said + " " + BLOCKED_HOW.format(task=f"task {task}" if task else "the task") if parked else retry
+        if parked:
+            return said + " " + BLOCKED_HOW.format(task=f"task {task}" if task else "the task")
+        return OPENED_NOT_TYPED if reason == "typing_refused" and alone else retry
     if reason == "session_not_ready":  # parked only when the task was stamped, which the record shows as a workspace
         parked = WORKSPACE.fullmatch(fields.get("workspace") or "") is not None
         task = record["subject"] if TASK_ID.fullmatch(record["subject"] or "") else ""
@@ -223,15 +230,16 @@ def _check(fields: dict) -> str | None:
     return f"Assistant ran a check on the result ({shown})." if shown else None
 
 
-EVENT_TEXT = {"triage_verdict": ("sorted", lambda r, typed: _verdict(r["fields"])), "task": ("task", lambda r, typed: _task(r)),
-              "dispatch": ("started", lambda r, typed: _dispatch(r, typed)),
-              "check": ("check", lambda r, typed: _check(r["fields"]))}
+EVENT_TEXT = {"triage_verdict": ("sorted", lambda r, typed, alone: _verdict(r["fields"])),
+              "task": ("task", lambda r, typed, alone: _task(r)),
+              "dispatch": ("started", lambda r, typed, alone: _dispatch(r, typed, alone)),
+              "check": ("check", lambda r, typed, alone: _check(r["fields"]))}
 # The telemetry copies of what the other two records hold (`effect`, `feedback`) have no entry above, so they say
 # nothing: the ledger and the feedback record are the ones read.
 JUST_AFTER = 10  # an `in-progress` this soon after a start is the start itself, already said
 
 
-def _event_steps(events: list, typed=None) -> list:
+def _event_steps(events: list, typed=None, alone=()) -> list:
     """`typed` is {index in `events` of a dispatch record: the typings paired with that start, by source}."""
     typed = typed or {}
     steps, started = [], []
@@ -240,7 +248,7 @@ def _event_steps(events: list, typed=None) -> list:
         if kind == "dispatch":
             started.append(record["ts"])
         kind_word, make = EVENT_TEXT.get(kind, (None, None))
-        text = make(record, typed.get(index)) if make else None
+        text = make(record, typed.get(index), index in alone) if make else None
         if kind == "task" and record["fields"].get("state") == "in-progress" and any(
                 0 <= record["ts"] - t <= JUST_AFTER for t in started):
             continue
@@ -303,10 +311,10 @@ def _typing_text(e: dict, now: float) -> str:
 
 def _pair_typings(events: list, effects: list) -> tuple:
     """Pair each typing in the ledger with the start it belongs to, one to one: a typing for a task goes with the next
-    start of that task (any outcome) after it, within START_WINDOW, and a start takes one typing of each source. Returns ({index of a dispatch record: {source: effect}}, the ids of the effects paired). A typing that
+    start of that task (any outcome) after it, within START_WINDOW, and a start takes one typing of each source. Returns ({index of a dispatch record: {source: effect}}, the ids of the effects paired, the indexes of the starts that have a typing left to be shown on its own). A typing that
     pairs with no start is left for `_effect_steps` to show on its own."""
     starts = [(i, r["ts"], r.get("subject")) for i, r in enumerate(events) if r.get("kind") == "dispatch"]
-    typed, claimed = {}, set()
+    typed, claimed, alone = {}, set(), set()
     typings = sorted((e for e in effects if e.get("class") == "session.type" and isinstance(e.get("t"), (int, float))),
                      key=lambda e: e["t"])
     for e in typings:
@@ -320,15 +328,17 @@ def _pair_typings(events: list, effects: list) -> tuple:
             continue
         # The start that came next after the typing; failing that, the one that began just before it was recorded.
         gap, index = min(near, key=lambda pair: (pair[0] < 0, abs(pair[0])))
-        if source in typed.get(index, {}):
-            continue
         record = events[index]["fields"]
-        if record.get("outcome") == "done":
+        if source in typed.get(index, {}):
+            alone.add(index)
+        elif record.get("outcome") == "done":
             typed.setdefault(index, {})[source] = e
             claimed.add(e.get("id"))
         elif e.get("outcome") == "failed" and source in ACCOUNTS_FOR.get(record.get("reason"), ()):
             claimed.add(e.get("id"))  # the failed start's own sentence says it
-    return typed, claimed
+        else:
+            alone.add(index)
+    return typed, claimed, alone
 
 
 def _effect_text(e: dict, undone: str, now: float) -> str:
@@ -459,8 +469,8 @@ def steps_of(events=(), effects=(), feedback=(), first=None, now=None, source=""
                      and isinstance(r.get("ts"), (int, float))], key=lambda r: r["ts"])
     effects = [e for e in effects if isinstance(e, dict)]
     feedback = [r for r in feedback if isinstance(r, dict)]
-    typed, claimed = _pair_typings(events, effects)
-    steps = _event_steps(events, typed) + _effect_steps(effects, now, claimed)
+    typed, claimed, alone = _pair_typings(events, effects)
+    steps = _event_steps(events, typed, alone) + _effect_steps(effects, now, claimed)
     made = [r["ts"] for r in events if r.get("kind") == "task" and r["fields"].get("state") == "open"
             and not r["fields"].get("prev_state") and r["fields"].get("origin") == "work-queue"]
     steps += _feedback_steps(feedback, made, effects)

@@ -94,7 +94,8 @@ def test_a_session_whose_typing_was_refused_is_blocked_and_queue_to_start_really
     story = trail(why.read(TRACE))
     print("\nTRAIL (a session opened, then Assistant wouldn't type into it):\n  " + "\n  ".join(story))
     assert story == ["You sent it to an agent for a first pass. It became task td-1.",
-                     "Assistant opened a session but wouldn't type into it, because it couldn't record what it types. " + BLOCKED]
+                     "Assistant tried to answer the new session's folder-trust question, but it didn't go through.",
+                     "Assistant opened a session but wouldn't type the task's instruction into it, because it couldn't record what it types. " + BLOCKED]
     monkeypatch.setattr(todo_server, "JSON_PATH", mod.TODO_PATH)
     monkeypatch.setattr(todo_server, "rerender", lambda: None)
     assert todo_server.dispatch_now("td-1")[0] is True  # what pressing "Queue to start" does
@@ -130,3 +131,24 @@ def test_a_start_that_failed_after_the_instruction_was_typed_still_shows_the_typ
     assert "Assistant answered the new session's folder-trust question." in story
     assert "Assistant started an agent on it, but couldn't mark the task as started, so it may start a second one by itself." in story
     assert any("typed the task's instruction" in line for line in story)
+
+
+def test_a_start_whose_trust_answer_went_out_and_whose_instruction_was_refused_before_the_task_was_stamped(mod, home):
+    seed(mod)
+    say_sent()
+    cmux = Cmux(mod, home, screens=(TRUST,))
+    real = session_effects.begin
+
+    def begin(session, source, **kw):  # the trust answer is recorded; the instruction's record can't be written
+        if source == "task":
+            raise session_effects.Refused("unrecorded", "x")
+        return real(session, source, **kw)
+    with mock.patch.object(session_effects, "begin", side_effect=begin), \
+            mock.patch.object(mod, "_mark_todo_dispatched", return_value=False):
+        assert cmux.dispatch() is False
+    story = trail(why.read(TRACE))
+    print("\nTRAIL (trust answered, the instruction refused, and the park stamp failed):\n  " + "\n  ".join(story))
+    assert story[1:] == ["Assistant answered the new session's folder-trust question.",
+                         "Assistant opened a session but didn't type the task's instruction into it, because it couldn't record what "
+                         "it types. It will try again by itself."]
+    assert not [t for t in story if "didn't start an agent" in t]
