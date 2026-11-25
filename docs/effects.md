@@ -168,7 +168,7 @@ holds the text, a prompt's file name, a title or a Slack message.
 | The instruction that starts a task, and the folder-trust answer before it | `task`, `trust` | The task's auto-start flag, as your own (a Work queue send, your Slack reaction, `/todo`) or as a standing setting (the goals planner, a policy rule, or anything not listed) |
 | The "stalled" nudge, and `/cleanup` | `nudge:stranded`, `cleanup` | Pro mode, the Observer and the watcher being on, and actions not held |
 | A merge request (`/merge-when-ready`, `/monitor-ffp-ci`) | `merge` | The same standing setting when the pulse sends it; a button press when you run the script |
-| A message in the Slack session | `slack-message`, and `submit` for pressing Enter again | Your own Slack message, as of its time |
+| A message in the Slack session | `slack-message`, and `submit` for pressing Enter again | The Slack message (your own, when Assistant knows which member is you), as of its time |
 | The Slack session's start-up instruction, trust answer and `/clear` | `boot`, `trust`, `clear` | The Slack channel being set up and its service running |
 | "Run now" on a proposal | `run-now` | A button press on that route |
 | `cmux-restore-sessions` | `restore` | You running it |
@@ -227,10 +227,11 @@ What the record does for you:
   your message (sent HH:MM) reached the session, and I won't type it twice.
   Check the session, or send it again." Messages that waited three hours get a
   note too. Each message in a batch typed together has its own record.
-- **Only your Slack messages are typed.** A message from someone else in the
-  channel is kept as received and never typed, and Assistant says so in its
-  thread once a day for each author. When it can't tell which account is yours
-  and the target is a channel, it says that once a day, and the Slack check in
+- **Only your Slack messages are typed, when Assistant knows which member is
+  you.** A message from someone else in the channel is then kept as received
+  and never typed, and Assistant says so in its thread once a day for each
+  author. When it can't tell which account is yours and the target is a
+  channel, every message there is typed, as before, and the Slack check in
   `assistant-doctor.py` warns. See
   [assistant-comms-onboarding.md](assistant-comms-onboarding.md).
 - **"Run now" is stricter.** The session must be a `workspace:N`, and the text

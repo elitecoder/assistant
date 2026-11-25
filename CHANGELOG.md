@@ -29,23 +29,26 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   stay that way until you press On. To make sure your own reactions start work,
   set `SLACK_USER_ID` to your Slack user id in `~/.zprofile` and restart the
   reactor. `TODO_AUTODISPATCH=0` still turns self-starting off for everyone.
-- In Pro mode, if you use a Slack channel and don't have `SLACK_USER_ID` set, Assistant
-  stops typing your messages into the warm session after this update and tells
-  you so in Slack: add `export SLACK_USER_ID=U…` (your member ID: your Slack
-  profile, the three dots, Copy member ID) to `~/.zprofile` and restart the
-  service (`launchctl kickstart -k gui/$UID/com.assistant.assistant-comms`).
-  The reason: before, every non-bot message in the channel you set up was typed
-  into a session that runs with its permission prompts off, so any member of
-  the channel could make it run commands on your Mac. Now only your own
-  messages are typed. Your Slack id comes from `SLACK_USER_ID`, then
+- In Pro mode, when Assistant knows which Slack member is you, only your own
+  messages are typed into the warm session. The reason: before, every non-bot
+  message in the channel you set up was typed into a session that runs with its
+  permission prompts off, so any member of the channel could make it run
+  commands on your Mac. Your Slack id comes from `SLACK_USER_ID`, then
   `slack.owner` in `~/.assistant/config.json`, then the target when it is a
-  person. A message from someone else is kept as received,
-  never typed, and Assistant says once a day, in its thread, that it only takes
-  instructions from you. The Slack check in `assistant-doctor.py` warns when
-  the target is a channel and the id isn't set. This is closed in Pro mode
-  only: in the default mode any member of a configured Slack channel can still
-  have a message typed into the warm session, as before, and nothing here
-  changes that for now.
+  person. A message from someone else is kept as received, never typed, and
+  Assistant says once a day, in its thread, that it only takes instructions
+  from you. When the target is a channel and none of those names you, Assistant
+  can't tell which member is you, so it types every message in that channel as
+  it always has, and the Slack check in `assistant-doctor.py` warns. To have
+  only your own messages typed there, add `export SLACK_USER_ID=U…` (your
+  member ID: your Slack profile, the three dots, Copy member ID) to
+  `~/.zprofile` and restart the service
+  (`launchctl kickstart -k gui/$UID/com.assistant.assistant-comms`). A
+  `SLACK_USER_ID` that isn't a member ID is skipped, the next of those is used,
+  and the Slack check says so.
+  In the default mode any member of a configured Slack channel can still have a
+  message typed into the warm session, as before, and nothing here changes that
+  for now.
 - In Pro mode, "run now" on a proposal is checked before it types. Before, it typed
   whatever a proposal file said, of any length, with any control characters,
   into whatever session the file named, with no check. Now the session must be
@@ -338,6 +341,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   trailing period out, and only `http`, `https`, and `file` links are made.
 
 ### Fixed
+- In Pro mode, Assistant types your Slack messages into the warm session again
+  when the target is a channel and `SLACK_USER_ID` isn't set. An update on
+  2026-11-25 made it refuse them all and reply "I can't tell which Slack
+  account is yours". A message it refused then isn't replayed: send it again.
 - The records of a dispatch and of an effect on a session now accept the ten-digit session numbers
   the session tool really uses (such as `workspace:1000020126`). Before, such a record was left out whole.
 - Running the tests no longer touches your real home folder. The test setup now moves `HOME` to a throwaway

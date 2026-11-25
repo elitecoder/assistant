@@ -1,4 +1,5 @@
-"""The Slack session: every keystroke is recorded first, and only the owner's messages are typed."""
+"""The Slack session: every keystroke is recorded first, and only the owner's messages are typed once Assistant
+knows who the owner is."""
 from __future__ import annotations
 
 import json
@@ -525,10 +526,17 @@ def _config(paths, target):
     ("W0OWNER", "", "W0OWNER", True),        # an Enterprise Grid id counts like a U id
     ("C0CHAN", "U0OWNER", "U0OWNER", True),  # a channel: the owner's id comes from SLACK_USER_ID
     ("C0CHAN", "W0OWNER", "W0OWNER", True),
+    ("C0CHAN", "W0OWNER", "U0OTHER", False),  # a W id names the owner like a U id does, so someone else is refused
+    ("W0OWNER", "", "U0OTHER", False),
     ("C0CHAN", "U0OWNER", "U0OTHER", False),
     ("C0CHAN", "U0OWNER", "", False),        # a message with no author is never the owner's
-    ("C0CHAN", "", "U0OWNER", False),        # a channel and no owner id: nothing is typed
-    ("C0CHAN", "not-an-id", "not-an-id", False),
+    ("C0CHAN", "", "U0OWNER", True),         # a channel and no owner id: typed, as it was before there was a rule
+    ("C0CHAN", "", "U0ANYONE", True),        # and so is anyone's there: there is no owner to compare with
+    ("C0CHAN", "", "", True),
+    ("G0PRIVATE", "", "U0OWNER", True),      # a private channel is a channel
+    ("C0CHAN", "not-an-id", "U0OWNER", True),  # an id of the wrong shape names nobody, so the owner is unknown
+    ("U0OWNER", "<@U0OWNER>", "U0OWNER", True),   # and it is skipped: the person the target names is still the owner
+    ("U0OWNER", "<@U0OWNER>", "U0OTHER", False),
     ("D0DM", "", "U0OWNER", True),           # a direct-message conversation holds only the owner
     ("D0DM", "", "", False),
 ])
@@ -548,13 +556,23 @@ def test_the_log_says_in_a_sentence_why_a_message_was_not_typed(env_delivery, mo
     monkeypatch.setenv("SLACK_USER_ID", "U0OWNER")
     listen.typed_for(paths, {"msg_ts": TS, "author": "U0OTHER", "channel": "C0CHAN"})
     listen.typed_for(paths, {"msg_ts": TS, "author": "", "channel": "C0CHAN"})
-    monkeypatch.delenv("SLACK_USER_ID")
-    listen.typed_for(paths, {"msg_ts": TS, "author": "U0OWNER", "channel": "C0CHAN"})
     log = _log(paths)
     assert f"Slack message {TS} in C0CHAN was written by U0OTHER, not by you (U0OWNER), so Assistant kept it as " \
            "received and did not type it into the session." in log
     assert f"Slack message {TS} in C0CHAN has no author, so Assistant did not type it into the session." in log
-    assert "Assistant can't tell which Slack member is you. Set SLACK_USER_ID" in log
+    assert len(log.splitlines()) == 2
+
+
+@pytest.mark.parametrize("mistyped", ["<@U0OWNER>", "u0owner", "U0OWNER,U0OTHER", "C0CHAN "])
+def test_a_mistyped_owner_id_does_not_throw_away_the_owner_the_config_names(env_delivery, monkeypatch, mistyped):
+    """With no owner, every message in a channel is typed. So a typo in SLACK_USER_ID must not turn a config that
+    names the owner into one that names nobody."""
+    paths, _ = env_delivery
+    paths.config.write_text(json.dumps({"slack": {"target": "C0CHAN", "owner": "U0OWNER", "allowed_targets": ["C0CHAN"]}}))
+    monkeypatch.setenv("SLACK_USER_ID", mistyped)
+    assert listen.owner_id(paths) == "U0OWNER" and listen.owner_id(paths, {"SLACK_USER_ID": mistyped}) == "U0OWNER"
+    assert listen.typed_for(paths, {"msg_ts": TS, "author": "U0OTHER", "channel": "C0CHAN"}) is False
+    assert listen.typed_for(paths, {"msg_ts": TS, "author": "U0OWNER", "channel": "C0CHAN"}) is True
 
 
 def test_an_owner_id_in_the_daemons_own_environment_counts(env_delivery, monkeypatch):
@@ -604,31 +622,64 @@ def test_messages_queued_before_the_owner_check_are_checked_again_when_they_are_
     serve(monkeypatch)
     assert listen._deliver_pending(paths, "C0", None) is True
     assert cmux.calls == [] and listen.read_pending(paths) == []
+    assert [text for text, _ in replies(calls)] == [listen.OTHER_MEMBER_REPLY.format(owner="UOWNER")]
 
 
-# --- telling the owner they weren't acted on -------------------------------------------------------------------
+# --- a channel where Assistant can't tell who the owner is: typed as before ------------------------------------
 
-def _ignored(author="U0OWNER", ts=TS, channel="C0CHAN"):
-    return {"channel": channel, "msg_ts": ts, "author": author, "text": MARKER}
+def test_with_a_channel_and_no_owner_id_every_message_is_queued_for_typing_and_nothing_is_said(
+        env_delivery, monkeypatch):
+    """What broke on 2026-11-25: the owner's own install had a channel as its target and no SLACK_USER_ID, and after
+    the update every message was refused with "I can't tell which Slack account is yours"."""
+    paths, calls = env_delivery
+    _config(paths, "C0")
+    monkeypatch.delenv("SLACK_USER_ID", raising=False)
+    monkeypatch.setattr(listen, "ensure_warm_session", lambda p, **kw: None)
+    stop = threading.Event()
+
+    def fake_worker(channel_id, wake, stop_, env_):
+        wake.get(timeout=5)
+        wake.get(timeout=5)
+        stop_.set()
+
+    def fake_poll(stop_, env_, msg_queue):
+        msg_queue.put({**_msg("mine"), "msg_ts": TS, "author": "U0OWNER"})
+        msg_queue.put({**_msg("a colleague's"), "msg_ts": "1793613611.000100", "author": "U0OTHER"})
+
+    class QuickQueue(listen.queue.Queue):
+        def get(self, block=True, timeout=None):  # the loop's one-second look at its queue, without the second
+            return super().get(block, 0.02 if timeout == 1 else timeout)
+
+    monkeypatch.setattr(listen.queue, "Queue", QuickQueue)
+    monkeypatch.setattr(listen, "_channel_worker", fake_worker)
+    monkeypatch.setattr(listen, "_poll_thread", fake_poll)
+    t = threading.Thread(target=listen.inbound_loop, args=(stop, {}), daemon=True)
+    t.start()
+    t.join(timeout=10)
+    assert stop.is_set(), "both messages reached the worker"
+    assert [r["text"] for r in listen.read_pending(paths)] == ["mine", "a colleague's"]
+    assert replies(calls) == [] and "did not type" not in _log(paths)
+    assert list(paths.comms_dir.glob("ignored-*")) == []
 
 
-def test_the_first_message_ignored_for_want_of_an_owner_id_gets_one_reply_in_its_own_thread(env_delivery, monkeypatch):
+@pytest.mark.parametrize("author", ["U0ANYONE", None])  # None: queued by a version that didn't keep the author
+def test_a_message_queued_in_a_channel_with_no_owner_id_is_typed_as_before(reply, env_delivery, monkeypatch, author):
+    cmux, _ = reply
     paths, calls = env_delivery
     _config(paths, "C0CHAN")
     monkeypatch.delenv("SLACK_USER_ID", raising=False)
-    listen.tell_ignored(paths, _ignored(), None)
-    assert replies(calls) == [(listen.UNKNOWN_OWNER_REPLY, TS)]
-    assert listen.UNKNOWN_OWNER_REPLY.startswith("I didn't act on your message. I can't tell which Slack account is "
-                                                 "yours, and this is a channel, so I don't type anything from it into a session.")
-    assert "launchctl kickstart -k gui/$UID/com.assistant.assistant-comms" in listen.UNKNOWN_OWNER_REPLY
-    assert "export SLACK_USER_ID=U…" in listen.UNKNOWN_OWNER_REPLY and "~/.zprofile" in listen.UNKNOWN_OWNER_REPLY
-    listen.tell_ignored(paths, _ignored(ts="1793613999.000100"), None)
-    assert len(replies(calls)) == 1  # a second inside 24 hours sends nothing
-    marker = next(paths.comms_dir.glob("ignored-unknown-owner-*"))
-    old = time.time() - 25 * 3600
-    marker.write_text(json.dumps({"ts": old}))
-    listen.tell_ignored(paths, _ignored(ts="1793614000.000100"), None)
-    assert len(replies(calls)) == 2  # once the marker is 25 hours old, one again
+    rec = {**_msg(MARKER, channel="C0CHAN"), "author": author}
+    listen.add_pending(paths, {k: v for k, v in rec.items() if v is not None or k != "author"})
+    serve(monkeypatch)
+    assert listen._deliver_pending(paths, "C0CHAN", None) is True
+    assert any(MARKER in str(text) for text in cmux.typed()) and listen.read_pending(paths) == []
+    assert replies(calls) == []
+
+
+# --- telling someone else their message wasn't acted on --------------------------------------------------------
+
+def _ignored(author="U0OWNER", ts=TS, channel="C0CHAN"):
+    return {"channel": channel, "msg_ts": ts, "author": author, "text": MARKER}
 
 
 def test_someone_elses_message_gets_one_reply_a_day_for_each_author(env_delivery, monkeypatch):
@@ -638,9 +689,13 @@ def test_someone_elses_message_gets_one_reply_a_day_for_each_author(env_delivery
     listen.tell_ignored(paths, _ignored("U0OTHER"), None)
     listen.tell_ignored(paths, _ignored("U0OTHER", ts="1793613999.000100"), None)
     listen.tell_ignored(paths, _ignored("U0THIRD", ts="1793614000.000100"), None)
-    assert replies(calls) == [(OTHER, TS),
+    assert replies(calls) == [(OTHER, TS),                    # each in the thread of its own message
                               (OTHER,
                                "1793614000.000100")]
+    marker = paths.comms_dir / "ignored-author-C0CHAN-U0OTHER.json"
+    marker.write_text(json.dumps({"ts": time.time() - 25 * 3600}))
+    listen.tell_ignored(paths, _ignored("U0OTHER", ts="1793614001.000100"), None)
+    assert len(replies(calls)) == 3  # once the marker is 25 hours old, one again
 
 
 @pytest.mark.parametrize("target, owner, author", [
@@ -648,6 +703,8 @@ def test_someone_elses_message_gets_one_reply_a_day_for_each_author(env_delivery
     ("D0DM", "", "U0OWNER"),            # a direct-message conversation
     ("U0OWNER", "", "U0OWNER"),         # a person as the target
     ("C0CHAN", "U0OWNER", ""),          # nobody wrote it
+    ("C0CHAN", "", "U0OWNER"),          # a channel and no owner id: it was typed
+    ("C0CHAN", "", ""),
 ])
 def test_no_reply_goes_for_a_message_that_was_typed_or_has_no_author(env_delivery, monkeypatch, target, owner, author):
     paths, calls = env_delivery
@@ -662,19 +719,19 @@ def test_no_reply_goes_for_a_message_that_was_typed_or_has_no_author(env_deliver
 def test_a_marker_that_cant_be_written_means_no_reply(env_delivery, monkeypatch):
     paths, calls = env_delivery
     _config(paths, "C0CHAN")
-    monkeypatch.delenv("SLACK_USER_ID", raising=False)
+    monkeypatch.setenv("SLACK_USER_ID", "U0OWNER")
     paths.comms_dir.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(Path, "write_text", lambda self, *a, **k: (_ for _ in ()).throw(OSError("read-only")))
-    listen.tell_ignored(paths, _ignored(), None)
+    listen.tell_ignored(paths, _ignored("U0OTHER"), None)
     assert replies(calls) == [] and "did not send its reply about the ignored message" in _log(paths)
 
 
 def test_a_reply_that_fails_to_send_is_logged(env_delivery, monkeypatch):
     paths, calls = env_delivery
     _config(paths, "C0CHAN")
-    monkeypatch.delenv("SLACK_USER_ID", raising=False)
+    monkeypatch.setenv("SLACK_USER_ID", "U0OWNER")
     monkeypatch.setattr(listen, "cli", lambda argv, timeout=30, env=None: (1, "", "slack is down"))
-    listen.tell_ignored(paths, _ignored(), None)
+    listen.tell_ignored(paths, _ignored("U0OTHER"), None)
     assert "did not send (rc=1): slack is down" in _log(paths)
 
 
@@ -699,6 +756,14 @@ def test_the_doctor_warns_when_a_channel_is_the_target_and_the_owner_is_unknown(
     assert check.status == doctor.WARN and "launchctl kickstart -k gui/$UID/com.assistant.assistant-comms" in check.remedy
     assert doctor.check_slack_owner in doctor.SLACK_CHECKS
     assert "not ~/.zshrc" in check.remedy  # the service reads ~/.zprofile, so that is where the id must be set
+    assert "types every member's messages into the session, as it always has" in check.detail
+    assert "types none" not in check.detail and check.remedy.startswith("to have only your own messages typed, add ")
+    assert "SLACK_USER_ID is set, but" not in check.detail  # it isn't set at all
+    monkeypatch.setenv("SLACK_USER_ID", "<@U0OWNER>")  # set, and mistyped: the check says so, and still warns
+    mistyped = doctor.check_slack_owner()
+    assert mistyped.status == doctor.WARN and "is set to a member ID (SLACK_USER_ID is set, but to something that " \
+        "isn't one: a member ID is a U or W followed by capital letters and digits), so Assistant can't tell" in mistyped.detail
+    monkeypatch.delenv("SLACK_USER_ID")
     paths.config.write_text(json.dumps({"slack": {"target": "C0CHAN", "owner": "U0OWNER", "allowed_targets": ["C0CHAN"]}}))
     assert doctor.check_slack_owner().status == doctor.PASS  # slack.owner names the owner, as it does for the reactor
     _config(paths, "C0CHAN")
@@ -838,20 +903,6 @@ def test_the_owner_is_worked_out_in_the_order_the_reactor_uses(env_delivery, mon
     assert listen.owner_id(paths) == ""
 
 
-def test_a_message_queued_before_the_update_gets_the_same_notice_a_new_one_would(reply, env_delivery, monkeypatch):
-    cmux, _ = reply
-    paths, calls = env_delivery
-    _config(paths, "C0CHAN")
-    monkeypatch.delenv("SLACK_USER_ID", raising=False)
-    listen.add_pending(paths, {**_msg(MARKER, channel="C0CHAN"), "author": "U0ANYONE"})
-    serve(monkeypatch)
-    assert listen._deliver_pending(paths, "C0CHAN", None) is True
-    assert cmux.calls == [] and [text for text, _ in replies(calls)] == [listen.UNKNOWN_OWNER_REPLY]
-    listen.add_pending(paths, {**_msg("again", channel="C0CHAN"), "author": "U0ANYONE"})
-    listen._deliver_pending(paths, "C0CHAN", None)
-    assert len(replies(calls)) == 1  # once a day
-
-
 def test_the_sentences_a_person_can_read_from_the_typing_module():
     from assistant import session_effects as se
     assert se.UNRECORDED.endswith("can be written to.")
@@ -873,15 +924,6 @@ def test_a_log_line_about_a_message_leaves_out_the_command_to_run(reply, env_del
     listen._deliver_pending(paths, "C0", None)
     assert "your message was dropped" in _log(paths) and "bin/cmux-send.py" not in _log(paths)
     assert "restart assistant-comms" not in _log(paths)
-
-
-def test_the_unknown_owner_notice_and_the_log_line_both_say_to_send_the_message_again_and_how_to_restart(env_delivery, monkeypatch):
-    paths, _ = env_delivery
-    assert listen.UNKNOWN_OWNER_REPLY.endswith("Then send your message again.")
-    _config(paths, "C0CHAN")
-    monkeypatch.delenv("SLACK_USER_ID", raising=False)
-    listen.typed_for(paths, {"msg_ts": TS, "author": "U0ANYONE", "channel": "C0CHAN"})
-    assert "launchctl kickstart -k gui/$UID/com.assistant.assistant-comms" in _log(paths)
 
 
 def test_the_doctor_copes_with_a_config_whose_slack_part_isnt_a_table(env_delivery, monkeypatch):

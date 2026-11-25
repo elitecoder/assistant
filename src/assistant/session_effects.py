@@ -12,7 +12,7 @@ back, so:
   * The ledger holds the session, the task, and where the text came from (a fixed name such as `nudge:stranded`),
     never the text, a prompt path, a title or a Slack message.
   * The same thing typed into the same session more than three times in half an hour is refused (a loop), whatever
-    allowed it, except the first use of a one-time tap (the owner's own Slack message). A task or a Slack message
+    allowed it, except the first use of a one-time tap (a Slack message the owner rule let through). A task or a Slack message
     counts as its own thing.
   * A typing that went out and couldn't be confirmed, or never got a result, is `unknown` and is not repeated by
     Assistant on its own. How long that lasts depends on who allowed it, because cmux reuses session refs:
@@ -20,7 +20,7 @@ back, so:
         authorization);
       - a nudge, `/cleanup`, a boot instruction, a `/clear` or a merge request waits thirty minutes, then may be
         tried again (and counts toward the loop limit);
-      - the owner's own Slack message is typed once whatever was typed before it; everything else, however it was
+      - a Slack message the owner rule let through is typed once whatever was typed before it; everything else, however it was
         authorized (a script run by hand or by an agent, "run now", restore), is held the same way.
   * A `Keys` is bound to its intent: one per effect, only the session or terminal the intent names, and only while
     the intent has no result.
@@ -179,7 +179,8 @@ def begin(session: str, source: str, *, kind: str, ref: str, component: str, tas
     if anchor is not None and anchor > now + effects.FUTURE_SEC:
         raise Refused("later", LATER)
     # One thing is exempt from the loop limit and from the hold after an unknown: the first use of a tap that can
-    # only be used once (`once_tap`: the owner's own Slack message, `slack:<time>`, after the owner rule has passed;
+    # only be used once (`once_tap`: a Slack message, `slack:<time>`, that the owner rule let through, which is the
+    # owner's own, or anyone's in a channel where Assistant can't tell which member the owner is;
     # only Assistant's Slack path passes it, so no command line or route can claim it). Its second and later uses
     # (every Enter-only retry of that message) are counted and held. Everything else is counted and held, whatever
     # its authorization kind: a script can't tell a person from an agent, and a person can type into the session.
