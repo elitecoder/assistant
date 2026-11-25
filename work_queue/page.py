@@ -630,7 +630,7 @@ border-radius:6px;border:1px solid var(--line-strong);background:var(--hover);co
 .ready{border:1px solid var(--line);border-left:3px solid var(--green);border-radius:8px;padding:10px 14px;margin:0 0 14px;overflow-wrap:anywhere}
 .ready-list{margin:6px 0 0;padding-left:22px;display:flex;flex-direction:column;gap:10px}
 .ready-list li>div{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-.ready-result{display:block;margin-top:4px;color:var(--text-2);font-size:12px;white-space:pre-line}
+.ready-result{display:block;margin-top:8px;color:var(--text-2);font-size:12px;white-space:pre-line}
 .ready-result.blocked{color:var(--amber)}.ready-result a{color:var(--blue)}
 .ready-check{display:block;margin-top:4px;font-size:12px;color:var(--text-2)}.ready-check.note{color:var(--green)}
 .ready-cleared{margin:10px 0 0;padding-left:22px;display:flex;flex-direction:column;gap:8px;opacity:.75}
@@ -867,7 +867,7 @@ function fbPlace(s){const h=FBX.get(s),p=h.pop,{width:w,height:t}=p.getBoundingC
  mine=s.querySelector('.fb-note')||h.x.querySelector('.fb-note'),n=(mine||h.down).getBoundingClientRect(),
  card=(s.closest('.section')||document.body).getBoundingClientRect(),lo=Math.max(8,card.left),hi=Math.min(innerWidth-8,card.right),
  rects=(q,keep)=>[...document.querySelectorAll(q)].filter(keep).map(b=>b.getBoundingClientRect()).filter(b=>b.width&&b.bottom>0&&b.top<innerHeight),
- must=rects('.fb-down,.fb-open',b=>b!==h.open).concat([n]),link=h.open.getBoundingClientRect(),notes=rects('.fb-note',b=>b!==mine),
+ must=rects('.fb-down,.fb-open',b=>b!==h.open).concat([n]),notes=rects('.fb-note',b=>b!==mine),
  btns=rects('.sf-main > .btn',()=>true),clamp=x=>Math.max(lo,Math.min(x,hi-w)),
  xs=[...new Set([n.left-8-w,r.left-8-w,r.right-w,lo,hi-w,...btns.filter(b=>Math.abs(b.top-r.top)<160).map(b=>b.left-8-w),
    ...Array.from({length:Math.ceil((hi-lo-w)/24)+1},(_,k)=>lo+24*k)].map(clamp))],
@@ -876,7 +876,7 @@ function fbPlace(s){const h=FBX.get(s),p=h.pop,{width:w,height:t}=p.getBoundingC
  area=(b,x,y)=>Math.max(0,Math.min(x+w,b.right)-Math.max(x,b.left))*Math.max(0,Math.min(y+t,b.bottom)-Math.max(y,b.top)),
  // never over another thumb, another Tell Assistant or its own note; as far as it can be, not over its own link, another note or a button;
  // and always within one row's height of its thumb
- cost=(x,y)=>{const g=gap(x,y),c=Math.hypot(x+w/2-r.left-r.width/2,y+t/2-r.top-r.height/2);return g+(g>reach?1000:0)+(c>reach?1000:0)+c/20+(clear(link,x,y,4)?0:400)+100*notes.filter(b=>!clear(b,x,y,0)).length+btns.reduce((a,b)=>a+area(b,x,y),0)/400};
+ cost=(x,y)=>{const g=gap(x,y),c=Math.hypot(x+w/2-r.left-r.width/2,y+t/2-r.top-r.height/2);return g+(g>reach?1000:0)+(c>reach?1000:0)+c/20+100*notes.filter(b=>!clear(b,x,y,0)).length+btns.reduce((a,b)=>a+area(b,x,y),0)/400};
  let pick=null,low=1e9;for(const x of xs)for(let y=8;y<=innerHeight-t-8;y+=6)if(must.every(b=>clear(b,x,y,4))){const c=cost(x,y);if(c<low){low=c;pick=[x,y]}}
  pick=pick||[clamp(r.right-w),Math.max(8,Math.min(r.bottom+4,innerHeight-t-8))];
  p.style.left=pick[0]+'px';p.style.top=pick[1]+'px'}

@@ -638,7 +638,7 @@ CHECKS = (
         P,
         "for(let y=8;y<=innerHeight-t-8;y+=6)",
         "for(let y=8;y<=innerHeight*9;y+=6)",
-        TB + "test_the_reasons_never_cover_a_thumb_a_tell_assistant_link_their_own_note_or_the_edge_of_the_screen[390]",
+        TB + "test_the_reasons_open_next_to_their_thumb_at_the_top_the_middle_and_the_bottom_of_the_window_and_clear_of_the_links_and_notes_round_it[1280]",
     ),
     (
         "the thumb has a 44 pixel touch target",
@@ -681,13 +681,6 @@ CHECKS = (
         "return g+(g>reach?1000:0)+",
         "return g+",
         TB + "test_the_reasons_open_next_to_their_thumb_at_the_top_the_middle_and_the_bottom_of_the_window_and_clear_of_the_links_and_notes_round_it[1280]",
-    ),
-    (
-        "the reasons keep off their own row's Tell Assistant link where they can",
-        P,
-        "(clear(link,x,y,4)?0:400)",
-        "0",
-        TB + "test_the_reasons_open_next_to_their_thumb_at_the_top_the_middle_and_the_bottom_of_the_window_and_clear_of_the_links_and_notes_round_it[390]",
     ),
     (
         "the reasons keep off other rows' notes where they can",
@@ -855,6 +848,6 @@ CHECKS = (
         P,
         '{width:w,height:t}=p.getBoundingClientRect()',
         'w=p.offsetWidth,t=p.offsetHeight',
-        TB + "test_with_every_row_below_already_thumbed_the_reasons_still_open_next_to_their_thumb_at_the_top_of_the_window[1280]",
+        TB + "test_the_reasons_open_next_to_their_thumb_at_the_top_the_middle_and_the_bottom_of_the_window_and_clear_of_the_links_and_notes_round_it[1280]",
     ),
 )

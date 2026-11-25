@@ -2575,6 +2575,8 @@ def block_the_feedback_file(wq) -> None:
 
 def toast_is(tab, expected: str) -> None:
     tab.wait_for_function("(want) => document.querySelectorAll('.toast').length === 1 && document.querySelector('.toast').textContent === want", arg=expected)
+    tab.clock.run_for(13000)  # it goes away, so the next one can't be this one still showing
+    tab.wait_for_selector(".toast", state="detached")
 
 
 def test_a_row_action_whose_note_cant_be_saved_says_so_as_well_as_what_it_says_itself(site, wq):
