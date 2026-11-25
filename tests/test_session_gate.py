@@ -190,3 +190,62 @@ def test_the_dashboard_server_in_pro_without_the_ledger_hands_run_now_to_the_sen
     with mock.patch.object(server.subprocess, "run", return_value=refused) as ran:
         ok, message = server.proposal_action("prop-1", "run-now", {})
     assert ok is False and "--source" in ran.call_args.args[0] and "nothing was typed" in message
+
+
+# --- the gate itself can't load, or can't say ---------------------------------------------------------------------------
+
+class CantSay:
+    """A gate whose question fails: the default mode."""
+    Keys = session_gate.Keys
+
+    @staticmethod
+    def active():
+        raise RuntimeError("no answer")
+
+
+@pytest.fixture
+def no_gate(monkeypatch):
+    import assistant
+    monkeypatch.setitem(sys.modules, "assistant.session_gate", None)
+    monkeypatch.delattr(assistant, "session_gate", raising=False)
+
+
+@pytest.mark.parametrize("filename, asks", [("pulse.py", None), ("comms_session.py", None), ("todo-server.py", "_pro"),
+                                            ("cmux-send.py", "_pro")])
+def test_a_service_whose_gate_cant_load_still_starts_and_is_the_default_mode(no_gate, filename, asks, default_mode):
+    module = dm.load("nogate_" + filename.replace("-", "_").replace(".py", ""), filename)
+    assert module.session_gate is None if hasattr(module, "session_gate") else True
+    if asks:
+        assert getattr(module, asks)() is False
+    else:
+        assert module.session_effects.active() is False
+        assert issubclass(module.session_effects.Refused, Exception)
+
+
+def test_restore_whose_gate_cant_load_still_starts(no_gate, default_mode):
+    assert dm.restore_module().session_gate is None
+
+
+@pytest.mark.parametrize("filename, asks", [("todo-server.py", "_pro"), ("cmux-send.py", "_pro")])
+def test_a_gate_that_cant_say_is_the_default_mode(filename, asks, default_mode):
+    module = dm.load("cantsay_" + filename.replace("-", "_").replace(".py", ""), filename)
+    module.session_gate = CantSay
+    assert getattr(module, asks)() is False
+
+
+def test_restore_with_a_gate_that_cant_say_types_as_it_always_did(default_mode):
+    restore = dm.restore_module()
+    restore.session_gate = CantSay
+    calls = []
+    restore.run_cmux = lambda *a, **k: calls.append(a[1]) or (0, "{}", "")
+    assert restore.respawn_panel({"title": "t"}, dm.PANEL, "cd /x", False, False) is True
+    assert calls == ["surface.send_text", "surface.send_key"]
+
+
+def test_the_merge_script_takes_the_mode_it_is_given(default_mode):
+    from unittest import mock
+    merge = dm.load("merge_given_mode", "merge-pr-dispatch.py")
+    for given in (True, False):
+        with mock.patch.object(merge.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="{", stderr="")) as ran:
+            merge.step2_send_and_verify(dm.WS, "/x", "tap", given)
+        assert ("--source" in ran.call_args.args[0]) is given
