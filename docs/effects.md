@@ -8,9 +8,10 @@ before it acts and again when it finishes.
 Today the Work queue's Gmail buttons (**Archive**, **Mark read**, and moving a
 conversation back to your inbox), **Apply approvals** for Gmail Trash,
 unsubscribes, the Slack Later saves the Work queue marks completed or reopens,
-and everything Assistant's own code types into an agent session are recorded.
-Three ways of typing that run outside that code aren't; they are listed under
-"Not recorded yet".
+and, in Pro mode, everything Assistant's own code types into an agent session
+are recorded. In the default mode typing into sessions is not recorded and
+works as it always did. Three ways of typing that run outside that code aren't
+recorded in either mode; they are listed under "Not recorded yet".
 
 ## What it promises
 
@@ -138,6 +139,16 @@ been undone already. An undo of something from before the record existed just
 runs.
 
 ## Typing into agent sessions
+
+**This applies in Pro mode only.** In the default mode Assistant types into
+sessions exactly as it did before this record existed: nothing is recorded or
+refused, there is no loop limit or hold, no task is parked, any member of a
+configured Slack channel can still have a message typed into the Slack session,
+and the dashboard's "run now" still types what a proposal file says, into
+whatever session it names. Everything below describes Pro mode. The mode is read
+once, when a typing begins: a typing begun in Pro mode still gets its result
+line if the mode changes before it ends, and one begun in the default mode
+writes nothing.
 
 Agents that Assistant starts run with their permission prompts off and act on
 whatever is typed into them, and typing can't be taken back. So nothing in

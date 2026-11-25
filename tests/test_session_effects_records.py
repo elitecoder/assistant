@@ -139,3 +139,10 @@ def test_every_return_in_dispatch_todo_says_why_or_says_it_went_out():
 
     walk(fn.body, False)
     assert bare == [] and len(seen) >= 12, (bare, seen)
+
+
+@pytest.fixture(autouse=True)
+def pro_mode(monkeypatch):
+    """Everything this file tests is Pro mode's; the test says so, instead of leaning on the suite's default."""
+    from assistant import mode
+    monkeypatch.setattr(mode, "current", lambda: "pro")

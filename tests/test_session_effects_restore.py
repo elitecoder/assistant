@@ -142,3 +142,10 @@ def test_keys_that_cant_be_made_close_the_intent_as_failed(restore, tmp_path, mo
     cmux = Cmux(tmp_path)
     assert run(restore, cmux) is False and cmux.calls == []
     assert ledger(tmp_path)[1]["outcome"] == "failed" and "NOT TYPED: no" in capsys.readouterr().out
+
+
+@pytest.fixture(autouse=True)
+def pro_mode(monkeypatch):
+    """Everything this file tests is Pro mode's; the test says so, instead of leaning on the suite's default."""
+    from assistant import mode
+    monkeypatch.setattr(mode, "current", lambda: "pro")

@@ -901,3 +901,10 @@ def test_the_doctor_says_both_places_the_owner_can_be_set(env_delivery, monkeypa
     monkeypatch.delenv("SLACK_USER_ID", raising=False)
     _config(paths, "C0CHAN")
     assert "neither SLACK_USER_ID nor slack.owner in ~/.assistant/config.json" in doctor.check_slack_owner().detail
+
+
+@pytest.fixture(autouse=True)
+def pro_mode(monkeypatch):
+    """Everything this file tests is Pro mode's; the test says so, instead of leaning on the suite's default."""
+    from assistant import mode
+    monkeypatch.setattr(mode, "current", lambda: "pro")

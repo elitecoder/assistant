@@ -29,7 +29,7 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   stay that way until you press On. To make sure your own reactions start work,
   set `SLACK_USER_ID` to your Slack user id in `~/.zprofile` and restart the
   reactor. `TODO_AUTODISPATCH=0` still turns self-starting off for everyone.
-- If you use a Slack channel and don't have `SLACK_USER_ID` set, Assistant
+- **Pro mode only; the default mode is unchanged for now.** In the default mode any member of a configured Slack channel can still have a message typed into the warm session, as before. In Pro mode: If you use a Slack channel and don't have `SLACK_USER_ID` set, Assistant
   stops typing your messages into the warm session after this update and tells
   you so in Slack: add `export SLACK_USER_ID=U…` (your member ID: your Slack
   profile, the three dots, Copy member ID) to `~/.zprofile` and restart the
@@ -43,14 +43,14 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   never typed, and Assistant says once a day, in its thread, that it only takes
   instructions from you. The Slack check in `assistant-doctor.py` warns when
   the target is a channel and the id isn't set.
-- Check what the dashboard's "run now" on a proposal types. Before, it typed
+- **Pro mode only; the default mode is unchanged for now.** In the default mode "run now" still types whatever a proposal file says, as before. In Pro mode: Check what the dashboard's "run now" on a proposal types. Before, it typed
   whatever a proposal file said, of any length, with any control characters,
   into whatever session the file named, with no check. Now the session must be
   a real `workspace:N`, the text one line of at most 500 characters with no
   control characters, and the typing is recorded first. It also types into the
   session's terminal, not whichever pane is on top, and says what happened when
   it couldn't.
-- Stop the same text being typed into the same session in a loop. Before,
+- **Pro mode only.** The default mode types exactly as before, with no limit and no hold. In Pro mode: Stop the same text being typed into the same session in a loop. Before,
   nothing stopped a nudge or `/cleanup` going into one session every pulse,
   forever. Now the same thing typed into the same session more than three
   times in thirty minutes is waited on, and a typing that may have landed is
@@ -170,7 +170,7 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   `{"telemetry": {"enabled": false}}` in `~/.assistant/config.json` to turn it
   off (anything but `true` is off, and so is a settings file that can't be read); delete the folder to remove what is there. See
   [Telemetry](docs/telemetry.md).
-- Record everything Assistant's own code types into an agent session before it
+- **Pro mode only.** The default mode types exactly as before and writes no record, shows no new card and sends no new Slack message. In Pro mode: Record everything Assistant's own code types into an agent session before it
   types it. Agents run with their permission prompts off and can't take typing
   back, and before this only two of twelve ways of typing left any record, and
   one typed text from a file with no check. Now the start of a task, the

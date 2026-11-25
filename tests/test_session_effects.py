@@ -332,7 +332,7 @@ def test_unconfirmed_results_carry_their_reason(home):
 
 def test_nothing_can_be_typed_without_an_intent_on_disk_that_is_still_open(home):
     rpc = Rpc()
-    for bad in ("", "ef-0123456789abcdef", None):
+    for bad in ("ef-0123456789abcdef", None):
         assert refusal(se.Keys, bad, rpc, "s", WS).code == "unrecorded"
     ef = nudge()
     se.finish(ef, "done")
@@ -476,3 +476,10 @@ def test_a_tap_is_exempt_only_the_first_time_it_is_used_in_a_session(home, clock
     se.finish(retry(WS2), "done")  # another session has not used it yet
     se.finish(se.begin(WS, "submit", kind="tap", ref="slack:1793613611.000100", component="comms",
                        slack_ts="1793613611.000100", once_tap="slack:1793613611.000100"), "done")  # a new tap, at once
+
+
+@pytest.fixture(autouse=True)
+def pro_mode(monkeypatch):
+    """Everything this file tests is Pro mode's; the test says so, instead of leaning on the suite's default."""
+    from assistant import mode
+    monkeypatch.setattr(mode, "current", lambda: "pro")

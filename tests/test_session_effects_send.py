@@ -369,3 +369,10 @@ def test_no_option_of_the_script_can_claim_the_one_time_exemption(send):
                        "--no-log", "--post-send-wait"}
     for name in ("todo-server.py", "cmux-restore-sessions.py", "merge-pr-dispatch.py", "pulse.py"):
         assert "once_tap" not in (Path(send.__file__).parent / name).read_text(), name
+
+
+@pytest.fixture(autouse=True)
+def pro_mode(monkeypatch):
+    """Everything this file tests is Pro mode's; the test says so, instead of leaning on the suite's default."""
+    from assistant import mode
+    monkeypatch.setattr(mode, "current", lambda: "pro")

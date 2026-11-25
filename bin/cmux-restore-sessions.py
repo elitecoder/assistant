@@ -43,8 +43,10 @@ def run_cmux(*args, timeout=5):
             capture_output=True, text=True, timeout=timeout
         )
         return r.returncode, r.stdout.strip(), r.stderr.strip()
-    except subprocess.TimeoutExpired:
-        return 124, "", "timeout"
+    except subprocess.TimeoutExpired as e:
+        if session_effects.active():  # Pro mode tells a time-out from a refusal; the default mode never did
+            return 124, "", "timeout"
+        return 1, "", str(e)
     except Exception as e:
         return 1, "", str(e)
 
@@ -269,9 +271,11 @@ def respawn_panel(ws, panel, cmd: str, dry_run: bool, verbose: bool):
 
     # A person ran this, which is what allows the typing. The intent is recorded first, and the saved state knows a
     # panel only by its terminal id, which is what the record holds.
+    last_error = [""]
+
     def rpc(method, params):
-        rc, out, _ = run_cmux("rpc", method, json.dumps(params), timeout=5)
-        if rc == 124:
+        rc, out, last_error[0] = run_cmux("rpc", method, json.dumps(params), timeout=5)
+        if rc == 124 and session_effects.active():
             raise TimeoutError(method)  # the keystroke may have landed: recorded as unknown, not failed
         return (out or "{}") if rc == 0 else None
 
@@ -303,7 +307,9 @@ def respawn_panel(ws, panel, cmd: str, dry_run: bool, verbose: bool):
         keys.finish()
 
     if verbose:
-        print("  ERROR: send_text failed: the terminal didn't take the text")
+        # The default mode says what cmux said, as it always did; Pro mode has one sentence.
+        print(f"  ERROR: send_text failed: {last_error[0]}" if not session_effects.active()
+              else "  ERROR: send_text failed: the terminal didn't take the text")
     return False
 
 

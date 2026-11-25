@@ -433,3 +433,10 @@ def test_queue_to_start_clears_the_park_marker_so_a_later_block_is_not_listed_as
     data["items"][0]["status"] = "blocked"  # the agent later blocks it for its own reason
     mod.TODO_PATH.write_text(json.dumps(data))
     assert mod._parked_tasks() == []
+
+
+@pytest.fixture(autouse=True)
+def pro_mode(monkeypatch):
+    """Everything this file tests is Pro mode's; the test says so, instead of leaning on the suite's default."""
+    from assistant import mode
+    monkeypatch.setattr(mode, "current", lambda: "pro")

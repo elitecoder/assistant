@@ -733,10 +733,17 @@ def typing_scope(paths: comms_lib.Paths, ws_ref: str, surface_ref: str, source: 
                 session_effects.finish(effect_id, "failed", error="not recorded")
             raise
 
-    for older in batch:
-        begin(**older)
-    begin(ref=ref, anchor=anchor, slack_ts=slack_ts)
+    if session_effects.active():  # asked once, here: the default mode types as it always did, recording nothing
+        for older in batch:
+            begin(**older)
+        begin(ref=ref, anchor=anchor, slack_ts=slack_ts)
+    else:
+        begun.append(session_effects.PASSTHROUGH)
     effect_id, others = begun[-1], begun[:-1]
+    if effect_id == session_effects.PASSTHROUGH:  # the mode changed part-way: close what was begun, type unrecorded
+        for each in others:
+            session_effects.finish(each, "failed", error="not recorded")
+        others = []
 
     def transport(method, params):
         """An exit status of 0 is an answer whatever the body; a timeout raises, because the keystroke may have
@@ -746,7 +753,7 @@ def typing_scope(paths: comms_lib.Paths, ws_ref: str, surface_ref: str, source: 
         if answer is not None:
             return answer
         ran = comms_lib.last_run()  # how the command just run ended, if one was run
-        if ran and ran[1].startswith("timeout"):
+        if session_effects.active() and ran and ran[1].startswith("timeout"):
             raise TimeoutError(method)
         return {} if ran and ran[0] == 0 else None
 
@@ -768,7 +775,13 @@ def typing_scope(paths: comms_lib.Paths, ws_ref: str, surface_ref: str, source: 
         keys.finish()
 
 
-def _active_keys(surface_ref: str):
+def _active_keys(surface_ref: str, paths: comms_lib.Paths | None = None):
+    if paths is not None and not session_effects.active():
+        # The default mode types as it always did, with or without a scope: nothing is checked or recorded.
+        def transport(method, params):
+            return _cmux_rpc(paths, method, params)
+
+        return session_effects.Keys(session_effects.PASSTHROUGH, transport, surface_ref)
     keys = getattr(_scope, "keys", None)
     if keys is None or keys.surface_id != surface_ref:
         raise session_effects.Refused("invalid", session_effects.INVALID)
@@ -781,7 +794,7 @@ def send_enter(paths: comms_lib.Paths, surface_ref: str) -> None:
     was never shown on screen, yet the prompt stays unsent (reproduced
     2026-09-28 on a --focus false workspace); a "\\r" through send_text submits
     it at once."""
-    _active_keys(surface_ref).carriage_return()
+    _active_keys(surface_ref, paths).carriage_return()
 
 
 def message_in_box(paths: comms_lib.Paths, surface_ref: str, marker: str, agent: str | None = None) -> bool:
@@ -796,7 +809,7 @@ def submit(paths: comms_lib.Paths, surface_ref: str, text: str, marker: str,
     stripped: send_text streams keystrokes, so a trailing \\n would submit
     mid-paste."""
     delivered = submit_until_confirmed(
-        send_text=lambda: _active_keys(surface_ref).text(text.rstrip("\n")),
+        send_text=lambda: _active_keys(surface_ref, paths).text(text.rstrip("\n")),
         enter_only=not retype,  # a message already typed is never typed again; only its Enter is pressed
         press_enter=lambda: send_enter(paths, surface_ref),
         read_box=lambda: input_box_text(_surface_read_text(paths, surface_ref, lines=60), agent),

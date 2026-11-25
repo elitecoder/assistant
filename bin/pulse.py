@@ -441,7 +441,9 @@ def run_merge_pr_dispatch(ws_ref: str, pr, refactor_attested: bool,
     router, and send-verify. On any failure to run it, return an awaiting
     card so the workspace surfaces rather than silently stalling."""
     cmd = [sys.executable, str(BIN / "merge-pr-dispatch.py"),
-           "--ws", ws_ref, "--pr", str(pr), "--authorized-by", "standing"]
+           "--ws", ws_ref, "--pr", str(pr)]
+    if session_effects.active():
+        cmd += ["--authorized-by", "standing"]
     if refactor_attested:
         cmd.append("--refactor-attested")
     if e2e_attested:
@@ -1862,19 +1864,22 @@ def cmux_send(ws_ref: str, text: str, *, caller: str = "assistant-pulse") -> dic
     """Returns the parsed JSON record cmux-send.py wrote (which captures
     rpc results and transcript-byte delta). On failure returns
     {'outcome': 'failed', 'transcript_size_delta': 0}."""
-    # What allowed this is the standing Pro-mode setting; the ledger records which fixed nudge it was, not its text.
-    source = {"/cleanup": "cleanup", SAFE_STRANDED_NUDGE: "nudge:stranded"}.get(text, "pulse")
-    rc, out, err = run([
+    cmd = [
         sys.executable, str(BIN / "cmux-send.py"),
         "--ws", ws_ref,
         "--text", text,
         "--enter",
         "--caller", caller,
-        "--source", source,
-        "--auth-kind", "standing",
-        "--auth-ref", source,
-    ], timeout=CMUX_SEND_TIMEOUT_SEC)
-    if rc == 5:
+    ]
+    pro = session_effects.active()  # asked once: the default mode runs the script exactly as it always was run
+    if pro:
+        # What allowed this is the standing Pro-mode setting; the ledger records which fixed nudge it was, not its text.
+        source = {"/cleanup": "cleanup", SAFE_STRANDED_NUDGE: "nudge:stranded"}.get(text, "pulse")
+        cmd += ["--source", source, "--auth-kind", "standing", "--auth-ref", source]
+        rc, out, err = run(cmd, timeout=CMUX_SEND_TIMEOUT_SEC)
+    else:
+        rc, out, err = run(cmd)
+    if pro and rc == 5:
         # cmux didn't answer in time: the text may have been typed. Not "not sent", and not to be tried again by hand.
         log.warning("cmux-send %s: cmux didn't answer in time, so the text may have been typed", ws_ref)
         return {"outcome": "may-have-been-typed", "transcript_size_delta": None}
@@ -2325,7 +2330,8 @@ def _mark_todo_dispatched(todo_id: str, ws_ref: str, parked: str = "") -> bool:
         target["dispatchedWs"] = ws_ref
         target["status"] = "in-progress"
         target["statusReason"] = f"dispatched to {ws_ref}"
-        target.pop("parkedBy", None)  # a good dispatch ends any earlier park
+        if session_effects.active():
+            target.pop("parkedBy", None)  # a good dispatch ends any earlier park (Pro mode only)
         if parked:
             # Assistant wouldn't type into the session it started: a blocked task is skipped by the picker (so no
             # second session) and is the one status the dashboard's "Queue to start" turns back into an open one.
@@ -2513,7 +2519,7 @@ def _cmux_type_rpc(method: str, params: dict) -> dict:
     answer = _cmux_rpc(method, params)
     if answer is not None:
         return answer
-    if _last_rpc_rc == 124:
+    if _last_rpc_rc == 124 and session_effects.active():
         raise TimeoutError(method)
     return {} if _last_rpc_rc == 0 else None
 
@@ -2562,6 +2568,8 @@ def _begin_dispatch_typing(todo_id: str, item: dict, ws_ref: str, source: str):
     """Record the intent to type into the workspace dispatch just made. Returns the effect id, or None when typing is
     refused (logged; a refusal that repeats until something is fixed is kept for the card)."""
     global _dispatch_blocked
+    if not session_effects.active():
+        return session_effects.PASSTHROUGH  # the default mode types as it always did: nothing recorded or checked
     kind, ref = _dispatch_allowance(item, todo_id)
     try:
         return session_effects.begin(ws_ref, source, kind=kind, ref=ref, component="pulse",
@@ -2662,7 +2670,8 @@ def dispatch_todo(todo_id: str) -> bool:
 
     # A task captured from a Slack reaction that isn't confirmed as the owner's waits for the owner's decision: it
     # starts only once auto-start is on, whoever calls this.
-    if str(item.get("source") or "").startswith("slack-react:") and item.get("autoDispatch") is not True:
+    if session_effects.active() and str(item.get("source") or "").startswith("slack-react:") \
+            and item.get("autoDispatch") is not True:
         log.warning("dispatch %s: a Slack capture not confirmed as the owner's — not starting it", todo_id)
         _dispatch_failed("other")
         return False
@@ -2677,7 +2686,7 @@ def dispatch_todo(todo_id: str) -> bool:
 
     # Before anything is started: if Assistant can't record what it types, a workspace made now could never be typed
     # into, and one would be made again every pulse. The TODO stays open for the next pulse.
-    if not session_effects.writable():
+    if session_effects.active() and not session_effects.writable():
         global _dispatch_blocked
         _dispatch_blocked = _dispatch_blocked or f"unrecorded: {session_effects.UNRECORDED}"
         log.warning("dispatch %s: %s — nothing started", todo_id, session_effects.UNRECORDED)
@@ -3393,7 +3402,7 @@ def main() -> int:
                 _dispatch_started.add(todo["id"])
     # A refusal to type, or a task parked because of one, gets its card, built from this pulse's refusal and from the
     # task file, so it stays until the parked tasks are dealt with.
-    parked = [] if dry_run else _parked_tasks()
+    parked = [] if dry_run or not session_effects.active() else _parked_tasks()
     if _dispatch_blocked or parked:
         awaiting_input.append(_dispatch_card(bucket_b, parked))
         actions_taken.append({

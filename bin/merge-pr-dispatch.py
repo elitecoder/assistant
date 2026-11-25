@@ -233,6 +233,16 @@ def step1_ci_route(pr):
     }
 
 
+def _pro_mode():
+    """Whether this is Pro mode. Anything that goes wrong asking is the default mode."""
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(_BIN), "src"))
+        from assistant import mode  # noqa: PLC0415
+        return mode.is_pro()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def step2_send_and_verify(ws_ref, slash_command, authorized_by="tap"):
     """Returns (ok, observed_last_user_text).
 
@@ -242,26 +252,27 @@ def step2_send_and_verify(ws_ref, slash_command, authorized_by="tap"):
     distinguishes "cmux returned OK but claude never ingested" from "claude
     actually saw it".
     """
+    pro = _pro_mode()  # asked once; the default mode sends exactly what it always did
+    argv = [
+        CMUX_SEND,
+        "--ws", ws_ref,
+        "--text", slash_command,
+        "--enter",
+        "--caller", "merge-pr-dispatch.py",
+    ]
+    if pro:
+        # What allowed the typing: the pulse's standing Pro-mode setting, or a person running this by hand.
+        argv += ["--source", "merge", "--auth-kind", authorized_by, "--auth-ref", "merge"]
     send = subprocess.run(
-        [
-            CMUX_SEND,
-            "--ws", ws_ref,
-            "--text", slash_command,
-            "--enter",
-            "--caller", "merge-pr-dispatch.py",
-            # What allowed the typing: the pulse's standing Pro-mode setting, or a person running this by hand.
-            "--source", "merge",
-            "--auth-kind", authorized_by,
-            "--auth-ref", "merge",
-        ],
-        capture_output=True, text=True, timeout=45,  # cmux-send.py's worst case is about 33 s
+        argv,
+        capture_output=True, text=True, timeout=45 if pro else 20,  # cmux-send.py's Pro worst case is about 33 s
     )
     try:
         send_record = json.loads(send.stdout)
     except Exception:
         return False, f"cmux_send_bad_output: {send.stdout[:200]}{send.stderr[:200]}"
     outcome = send_record.get("outcome", "")
-    if send.returncode == 5:  # cmux-send.py: no answer in time, so the text may have been typed
+    if pro and send.returncode == 5:  # cmux-send.py: no answer in time, so the text may have been typed
         return False, ("may_have_been_typed: cmux didn't answer in time, so the command may already be in the "
                        "session. Check it before sending it again")
     if send.returncode != 0:

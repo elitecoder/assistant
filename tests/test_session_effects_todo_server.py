@@ -72,7 +72,8 @@ def test_run_now_is_recorded_as_a_tap_on_the_route_and_types_through_the_one_scr
         "s.main()\n")
     real = subprocess.run
     home = tmp_path / "ledger-home"
-    home.mkdir()
+    (home / ".assistant").mkdir(parents=True)
+    (home / ".assistant/config.json").write_text(json.dumps({"mode": "pro"}))  # the script reads the mode from here
 
     def run(argv, **kw):
         return real([sys.executable, str(wrapper), *argv[2:], str(tmp_path / "sends.jsonl")],
@@ -132,7 +133,8 @@ def test_run_now_is_held_after_a_typing_nobody_could_tell_about_and_says_so(env,
     path = seed(env)
     send = REPO / "bin/cmux-send.py"
     home = tmp_path / "held-home"
-    home.mkdir()
+    (home / ".assistant").mkdir(parents=True)
+    (home / ".assistant/config.json").write_text(json.dumps({"mode": "pro"}))
     wrapper = tmp_path / "wrap2.py"
     wrapper.write_text(
         "import sys, importlib.util as u\n"
@@ -155,3 +157,10 @@ def test_run_now_is_held_after_a_typing_nobody_could_tell_about_and_says_so(env,
     assert ok is False and why.startswith("Assistant sent this but didn't hear back")
     ok, why = mod.proposal_action("prop-1", "run-now", {})
     assert ok is False and "couldn't tell if it arrived" in why and "type it into the session yourself" in why
+
+
+@pytest.fixture(autouse=True)
+def pro_mode(monkeypatch):
+    """Everything this file tests is Pro mode's; the test says so, instead of leaning on the suite's default."""
+    from assistant import mode
+    monkeypatch.setattr(mode, "current", lambda: "pro")

@@ -440,7 +440,8 @@ def run_checks(only: str = "all") -> list[Check]:
     if only in ("all", "core"):
         checks += [c() for c in CORE_CHECKS]
     if only in ("all", "slack"):
-        checks += [c() for c in SLACK_CHECKS]
+        # The owner check belongs to Pro mode's rule about who may type into the Slack session.
+        checks += [c() for c in SLACK_CHECKS if c is not check_slack_owner or mode.is_pro()]
     if only == "all":
         checks += [c() for c in AGENT_CHECKS]
     return checks

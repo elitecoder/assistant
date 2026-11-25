@@ -177,7 +177,15 @@ def _target(paths: comms_lib.Paths) -> str:
     """The default send target (config.slack.target, $SLACK_PING_TARGET override)."""
     try:
         return comms_lib.Config.load(paths.config).target
-    except (SystemExit, ValueError):  # no config, or one that isn't JSON
+    except SystemExit:
+        return ""
+
+
+def _safe_target(paths: comms_lib.Paths) -> str:
+    """The default send target, or "" when there is no config or it isn't JSON (Pro mode's owner rule never crashes)."""
+    try:
+        return _target(paths)
+    except ValueError:
         return ""
 
 
@@ -335,7 +343,7 @@ def owner_id(paths: comms_lib.Paths, env: dict | None = None) -> str:
         configured = ""
     if USER_ID.fullmatch(configured):
         return configured
-    target = _target(paths)
+    target = _safe_target(paths)
     return target if USER_ID.fullmatch(target) else ""
 
 
@@ -343,7 +351,7 @@ def notice_channel(paths: comms_lib.Paths, conversation: str) -> str:
     """Where a notice about a message in this conversation may go. slack-send.py only sends to the configured target;
     with a member id as the target, a message comes in on that person's direct-message conversation (D...), so a
     notice for it goes to the target, which is the same conversation."""
-    target = _target(paths)
+    target = _safe_target(paths)
     return target if conversation.startswith("D") and USER_ID.fullmatch(target) else conversation
 
 
@@ -356,7 +364,7 @@ def classify_author(paths: comms_lib.Paths, rec: dict, env: dict | None = None) 
         return "no-author", owner
     if owner:
         return ("owner" if author == owner else "other"), owner
-    return ("dm" if _target(paths).startswith("D") else "unknown-owner"), ""
+    return ("dm" if _safe_target(paths).startswith("D") else "unknown-owner"), ""
 
 
 def typed_for(paths: comms_lib.Paths, rec: dict, env: dict | None = None) -> bool:
@@ -624,7 +632,8 @@ def _notify_restart_once(paths: comms_lib.Paths, channel: str, env: dict | None,
         return
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(json.dumps({"ts": time.time()}))
-    rc, _out, err = cli(_send_args(text or RESTART_NOTICE, "reply", notice_channel(paths, channel), None),
+    rc, _out, err = cli(_send_args(text or RESTART_NOTICE, "reply",
+                                   notice_channel(paths, channel) if session_effects.active() else channel, None),
                         timeout=30, env=env)
     log(f"restart notice sent to {channel}" if rc == 0
         else f"restart notice rc={rc} err={err.strip()[:160]}")
@@ -634,17 +643,18 @@ def _deliver_pending(paths: comms_lib.Paths, channel: str, env: dict | None) -> 
     """Try to hand this channel's queued messages to the warm session. Returns
     True when nothing is left waiting."""
     now = time.time()
+    pro = session_effects.active()  # asked once: the default mode queues, types and notifies exactly as it always did
     fresh, expired = split_pending(read_pending(paths), channel, now, PENDING_MAX_AGE_SEC)
     if expired:
         for r in expired:
             log(f"inbound msg={r.get('msg_ts')} still undelivered after "
                 f"{comms_lib.fmt_age(int(message_age_sec(r, now)))} — giving up on it")
         remove_pending(paths, [r.get("msg_ts") for r in expired])
-        for r in expired:
+        for r in expired if pro else ():
             _tell_dropped(paths, r, env, DROPPED_EXPIRED)
-    # The owner rule applies again here: a message queued before this was checked, or by another version, may not be
-    # the owner's.
-    foreign = [r for r in fresh if classify_author(paths, r, env)[0] not in ("owner", "dm")]
+    # The owner rule applies again here (Pro mode): a message queued before this was checked, or by another version,
+    # may not be the owner's.
+    foreign = [r for r in fresh if classify_author(paths, r, env)[0] not in ("owner", "dm")] if pro else []
     if foreign:
         remove_pending(paths, [r.get("msg_ts") for r in foreign])
         for r in foreign:
@@ -841,9 +851,9 @@ def inbound_loop(stop: threading.Event, env: dict) -> None:
         # On disk before the worker sees it: the slack cursor has already moved
         # past this message, and the worker may be busy for minutes.
         _record_inbound(rec)
-        if not typed_for(paths, rec, env):
+        if session_effects.active() and not typed_for(paths, rec, env):  # Pro mode: only the owner's are typed
             tell_ignored(paths, rec, env)
-            continue  # recorded as received; only the owner's messages are typed
+            continue  # recorded as received
         add_pending(paths, rec)
         worker_for(channel_id).put(True)
 

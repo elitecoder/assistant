@@ -198,10 +198,11 @@ CHECKS = (
     (
         "the pause between text and Enter is the clock as it is when called",
         SE,
-        "(sleep or time.sleep)(pause)",
-        "(sleep or (lambda _s: None))(pause)",
+        '                if pause:\n                    (sleep or time.sleep)(pause)\n                self.key("enter") if enter == "key" else self.carriage_return()\n        except Refused:',
+        '                if pause:\n                    (sleep or (lambda _s: None))(pause)\n                self.key("enter") if enter == "key" else self.carriage_return()\n        except Refused:',
         T + "test_the_pause_between_text_and_enter_uses_the_clock_as_it_is_when_it_is_called",
     ),
+
     (
         "keys that can't be made close their intent as failed",
         SE,
@@ -248,10 +249,11 @@ CHECKS = (
     (
         "dispatch starts no workspace when the ledger can't be written at all",
         PULSE,
-        "    if not session_effects.writable():\n        global _dispatch_blocked",
-        "    if False:\n        global _dispatch_blocked",
+        '    if session_effects.active() and not session_effects.writable():\n        global _dispatch_blocked',
+        '    if False:\n        global _dispatch_blocked',
         P + "test_with_the_ledger_unwritable_nothing_is_started_or_typed_and_the_task_stays_open",
     ),
+
     (
         "a refusal that repeats until something is fixed is kept for the card",
         PULSE,
@@ -311,10 +313,11 @@ CHECKS = (
     (
         "a Slack capture not confirmed as the owner's is never started",
         PULSE,
-        '"slack-react:") and item.get("autoDispatch") is not True:',
-        '"slack-react:") and item.get("autoDispatch") is not True and False:',
+        '    if session_effects.active() and str(item.get("source") or "").startswith("slack-react:") \\\n            and item.get("autoDispatch") is not True:',
+        '    if session_effects.active() and str(item.get("source") or "").startswith("slack-react:") \\\n            and item.get("autoDispatch") is not True and False:',
         P + "test_a_slack_capture_not_confirmed_as_the_owners_is_never_started",
     ),
+
     (
         "dispatch records whether the transcript showed the instruction arrive",
         PULSE,
@@ -325,10 +328,11 @@ CHECKS = (
     (
         "a timeout while typing into a new workspace is not recorded as a refusal",
         PULSE,
-        "    if _last_rpc_rc == 124:\n        raise TimeoutError(method)",
-        "    if False:\n        raise TimeoutError(method)",
+        '    if _last_rpc_rc == 124 and session_effects.active():\n        raise TimeoutError(method)',
+        '    if False:\n        raise TimeoutError(method)',
         P + "test_a_timeout_may_have_landed_so_it_is_unknown_not_failed",
     ),
+
     (
         "a tool that exits zero is an answer whatever it printed",
         PULSE,
@@ -424,10 +428,11 @@ CHECKS = (
     (
         "the pulse takes a cmux-send time-out for text that may have been typed",
         PULSE,
-        "    if rc == 5:\n        # cmux didn't answer in time",
-        "    if False:\n        # cmux didn't answer in time",
+        '    if pro and rc == 5:',
+        '    if False:',
         S + "test_the_pulse_takes_a_timeout_for_text_that_may_have_been_typed_not_for_text_not_sent",
     ),
+
     (
         "a verdict whose send timed out says it may have been typed",
         PULSE,
@@ -438,10 +443,11 @@ CHECKS = (
     (
         "the merge script takes a cmux-send time-out for a command that may be in the session",
         MERGE,
-        "    if send.returncode == 5:",
-        "    if False:",
+        '    if pro and send.returncode == 5:  # cmux-send.py: no answer in time, so the text may have been typed',
+        '    if False:  # cmux-send.py: no answer in time, so the text may have been typed',
         S + "test_the_merge_script_takes_a_timeout_for_a_command_that_may_already_be_in_the_session",
     ),
+
     (
         "the merge card says the command may already be there after a time-out",
         MERGE,
@@ -480,10 +486,11 @@ CHECKS = (
     (
         "the back-soon note goes where the send-gate allows",
         CL,
-        '    rc, _out, err = cli(_send_args(text or RESTART_NOTICE, "reply", notice_channel(paths, channel), None),',
-        '    rc, _out, err = cli(_send_args(text or RESTART_NOTICE, "reply", channel, None),',
+        '                                   notice_channel(paths, channel) if session_effects.active() else channel, None),',
+        '                                   channel, None),',
         C + "test_with_a_person_as_the_target_every_notice_goes_through_the_real_send_gate",
     ),
+
     (
         "the owner is worked out from slack.owner as the reactor does",
         CL,
@@ -523,10 +530,11 @@ CHECKS = (
     (
         "the card is built from the task file, so it stays while a task is parked",
         PULSE,
-        "    parked = [] if dry_run else _parked_tasks()",
-        "    parked = []",
+        '    parked = [] if dry_run or not session_effects.active() else _parked_tasks()',
+        '    parked = []',
         P + "test_the_card_stays_on_every_pulse_until_the_parked_tasks_are_dealt_with",
     ),
+
     (
         "only a blocked task with the park marker counts as parked",
         PULSE,
@@ -628,31 +636,35 @@ CHECKS = (
     (
         "a good dispatch clears an earlier park marker",
         PULSE,
-        '        target.pop("parkedBy", None)  # a good dispatch ends any earlier park\n',
-        "",
+        '        if session_effects.active():\n            target.pop("parkedBy", None)  # a good dispatch ends any earlier park (Pro mode only)',
+        '        if True:\n            pass  # a good dispatch ends any earlier park (Pro mode only)',
         P + "test_a_good_dispatch_clears_an_earlier_park_marker_and_the_reason_says_what_happened",
     ),
+
     (
         "Queue to start clears the park marker",
         TS,
-        '        target.pop("parkedBy", None)  # asking again ends a park\n',
-        "",
+        '        if session_effects.active():\n            target.pop("parkedBy", None)  # asking again ends a park (Pro mode)',
+        '        if True:\n            pass  # asking again ends a park (Pro mode)',
         P + "test_queue_to_start_clears_the_park_marker_so_a_later_block_is_not_listed_as_parked",
     ),
+
     (
         "a parked task's row shows no dispatched pill",
         "bin/render-assistant-page.py",
-        '                if it.get("parkedBy"):\n                    ad = ""',
+        '                if pro and it.get("parkedBy"):\n                    ad = ""',
         '                if False:\n                    ad = ""',
         "tests/test_pro_mode.py::test_a_parked_task_row_has_no_dispatched_pill_and_its_reason_is_the_blocked_pills_tooltip",
     ),
+
     (
         "a blocked task's reason is its status pill's tooltip",
         "bin/render-assistant-page.py",
-        '            reason_tip = f\' title="{e(it.get("statusReason") or "")}"\' if status == "blocked" and it.get("statusReason") else ""',
-        '            reason_tip = ""',
+        '                          if pro and status == "blocked" and it.get("statusReason") else "")',
+        '                          if False else "")',
         "tests/test_pro_mode.py::test_a_parked_task_row_has_no_dispatched_pill_and_its_reason_is_the_blocked_pills_tooltip",
     ),
+
     (
         "the merge card shows a sentence, not the script's token",
         MERGE,
@@ -708,10 +720,11 @@ CHECKS = (
     (
         "the card escapes the text before it makes code of it",
         "bin/render-assistant-page.py",
-        '{_with_code(e(card.get("detail") or ""))}',
-        '{_with_code(card.get("detail") or "")}',
+        '{_with_code(e(card.get("detail") or ""), card.get("key"))}',
+        '{_with_code(card.get("detail") or "", card.get("key"))}',
         "tests/test_pro_mode.py::test_a_command_in_backticks_on_the_card_is_code_and_markup_inside_it_is_still_escaped",
     ),
+
     (
         "the doctor accepts the owner from slack.owner",
         DOC,
@@ -740,6 +753,287 @@ CHECKS = (
         '"typing_refused", "other")',
         "tests/test_session_effects_records.py::test_a_dispatch_reason_of_typing_refused_is_accepted_and_free_text_still_is_not",
     ),
+    # --- Pro mode only: the default mode is origin/main -------------------------------------------------
+    (
+        'typing is recorded in Pro mode only: begin does nothing in the default mode',
+        SE,
+        '    if not active():\n        return PASSTHROUGH\n    now = _now()',
+        '    if False:\n        return PASSTHROUGH\n    now = _now()',
+        'tests/test_default_mode_is_main.py::test_the_typing_module_is_a_pass_through_in_the_default_mode',
+    ),
+    (
+        'the mode is read once, from the mode setting',
+        SE,
+        '        return mode.is_pro()\n    except Exception:',
+        '        return True\n    except Exception:',
+        'tests/test_default_mode_is_main.py::test_a_task_is_started_with_two_keystroke_calls_and_nothing_is_recorded',
+    ),
+    (
+        'a typing begun in the default mode records no result',
+        SE,
+        '    if effect_id == PASSTHROUGH:\n        return\n    effects.finish',
+        '    if False:\n        return\n    effects.finish',
+        'tests/test_session_effects_mode_switch.py::test_a_typing_begun_in_the_default_mode_writes_nothing_even_if_pro_is_on_before_it_ends',
+    ),
+    (
+        'keys for a typing begun in the default mode check nothing',
+        SE,
+        '        self.passthrough = effect_id == PASSTHROUGH  # begun in the default mode: type, and check nothing',
+        '        self.passthrough = False  # begun in the default mode: type, and check nothing',
+        'tests/test_default_mode_is_main.py::test_the_typing_module_is_a_pass_through_in_the_default_mode',
+    ),
+    (
+        'in the default mode the Enter follows the text whatever cmux said',
+        SE,
+        '            self.text(text)\n            if enter:\n                if pause:',
+        '            if self.text(text) and enter:\n                if pause:',
+        'tests/test_default_mode_is_main.py::test_when_cmux_refuses_the_text_the_enter_is_still_pressed_and_the_task_is_still_stamped',
+    ),
+    (
+        'in the default mode a typing is never called failed',
+        SE,
+        '        if self.passthrough:\n            return "done"',
+        '        if False:\n            return "done"',
+        'tests/test_default_mode_is_main.py::test_when_cmux_refuses_the_text_the_enter_is_still_pressed_and_the_task_is_still_stamped',
+    ),
+    (
+        'run now types as it always did in the default mode',
+        SE,
+        '    subprocess.run([cmux_bin, "send", "--workspace", ws_ref, text], check=False, timeout=4, capture_output=True)',
+        '    subprocess.run([cmux_bin, "send", "--workspace", ws_ref, text], check=False, timeout=9, capture_output=True)',
+        'tests/test_default_mode_is_main.py::test_run_now_types_what_a_proposal_says_into_the_session_it_names_with_cmux_send_whatever_it_is',
+    ),
+    (
+        "a mode that can't be read is the default mode",
+        SE,
+        '    except Exception:  # noqa: BLE001 - never let the mode lookup change what a typing does\n        return False',
+        '    except Exception:  # noqa: BLE001 - never let the mode lookup change what a typing does\n        return True',
+        'tests/test_session_effects_mode_switch.py::test_a_mode_that_cant_be_read_is_the_default_mode',
+    ),
+    (
+        'the send script runs as it always did in the default mode',
+        SEND,
+        '    if not session_effects.active():\n        legacy_main(args)',
+        '    if False:\n        legacy_main(args)',
+        'tests/test_default_mode_is_main.py::test_the_send_script_never_refuses_a_loop_in_the_default_mode',
+    ),
+    (
+        'the send script reads a time-out as a refusal in the default mode',
+        SEND,
+        '        answers[method.rsplit("_", 1)[-1]] = (rc, body)\n        return ({} if body is None else body) if rc == 0 else None\n\n    keys = session_effects.Keys(session_effects.PASSTHROUGH',
+        '        answers[method.rsplit("_", 1)[-1]] = (rc, body)\n        return None\n\n    keys = session_effects.Keys(session_effects.PASSTHROUGH',
+        'tests/test_default_mode_is_main.py::test_the_send_script_on_success_prints_and_logs_what_it_always_did',
+    ),
+    (
+        'the merge script adds its Pro options only in Pro mode',
+        MERGE,
+        '    if pro:\n        # What allowed the typing',
+        '    if True:\n        # What allowed the typing',
+        'tests/test_default_mode_is_main.py::test_the_merge_script_sends_the_same_command_with_the_same_wait_and_reads_failures_as_before',
+    ),
+    (
+        'the merge script waits as long as it always did in the default mode',
+        MERGE,
+        'timeout=45 if pro else 20,',
+        'timeout=45,',
+        'tests/test_default_mode_is_main.py::test_the_merge_script_sends_the_same_command_with_the_same_wait_and_reads_failures_as_before',
+    ),
+    (
+        'the merge script reads exit status 5 as a time-out only in Pro mode',
+        MERGE,
+        '    if pro and send.returncode == 5:',
+        '    if send.returncode == 5:',
+        'tests/test_default_mode_is_main.py::test_the_merge_script_sends_the_same_command_with_the_same_wait_and_reads_failures_as_before',
+    ),
+    (
+        'the pulse runs the send script as it always did in the default mode',
+        PULSE,
+        '    if pro:\n        # What allowed this is the standing',
+        '    if True:\n        # What allowed this is the standing',
+        'tests/test_default_mode_is_main.py::test_the_pulse_runs_the_send_script_with_only_the_arguments_it_always_had',
+    ),
+    (
+        'the pulse reads exit status 5 as a time-out only in Pro mode',
+        PULSE,
+        '    if pro and rc == 5:',
+        '    if rc == 5:',
+        'tests/test_default_mode_is_main.py::test_every_failed_exit_status_of_the_send_script_is_one_failed_send_to_the_pulse',
+    ),
+    (
+        'the pulse runs the merge script as it always did in the default mode',
+        PULSE,
+        '    if session_effects.active():\n        cmd += ["--authorized-by", "standing"]',
+        '    if True:\n        cmd += ["--authorized-by", "standing"]',
+        'tests/test_default_mode_is_main.py::test_the_pulse_runs_the_merge_script_with_only_its_old_arguments',
+    ),
+    (
+        'a good dispatch clears a park marker in Pro mode only',
+        PULSE,
+        '        if session_effects.active():\n            target.pop("parkedBy", None)',
+        '        if True:\n            target.pop("parkedBy", None)',
+        'tests/test_default_mode_is_main.py::test_a_good_dispatch_leaves_a_stale_park_marker_as_it_found_it',
+    ),
+    (
+        'a time-out while typing into a new workspace is a refusal only in Pro mode',
+        PULSE,
+        '    if _last_rpc_rc == 124 and session_effects.active():',
+        '    if _last_rpc_rc == 124:',
+        'tests/test_default_mode_is_main.py::test_a_task_is_started_with_two_keystroke_calls_and_nothing_is_recorded',
+    ),
+    (
+        'a task is started in the default mode without recording',
+        PULSE,
+        '    if not session_effects.active():\n        return session_effects.PASSTHROUGH  # the default mode',
+        '    if False:\n        return session_effects.PASSTHROUGH  # the default mode',
+        'tests/test_default_mode_is_main.py::test_an_unwritable_effects_folder_changes_nothing_when_a_task_is_started',
+    ),
+    (
+        "a Slack capture that isn't auto-start is refused in Pro mode only",
+        PULSE,
+        '    if session_effects.active() and str(item.get("source") or "").startswith("slack-react:")',
+        '    if str(item.get("source") or "").startswith("slack-react:")',
+        'tests/test_default_mode_is_main.py::test_a_slack_capture_that_isnt_auto_start_is_still_started_by_the_function',
+    ),
+    (
+        'the pulse checks it can write the record in Pro mode only',
+        PULSE,
+        '    if session_effects.active() and not session_effects.writable():',
+        '    if not session_effects.writable():',
+        'tests/test_default_mode_is_main.py::test_an_unwritable_effects_folder_changes_nothing_when_a_task_is_started',
+    ),
+    (
+        "the parked-tasks card is Pro mode's",
+        PULSE,
+        '    parked = [] if dry_run or not session_effects.active() else _parked_tasks()',
+        '    parked = [] if dry_run else _parked_tasks()',
+        'tests/test_default_mode_is_main.py::test_no_card_is_added_for_a_parked_task',
+    ),
+    (
+        'the Slack session records and checks only in Pro mode',
+        CS,
+        '    if session_effects.active():  # asked once, here: the default mode types as it always did, recording nothing',
+        '    if True:  # asked once, here: the default mode types as it always did, recording nothing',
+        'tests/test_default_mode_is_main.py::test_a_message_from_anyone_is_typed_into_the_session_with_its_header_then_a_carriage_return',
+    ),
+    (
+        'the Slack session types without a scope in the default mode',
+        CS,
+        '    if paths is not None and not session_effects.active():',
+        '    if False:',
+        'tests/test_default_mode_is_main.py::test_the_slack_session_types_without_any_scope_as_it_always_could',
+    ),
+    (
+        'a Slack time-out is a refusal only in Pro mode',
+        CS,
+        '        if session_effects.active() and ran and ran[1].startswith("timeout"):',
+        '        if ran and ran[1].startswith("timeout"):',
+        'tests/test_session_effects_mode_switch.py::test_a_scope_begun_in_pro_keeps_its_records_when_the_mode_changes_before_the_text_goes_out',
+    ),
+    (
+        'a batch whose mode changed closes what it had begun',
+        CS,
+        '    if effect_id == session_effects.PASSTHROUGH:  # the mode changed part-way',
+        '    if False:  # the mode changed part-way',
+        'tests/test_session_effects_mode_switch.py::test_a_batch_whose_mode_changed_part_way_closes_what_it_had_begun_and_types_unrecorded',
+    ),
+    (
+        "only the owner's Slack messages are queued, in Pro mode only",
+        CL,
+        '        if session_effects.active() and not typed_for(paths, rec, env):',
+        '        if not typed_for(paths, rec, env):',
+        'tests/test_default_mode_is_main.py::test_every_message_from_the_conversation_is_queued_to_be_typed_whoever_wrote_it_and_nobody_is_told',
+    ),
+    (
+        'the back-soon note goes to the person target in Pro mode only',
+        CL,
+        '                                   notice_channel(paths, channel) if session_effects.active() else channel, None),',
+        '                                   notice_channel(paths, channel), None),',
+        'tests/test_default_mode_is_main.py::test_the_back_soon_note_goes_to_the_conversation_the_message_came_in_on_even_for_a_person_target',
+    ),
+    (
+        'an expired message is told so in Pro mode only',
+        CL,
+        '        for r in expired if pro else ():',
+        '        for r in expired:',
+        'tests/test_default_mode_is_main.py::test_messages_queued_by_anyone_are_delivered_and_an_expired_one_is_dropped_without_a_word',
+    ),
+    (
+        'queued messages are checked against the owner in Pro mode only',
+        CL,
+        '    foreign = [r for r in fresh if classify_author(paths, r, env)[0] not in ("owner", "dm")] if pro else []',
+        '    foreign = [r for r in fresh if classify_author(paths, r, env)[0] not in ("owner", "dm")]',
+        'tests/test_default_mode_is_main.py::test_messages_queued_by_anyone_are_delivered_and_an_expired_one_is_dropped_without_a_word',
+    ),
+    (
+        'restore reads a time-out as a refusal in Pro mode only',
+        RS,
+        '        if rc == 124 and session_effects.active():',
+        '        if rc == 124:',
+        'tests/test_default_mode_is_main.py::test_a_cmux_time_out_in_restore_is_a_failure_with_the_exceptions_own_words',
+    ),
+    (
+        "restore's time-out words are Pro mode's",
+        RS,
+        '        if session_effects.active():  # Pro mode tells a time-out from a refusal; the default mode never did',
+        '        if True:  # Pro mode tells a time-out from a refusal; the default mode never did',
+        'tests/test_default_mode_is_main.py::test_a_cmux_time_out_in_restore_is_a_failure_with_the_exceptions_own_words',
+    ),
+    (
+        'restore says what cmux said in the default mode',
+        RS,
+        '        print(f"  ERROR: send_text failed: {last_error[0]}" if not session_effects.active()',
+        '        print(f"  ERROR: send_text failed: {last_error[0]}" if False',
+        'tests/test_default_mode_is_main.py::test_restore_tries_the_panels_id_when_the_first_try_fails_and_says_what_cmux_said',
+    ),
+    (
+        'run now checks and records only in Pro mode',
+        TS,
+        '    if not session_effects.active():\n        try:\n            session_effects.run_now_legacy',
+        '    if False:\n        try:\n            session_effects.run_now_legacy',
+        'tests/test_default_mode_is_main.py::test_run_now_types_what_a_proposal_says_into_the_session_it_names_with_cmux_send_whatever_it_is',
+    ),
+    (
+        'Queue to start clears a park marker in Pro mode only',
+        TS,
+        '        if session_effects.active():\n            target.pop("parkedBy", None)  # asking again ends a park (Pro mode)',
+        '        if True:\n            target.pop("parkedBy", None)  # asking again ends a park (Pro mode)',
+        'tests/test_default_mode_is_main.py::test_a_good_dispatch_leaves_a_stale_park_marker_as_it_found_it',
+    ),
+    (
+        "a parked task's row is changed in Pro mode only",
+        "bin/render-assistant-page.py",
+        '                if pro and it.get("parkedBy"):',
+        '                if it.get("parkedBy"):',
+        'tests/test_default_mode_is_main.py::test_a_blocked_or_parked_task_row_looks_as_it_always_did',
+    ),
+    (
+        "a blocked task's reason is a tooltip in Pro mode only",
+        "bin/render-assistant-page.py",
+        '                          if pro and status == "blocked" and it.get("statusReason") else "")',
+        '                          if status == "blocked" and it.get("statusReason") else "")',
+        'tests/test_default_mode_is_main.py::test_a_blocked_or_parked_task_row_looks_as_it_always_did',
+    ),
+    (
+        'the card for a refused typing is shown in Pro mode only',
+        "bin/render-assistant-page.py",
+        '    keys = DISPATCH_NOTICE_KEYS if mode.is_pro() else DISPATCH_NOTICE_KEYS[:2]',
+        '    keys = DISPATCH_NOTICE_KEYS',
+        'tests/test_default_mode_is_main.py::test_the_tasks_tab_shows_no_card_for_a_refused_typing_and_the_old_cards_keep_their_backticks',
+    ),
+    (
+        'backticks become code only on the card for a refused typing',
+        "bin/render-assistant-page.py",
+        '    if key != "dispatch-held-no-record":\n        return escaped',
+        '    if False:\n        return escaped',
+        'tests/test_default_mode_is_main.py::test_the_tasks_tab_shows_no_card_for_a_refused_typing_and_the_old_cards_keep_their_backticks',
+    ),
+    (
+        "the doctor's owner check runs in Pro mode only",
+        DOC,
+        'if c is not check_slack_owner or mode.is_pro()]',
+        'if True]',
+        'tests/test_session_effects_mode_switch.py::test_the_doctors_owner_check_runs_in_pro_and_not_in_the_default_mode',
+    ),
     # --- the dashboard ----------------------------------------------------------------------------------------
     (
         "the Tasks tab shows the card for dispatch that can't record what it types",
@@ -752,10 +1046,11 @@ CHECKS = (
     (
         "the pulse says a nudge or /cleanup was allowed by the standing setting",
         PULSE,
-        '        "--auth-kind", "standing",\n        "--auth-ref", source,',
-        '        "--auth-kind", "tap",\n        "--auth-ref", source,',
+        '        cmd += ["--source", source, "--auth-kind", "standing", "--auth-ref", source]',
+        '        cmd += ["--source", source, "--auth-kind", "tap", "--auth-ref", source]',
         S + "test_the_pulse_says_it_is_the_standing_setting_and_which_fixed_nudge",
     ),
+
     (
         "the pulse records /cleanup and the stalled nudge under their own names",
         PULSE,
@@ -766,31 +1061,35 @@ CHECKS = (
     (
         "the pulse waits for cmux-send.py as long as it can take",
         PULSE,
-        "    ], timeout=CMUX_SEND_TIMEOUT_SEC)",
-        "    ], timeout=30)",
+        '        rc, out, err = run(cmd, timeout=CMUX_SEND_TIMEOUT_SEC)',
+        '        rc, out, err = run(cmd, timeout=30)',
         S + "test_the_callers_wait_longer_than_the_script_can_take",
     ),
+
     (
         "the pulse runs merge dispatch as the standing setting",
         PULSE,
-        '"--pr", str(pr), "--authorized-by", "standing"]',
-        '"--pr", str(pr)]',
+        '        cmd += ["--authorized-by", "standing"]',
+        '        cmd += []',
         S + "test_the_pulse_runs_merge_dispatch_as_standing_and_a_person_as_a_tap",
     ),
+
     (
         "merge dispatch passes what allowed the typing on to cmux-send",
         MERGE,
-        '            "--auth-kind", authorized_by,',
-        '            "--auth-kind", "tap",',
+        '        argv += ["--source", "merge", "--auth-kind", authorized_by, "--auth-ref", "merge"]',
+        '        argv += ["--source", "merge", "--auth-kind", "tap", "--auth-ref", "merge"]',
         S + "test_merge_dispatch_says_who_allowed_it_and_reports_a_refusal",
     ),
+
     (
         "merge dispatch waits for cmux-send.py as long as it can take",
         MERGE,
-        "capture_output=True, text=True, timeout=45,",
-        "capture_output=True, text=True, timeout=20,",
+        'timeout=45 if pro else 20,',
+        'timeout=20 if pro else 20,',
         S + "test_the_callers_wait_longer_than_the_script_can_take",
     ),
+
     (
         "cmux-send stops with exit 4 when the typing is refused",
         SEND,
@@ -815,10 +1114,11 @@ CHECKS = (
     (
         "cmux-send takes a null answer with exit status zero as an answer",
         SEND,
-        "        return ({} if body is None else body) if rc == 0 else None",
-        "        return body if rc == 0 else None",
+        '        answers[method.rsplit("_", 1)[-1]] = (rc, body)  # "text" or "key"\n        if rc == 124:\n            raise TimeoutError(method)\n        return ({} if body is None else body) if rc == 0 else None',
+        '        answers[method.rsplit("_", 1)[-1]] = (rc, body)  # "text" or "key"\n        if rc == 124:\n            raise TimeoutError(method)\n        return body if rc == 0 else None',
         S + "test_a_null_or_empty_answer_with_exit_status_zero_is_not_a_refusal",
     ),
+
     (
         "cmux-send accepts a caller name with a space",
         SEND,
@@ -879,10 +1179,11 @@ CHECKS = (
     (
         "a timeout while typing into the Slack session is not taken for a refusal",
         CS,
-        '        if ran and ran[1].startswith("timeout"):\n            raise TimeoutError(method)',
+        '        if session_effects.active() and ran and ran[1].startswith("timeout"):\n            raise TimeoutError(method)',
         '        if False:\n            raise TimeoutError(method)',
         C + "test_the_typing_transport_tells_a_timeout_a_refusal_and_a_silent_success_apart",
     ),
+
     (
         "an exit status of zero is an answer in the Slack session",
         CS,
@@ -942,10 +1243,11 @@ CHECKS = (
     (
         "each message in a batch has its own intent before anything is typed",
         CS,
-        "    for older in batch:\n        begin(**older)\n",
-        "",
+        '        for older in batch:\n            begin(**older)\n        begin(ref=ref',
+        '        begin(ref=ref',
         C + "test_each_message_in_a_batch_has_its_own_intent_begun_before_any_keystroke",
     ),
+
     (
         "a batch that is refused closes the intents it had begun",
         CS,
@@ -1026,10 +1328,11 @@ CHECKS = (
     (
         "a message that gave up after hours is told so",
         CL,
-        "        for r in expired:\n            _tell_dropped(paths, r, env, DROPPED_EXPIRED)",
-        "        for r in []:\n            _tell_dropped(paths, r, env, DROPPED_EXPIRED)",
+        '        for r in expired if pro else ():\n            _tell_dropped(paths, r, env, DROPPED_EXPIRED)',
+        '        for r in []:\n            _tell_dropped(paths, r, env, DROPPED_EXPIRED)',
         C + "test_a_message_that_gave_up_after_hours_is_told_so_once",
     ),
+
     (
         "a message refused for want of a record still gets the back-soon notice",
         CL,
@@ -1061,10 +1364,11 @@ CHECKS = (
     (
         "a channel with no known owner types nothing",
         CL,
-        '    return ("dm" if _target(paths).startswith("D") else "unknown-owner"), ""',
+        '    return ("dm" if _safe_target(paths).startswith("D") else "unknown-owner"), ""',
         '    return "dm", ""',
         C + ONLY_OWNER,
     ),
+
     (
         "an Enterprise Grid member id counts like any other",
         CL,
@@ -1075,17 +1379,19 @@ CHECKS = (
     (
         "a message from someone else is never queued for typing",
         CL,
-        "        if not typed_for(paths, rec, env):\n            tell_ignored(paths, rec, env)\n            continue",
-        "        if False:\n            tell_ignored(paths, rec, env)\n            continue",
+        "        if session_effects.active() and not typed_for(paths, rec, env):  # Pro mode: only the owner's are typed\n            tell_ignored(paths, rec, env)\n            continue",
+        "        if False:  # Pro mode: only the owner's are typed\n            tell_ignored(paths, rec, env)\n            continue",
         C + "test_a_message_from_someone_else_is_recorded_as_received_but_never_queued",
     ),
+
     (
         "the owner is told when their message was ignored",
         CL,
-        "        if not typed_for(paths, rec, env):\n            tell_ignored(paths, rec, env)",
-        "        if not typed_for(paths, rec, env):\n            pass",
+        "        if session_effects.active() and not typed_for(paths, rec, env):  # Pro mode: only the owner's are typed\n            tell_ignored(paths, rec, env)",
+        "        if session_effects.active() and not typed_for(paths, rec, env):  # Pro mode: only the owner's are typed\n            pass",
         C + "test_a_message_from_someone_else_is_recorded_as_received_but_never_queued",
     ),
+
     (
         "the reply about an ignored message goes once a day",
         CL,
@@ -1125,10 +1431,11 @@ CHECKS = (
     (
         "run now refuses a session that isn't a workspace:N",
         TS,
-        '                if not re.fullmatch(r"workspace:[0-9]{1,18}", str(ws_ref)):',
-        "                if False:",
+        '    if not re.fullmatch(r"workspace:[0-9]{1,18}", str(ws_ref)):',
+        '    if False:',
         D + "test_a_bad_session_or_text_is_refused_with_nothing_typed_and_the_proposal_untouched",
     ),
+
     (
         "run now refuses text longer than 500 characters",
         TS,
@@ -1146,10 +1453,11 @@ CHECKS = (
     (
         "run now doesn't mark a proposal as working when nothing was typed",
         TS,
-        "                if sent.returncode != 0:\n                    return False,",
-        "                if False:\n                    return False,",
+        '    return _run_now_failure(sent) if sent.returncode != 0 else ""',
+        '    return ""',
         D + "test_when_the_script_refuses_the_proposal_is_not_marked_working_and_the_reason_is_shown",
     ),
+
     (
         "run now says when the text went out and Enter didn't",
         TS,
@@ -1167,10 +1475,11 @@ CHECKS = (
     (
         "run now is recorded as a person's tap on its route",
         TS,
-        '"--auth-kind", "tap",\n                         "--auth-ref", "/proposal/run-now"],',
-        '"--auth-kind", "standing",\n                         "--auth-ref", "/proposal/run-now"],',
+        '"--caller", "todo-server", "--source", "run-now", "--auth-kind", "tap",',
+        '"--caller", "todo-server", "--source", "run-now", "--auth-kind", "standing",',
         D + "test_run_now_is_recorded_as_a_tap_on_the_route_and_types_through_the_one_script",
     ),
+
     # --- restore ----------------------------------------------------------------------------------------------
     (
         "restore types nothing when the intent can't be recorded",
@@ -1203,17 +1512,19 @@ CHECKS = (
     (
         "restore says a timeout may have landed",
         RS,
-        "        if rc == 124:\n            raise TimeoutError(method)  # the keystroke may have landed",
-        "        if False:\n            raise TimeoutError(method)  # the keystroke may have landed",
+        '        if rc == 124 and session_effects.active():\n            raise TimeoutError(method)',
+        '        if False:\n            raise TimeoutError(method)',
         R + "test_a_timeout_on_the_text_is_unknown_and_is_not_tried_again_by_the_other_id",
     ),
+
     (
         "restore takes a timeout of cmux for a timeout",
         RS,
-        '    except subprocess.TimeoutExpired:\n        return 124, "", "timeout"',
-        '    except subprocess.TimeoutExpired:\n        return 1, "", "timeout"',
+        '        if session_effects.active():  # Pro mode tells a time-out from a refusal; the default mode never did\n            return 124, "", "timeout"',
+        '        if session_effects.active():  # Pro mode tells a time-out from a refusal; the default mode never did\n            return 1, "", "timeout"',
         R + "test_run_cmux_reports_a_timeout_as_one",
     ),
+
     (
         "keys that can't be made close restore's intent as failed",
         RS,

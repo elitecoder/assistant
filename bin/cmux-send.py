@@ -142,6 +142,93 @@ def rpc(method, payload):
     return rc, body
 
 
+def legacy_main(args):
+    """What this script did before typing was recorded, exactly: the default mode runs this. Its keystrokes go through
+    the one pass-through in `assistant.session_effects` (the fence has one place to look), and its results and exit
+    statuses are 0, 1 and 2 only: a time-out is a refusal here, as it always was."""
+    ts = utc_iso()
+    started_at = time.time()
+
+    surface_id, surface_ref, tty, ws_title = resolve_terminal_surface(args.ws)
+    transcript_path = find_transcript_for_ws(args.ws)
+    size_before = file_size(transcript_path)
+
+    record = {
+        "ts": ts,
+        "caller": args.caller,
+        "caller_pid": os.getppid(),
+        "target_ws_ref": args.ws,
+        "target_ws_title": ws_title,
+        "target_surface_id": surface_id,
+        "target_surface_ref": surface_ref,
+        "target_tty": tty,
+        "text": args.text,
+        "send_enter": bool(args.enter),
+        "transcript_path": transcript_path,
+        "transcript_size_before": size_before,
+    }
+
+    if not surface_id:
+        record["outcome"] = "no_terminal_surface"
+        record["transcript_size_after"] = size_before
+        record["transcript_size_delta"] = 0
+        if not args.no_log:
+            append_log(record)
+        print(json.dumps(record, indent=2))
+        sys.exit(1)
+
+    answers = {}
+
+    def transport(method, payload):
+        rc, body = rpc(method, payload)
+        answers[method.rsplit("_", 1)[-1]] = (rc, body)
+        return ({} if body is None else body) if rc == 0 else None
+
+    keys = session_effects.Keys(session_effects.PASSTHROUGH, transport, surface_id)
+
+    # Step 1: send_text
+    keys.text(args.text)
+    rc1, body1 = answers["text"]
+    record["rpc_send_text"] = {"rc": rc1, "body": body1}
+    if rc1 != 0:
+        record["outcome"] = "rpc_send_text_failed"
+        size_after = file_size(transcript_path)
+        record["transcript_size_after"] = size_after
+        record["transcript_size_delta"] = (size_after or 0) - (size_before or 0)
+        if not args.no_log:
+            append_log(record)
+        print(json.dumps(record, indent=2))
+        sys.exit(2)
+
+    # Step 2 (optional): send_key Enter
+    if args.enter:
+        keys.key("enter")
+        rc2, body2 = answers["key"]
+        record["rpc_send_key"] = {"rc": rc2, "body": body2}
+        if rc2 != 0:
+            record["outcome"] = "rpc_send_key_failed"
+            size_after = file_size(transcript_path)
+            record["transcript_size_after"] = size_after
+            record["transcript_size_delta"] = (size_after or 0) - (size_before or 0)
+            if not args.no_log:
+                append_log(record)
+            print(json.dumps(record, indent=2))
+            sys.exit(2)
+
+    # Wait for claude to ingest + flush before stat'ing
+    time.sleep(args.post_send_wait)
+    size_after = file_size(transcript_path)
+    record["transcript_size_after"] = size_after
+    record["transcript_size_delta"] = (size_after or 0) - (size_before or 0)
+    record["wall_ms"] = int((time.time() - started_at) * 1000)
+    record["outcome"] = "sent"
+
+    if not args.no_log:
+        append_log(record)
+    print(json.dumps(record, indent=2))
+    sys.exit(0)
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--ws", required=True, help="workspace:N")
@@ -161,6 +248,10 @@ def main():
                    help="seconds to wait before re-stat'ing the transcript "
                         "for the size-delta proof (default 2.5)")
     args = p.parse_args()
+
+    # Asked once, here: the default mode runs what this script always did, and nothing below.
+    if not session_effects.active():
+        legacy_main(args)
 
     ts = utc_iso()
     started_at = time.time()

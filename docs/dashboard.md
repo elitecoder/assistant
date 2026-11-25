@@ -88,9 +88,10 @@ page, so they can do whatever the dashboard can.
 - **Awaiting input**, **Session details**, **Background work**, and **Tasks**
   show open cards, per-workspace detail, background work, and your TODO list.
   The Tasks tab also shows a **Dispatch paused** card when Assistant started
-  no task this round: either it couldn't count your busy sessions, or its title
-  reads "can't record what it types", which means it couldn't write its record
-  of what it types into your sessions. For the second, check that your disk
+  no task this round because it couldn't count your busy sessions. In Pro mode
+  a card whose title reads "can't record what it types" can also appear: it
+  means Assistant couldn't write its record of what it types into your
+  sessions. For that one, check that your disk
   isn't full (`df -h ~`) and that `~/.assistant/effects` can be written to
   (`ls -ld ~/.assistant/effects`). The card lists the tasks still waiting.
   When Assistant had already started a session for a task and then wouldn't
