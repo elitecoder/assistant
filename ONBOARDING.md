@@ -167,9 +167,9 @@ React with your machine's emoji on any Slack thread to capture it as a `/todo`.
 Needs `SLACK_APP_TOKEN` + `SLACK_BOT_TOKEN` in `~/.zprofile`, and `SLACK_USER_ID` set to
 your own Slack user id (in Slack: your profile, the three dots, Copy member ID). The Slack
 channel setup also saves one, if its target is your own user id. Without it, what you react
-to is saved as an **Ask me** task and never starts by itself (in Pro mode, a reaction
-from anyone in the channel starts a task, as it did before; set it to restrict that to
-you). Then:
+to is saved as an **Ask me** task and never starts by itself (in Pro mode, when it is not set
+at all, a reaction from anyone in the channel starts a task, as it did before; set it to
+restrict that to you). Then:
 
 ```bash
 launchctl load ~/Library/LaunchAgents/com.assistant.slack-reactor.plist

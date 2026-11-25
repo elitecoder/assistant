@@ -1,10 +1,12 @@
 // Default or Pro mode, as src/assistant/mode.py current() decides it. The reactor asks when it handles a
 // reaction, not only at start: the mode can change while it runs.
 //
-// The key `mode` in ~/.assistant/config.json: "pro" is Pro; any other value that is there is the default mode; a
-// config that can't be read or parsed is the default mode. Only when the key is absent (or null) does Python
-// decide, from what is installed (goals, notifications, a saved brief, the Pro skills); the heuristic lives
-// there, so this runs bin/assistant-mode.py instead of copying it. Anything that goes wrong is the default mode.
+// The reactor is in Pro mode only when bin/assistant-mode.py prints `pro`. Python reads the config with its own
+// quirks (a file it can't decode, a huge integer or deep nesting makes it answer default though the file says
+// "pro"), and those are not copied here. This file's own reading of ~/.assistant/config.json can only say
+// "default" (a saved mode other than "pro", a file it can't read or parse, anything but an object: no process is
+// run) or "ask Python" (the saved mode is "pro", or the key is absent or null). Anything that goes wrong is the
+// default mode.
 import fs from 'node:fs'
 import { execFile } from 'node:child_process'
 import { join } from 'node:path'
@@ -38,7 +40,7 @@ export const runCommand = (file, args, timeout = TIMEOUT_MS) =>
     })
   })
 
-// What the mode is when the config doesn't say: the first interpreter of 3.11 or newer, else the first one found,
+// What Python says the mode is: the first interpreter of 3.11 or newer, else the first one found,
 // else python3 on PATH, asked to print the mode.
 async function askPython({ env, run, isExec, script }) {
   const found = pythonCandidates(env).filter(isExec)
@@ -86,7 +88,7 @@ export function makeModeReader({
     } catch (e) {
       if (e.code !== 'ENOENT') return 'default' // unreadable or not JSON
     }
-    if (value === undefined || value === null) return heuristic()
-    return value === 'pro' ? 'pro' : 'default'
+    if (value === undefined || value === null || value === 'pro') return heuristic()
+    return 'default'
   }
 }

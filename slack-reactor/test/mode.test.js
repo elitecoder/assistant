@@ -31,10 +31,42 @@ const reader = (config, opts = {}) => {
   return { read, logs }
 }
 
-test('a saved "pro" is Pro mode and no interpreter is asked', async () => {
+test('a saved "pro" is believed only when bin/assistant-mode.py says pro', async () => {
+  for (const [printed, expected] of [['pro\n', 'pro'], ['default\n', 'default'], ['\n', 'default'], ['maybe\n', 'default']]) {
+    const f = fake({ answer: { code: 0, stdout: printed } })
+    assert.equal(await reader({ mode: 'pro' }, { run: f.run }).read(), expected, printed)
+    assert.deepEqual(f.calls.at(-1), ['/opt/homebrew/bin/python3', MODE_SCRIPT])
+  }
+})
+
+test('a saved "pro" with a command that fails or times out is the default mode, said once', async () => {
+  const { read, logs } = reader({ mode: 'pro' }, { run: fake({ answer: { code: null, stdout: '' } }).run, now: () => 0 })
+  assert.equal(await read(), 'default')
+  assert.equal(await read(), 'default')
+  assert.equal(logs.length, 1)
+})
+
+test('a saved "pro" the command confirms is asked once a minute, not once a reaction', async () => {
   const f = fake()
-  assert.equal(await reader({ mode: 'pro' }, { run: f.run }).read(), 'pro')
-  assert.deepEqual(f.calls, [])
+  const { read } = reader({ mode: 'pro' }, { run: f.run, now: () => 5 })
+  assert.equal(await read(), 'pro')
+  assert.equal(await read(), 'pro')
+  assert.equal(f.calls.filter((c) => c[1] === MODE_SCRIPT).length, 1)
+})
+
+test('a file Python cannot read but that says "pro" is the default mode when Python says so', async () => {
+  const stubSaysDefault = fake({ answer: { code: 0, stdout: 'default\n' } }) // what Python really prints for these
+  const invalidUtf8 = Buffer.concat([Buffer.from('{"mode":"pro","note":"'), Buffer.from([0xff, 0xfe]), Buffer.from('"}')])
+  const huge = `{"mode":"pro","n":${'9'.repeat(5000)}}`
+  const deep = `{"mode":"pro","d":${'['.repeat(5000)}${']'.repeat(5000)}}`
+  for (const body of [invalidUtf8, huge, deep]) {
+    const home = homeWith()
+    fs.mkdirSync(path.join(home, '.assistant'))
+    fs.writeFileSync(path.join(home, '.assistant', 'config.json'), body)
+    const read = makeModeReader({ home, env: {}, run: stubSaysDefault.run, isExec: () => true, now: () => 0 })
+    assert.equal(await read(), 'default')
+  }
+  assert.ok(stubSaysDefault.calls.some((c) => c[1] === MODE_SCRIPT)) // it was asked, and its answer was taken
 })
 
 test('any other saved value is the default mode, a known mode or not, and no interpreter is asked', async () => {
@@ -113,6 +145,18 @@ test('the answer is kept for a minute, a burst costs one call, and then it is as
   t += 2000
   await read()
   assert.equal(scriptCalls(), 1)
+})
+
+test('a saved mode that changes from pro to anything else takes effect on the next reaction, from the cache or not', async () => {
+  const home = homeWith({ mode: 'pro' })
+  const f = fake()
+  const read = makeModeReader({ home, env: {}, run: f.run, isExec: () => true, now: () => 0 })
+  assert.equal(await read(), 'pro')
+  fs.writeFileSync(path.join(home, '.assistant', 'config.json'), JSON.stringify({ mode: 'default' }))
+  assert.equal(await read(), 'default')
+  fs.writeFileSync(path.join(home, '.assistant', 'config.json'), 'broken')
+  assert.equal(await read(), 'default')
+  assert.equal(f.calls.filter((c) => c[1] === MODE_SCRIPT).length, 1)
 })
 
 test('a change in the saved mode is seen at once, without waiting out the cache', async () => {

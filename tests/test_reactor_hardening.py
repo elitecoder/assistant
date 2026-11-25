@@ -219,5 +219,5 @@ def test_a_task_the_reactor_could_not_attribute_waits_for_the_owner_to_decide(ho
 def test_the_installer_tells_you_to_set_your_slack_user_id():
     # The runbook prints only on --apply, which a test must not run, so read what it prints from the script.
     text = (REPO / "install.sh").read_text()
-    assert "and SLACK_USER_ID to\"" in text and "never starts by itself), then:" in text
+    assert "and SLACK_USER_ID to\"" in text and "never starts by itself,\"" in text and "or in Pro mode a reaction from anyone starts a task), then:" in text
     assert "your profile, the three dots, Copy member" in text

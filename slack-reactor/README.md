@@ -69,17 +69,19 @@ the first of these:
 
 - **Owner known:** your reaction creates the task and it starts by itself (unless
   `TODO_AUTODISPATCH=0`). A reaction from anyone else is ignored.
-- **Owner unknown, Pro mode:** every member's reaction is captured as a plain
-  task and starts by itself, as it did before the owner rule (unless
-  `TODO_AUTODISPATCH=0`): the normal priority, no title prefix, the check mark
-  reaction, no limit on how many wait. Until you set `SLACK_USER_ID`, anyone in a
-  channel the bot is in can start a task this way; the start-up line and the
-  doctor say so. In Pro mode a `SLACK_USER_ID` that isn't a user id is skipped
-  (still reported in the log) and `slack.owner`, then `slack.target`, are tried
-  before the owner is called unknown. The reactor asks for the mode when it
-  handles a reaction: `mode` in `~/.assistant/config.json`, or, when that is
-  missing, what `bin/assistant-mode.py` prints. If that can't be worked out it is
-  the default mode, with one line in the log.
+- **Owner unknown, Pro mode, and `SLACK_USER_ID` not set at all (or empty):**
+  every member's reaction is captured as a plain task and starts by itself, as it
+  did before the owner rule (unless `TODO_AUTODISPATCH=0`): the normal priority,
+  no title prefix, the check mark reaction, no limit on how many wait, and the
+  log line says `owner unknown: captured as before the owner rule`. Anyone in a
+  channel the bot is in can start a task this way until you set `SLACK_USER_ID`;
+  the start-up line says so, and so does the doctor when your Slack target is a
+  channel. A `SLACK_USER_ID` that is set but isn't a user id (a typo, spaces) is
+  not this case: it behaves as in the default mode, below. The reactor is in Pro
+  mode only when `bin/assistant-mode.py` prints `pro`; it asks when it handles a
+  reaction (and not at all when `mode` in `~/.assistant/config.json` is saved as
+  something other than `pro`), and keeps the answer for a minute. If it can't be
+  asked, the install is treated as the default mode, with one line in the log.
 - **Owner unknown, default mode:** every reaction is captured, so nothing you react to is lost,
   but as an **Ask me** task that never starts by itself, whatever
   `TODO_AUTODISPATCH` says. The card's title starts with "Not started, reaction
