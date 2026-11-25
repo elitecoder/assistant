@@ -622,8 +622,8 @@ CHECKS = (
     (
         "a start takes one typing of each source",
         W,
-        "        if source in typed.get(index, {}):\n            continue",
-        "        if False:\n            continue",
+        "        if source in typed.get(index, {}):\n            alone.add(index)",
+        "        if False:\n            alone.add(index)",
         T + "test_two_starts_of_one_task_each_keep_their_own_typings_one_to_one",
     ),
     (
@@ -671,8 +671,8 @@ CHECKS = (
     (
         "the trail reads as one story through the real stores",
         W,
-        "    steps = _event_steps(events, typed) + _effect_steps(effects, now, claimed)",
-        "    steps = _event_steps(events, {}) + _effect_steps(effects, now, ())",
+        "    steps = _event_steps(events, typed, alone) + _effect_steps(effects, now, claimed)",
+        "    steps = _event_steps(events, {}, alone) + _effect_steps(effects, now, ())",
         "tests/test_why_typing.py::test_a_start_that_answered_trust_and_typed_the_instruction_reads_as_one_step",
     ),
     (
@@ -723,5 +723,26 @@ CHECKS = (
         'press "Queue to start" \'\n               "on {task} on the Tasks tab of the Assistant dashboard.")',
         'press "Queue to start" \'\n               "on {task} on the Tasks tab of the Assistant dashboard. ")',
         TRI + "test_a_session_whose_typing_was_refused_is_blocked_and_queue_to_start_really_opens_it_again",
+    ),
+    (
+        "a refused start that opened a session doesn't say no agent was started",
+        W,
+        '        return OPENED_NOT_TYPED if reason == "typing_refused" and alone else retry',
+        '        return retry',
+        T + "test_a_refused_start_with_no_workspace_says_it_did_not_start_an_agent_only_when_no_typing_is_shown_for_it",
+    ),
+    (
+        "a refusal says it was the instruction that was not typed",
+        W,
+        'REFUSED = {"typing_refused": ("Assistant opened a session but wouldn\'t type the task\'s instruction into it, because it "',
+        'REFUSED = {"typing_refused": ("Assistant opened a session but wouldn\'t type into it, because it "',
+        T + "test_a_refusal_next_to_a_trust_answer_that_was_typed_says_it_was_the_instruction_that_was_not_typed",
+    ),
+    (
+        "a refusal in the real stores is told from a start that never opened a session",
+        W,
+        '        else:\n            alone.add(index)\n    return typed, claimed, alone',
+        '        else:\n            pass\n    return typed, claimed, alone',
+        TRI + "test_a_start_whose_trust_answer_went_out_and_whose_instruction_was_refused_before_the_task_was_stamped",
     ),
 )

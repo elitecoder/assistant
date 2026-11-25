@@ -862,9 +862,10 @@ def test_a_failed_start_absorbs_a_typing_only_when_its_own_sentence_says_what_be
     assert story([refused], [typing("trust", t=NOW), typing("task", "failed", t=NOW + 2)]) == [
         "Assistant answered the new session's folder-trust question.", REFUSED_TEXT + BLOCKED], "the trust answer was typed and is not mentioned"
     blocked = start(outcome="failed", ok=False, reason="typing_refused", workspace=WS)
-    assert story([blocked], [typing("trust", "failed", t=NOW)])[-1].startswith("Assistant opened a session but wouldn't type into it")
-    assert len(story([blocked], [typing("trust", "failed", t=NOW)])) == 1
+    assert story([blocked], [typing("task", "failed", t=NOW)]) == [
+        "Assistant opened a session but wouldn't type the task's instruction into it, because it couldn't record what it types. " + BLOCKED]
     assert len(story([blocked], [typing("trust", t=NOW)])) == 2, "a trust answer that went out is not a refusal"
+    assert len(story([blocked], [typing("trust", "failed", t=NOW)])) == 2, "the sentence is about the instruction, so a failed trust answer is shown"
     other = start(outcome="failed", ok=False, reason="other")
     assert len(story([other], [typing("task", "failed", t=NOW + 2)])) == 2, "a failure that says nothing about typing hides nothing"
     assert len(story([refused], [typing("trust", "failed", t=NOW)])) == 2, "that refusal is about the instruction, not the trust answer"
@@ -881,6 +882,26 @@ def test_a_failed_start_for_any_other_reason_shows_every_typing_it_does_not_ment
     assert "Assistant tried to type the task's instruction into its session, but it didn't go through." in refused_by_cmux
 
 
+def test_a_refused_start_with_no_workspace_says_it_did_not_start_an_agent_only_when_no_typing_is_shown_for_it():
+    refused = start(outcome="failed", ok=False, reason="typing_refused")
+    assert story([refused], []) == ["Assistant couldn't record what it types, so it didn't start an agent. It will try again by itself."]
+    said = story([refused], [typing("trust", t=NOW)])
+    assert said == ["Assistant answered the new session's folder-trust question.",
+                    "Assistant opened a session but didn't type the task's instruction into it, because it couldn't record what it types. "
+                    "It will try again by itself."]
+    assert not [t for t in said if "didn't start an agent" in t]
+    far = story([refused], [typing("trust", t=NOW - 500)])
+    assert far[-1].startswith("Assistant couldn't record what it types, so it didn't start an agent."), "a typing that is no part of this start"
+
+
+def test_a_refusal_next_to_a_trust_answer_that_was_typed_says_it_was_the_instruction_that_was_not_typed():
+    blocked = start(outcome="failed", ok=False, reason="typing_refused", workspace=WS)
+    said = story([blocked], [typing("trust", t=NOW)])
+    assert said[0] == "Assistant answered the new session's folder-trust question."
+    assert said[1].startswith("Assistant opened a session but wouldn't type the task's instruction into it, because it couldn't record what it types.")
+    assert "wouldn't type into it" not in said[1]
+
+
 def test_a_refused_start_says_whether_the_task_was_blocked_and_what_to_do_and_names_the_task_only_when_it_has_an_id():
     parked = start(outcome="failed", ok=False, reason="session_refused_text", workspace=WS)
     assert story([parked], []) == [REFUSED_TEXT + BLOCKED]
@@ -890,7 +911,7 @@ def test_a_refused_start_says_whether_the_task_was_blocked_and_what_to_do_and_na
     stays = start(outcome="failed", ok=False, reason="session_refused_text")
     assert story([stays], []) == [REFUSED_TEXT + "It will try again by itself."]
     typing_blocked = start(outcome="failed", ok=False, reason="typing_refused", workspace=WS)
-    assert story([typing_blocked], []) == ["Assistant opened a session but wouldn't type into it, because it couldn't record what it types. " + BLOCKED]
+    assert story([typing_blocked], []) == ["Assistant opened a session but wouldn't type the task's instruction into it, because it couldn't record what it types. " + BLOCKED]
     before_any_session = start(outcome="failed", ok=False, reason="typing_refused")
     assert story([before_any_session], []) == ["Assistant couldn't record what it types, so it didn't start an agent. It will try again by itself."]
     for text in story([parked, typing_blocked], []):
