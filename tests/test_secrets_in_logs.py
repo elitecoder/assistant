@@ -130,6 +130,7 @@ REACTOR_SRC = REPO / "slack-reactor/src"
 
 
 @pytest.mark.skipif(NODE is None, reason="node is not installed")
+@pytest.mark.skipif(sys.platform != "darwin", reason="the reactor takes the task-list lock with a macOS flag")
 def test_reactor_node_tests_pass():
     run = subprocess.run([NODE, "--test", *sorted(str(p) for p in (REPO / "slack-reactor/test").glob("*.test.js"))],
                          capture_output=True, text=True, timeout=120, cwd=REPO)

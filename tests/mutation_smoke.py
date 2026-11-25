@@ -5981,6 +5981,7 @@ CHECKS = well_formed(CHECKS + checks_in(CHECKS_DIR))
 # checks they back run only on a Mac: --mac-only runs just those, and elsewhere they're left out.
 MAC_ONLY_TESTS = frozenset((
     "tests/test_reactor_hardening.py::test_reactor_capture_node_tests_pass",
+    "tests/test_secrets_in_logs.py::test_reactor_node_tests_pass",
     "tests/test_reactor_hardening.py::test_reactor_todo_store_node_tests_pass",
     "tests/test_reactor_hardening.py::test_an_add_waits_while_a_python_writer_holds_the_lock",
     "tests/test_reactor_hardening.py::test_an_add_that_cannot_get_the_lock_in_time_fails_and_writes_nothing",
