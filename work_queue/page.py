@@ -646,9 +646,13 @@ ST.queued={};ST.mail={};ST.checks={};ST.feedback={};let GONE=new Set(),qTimer=0;
 const CLEARED_FOR=7*DAY,READY_MARK='https://work-queue.local/ready/',MARKED={done:'Marked done',dropped:'Dropped',snoozed:'Snoozed'};
 const $=id=>document.getElementById(id);
 async function api(path,opts){const r=await fetch(path,Object.assign({headers:{'Content-Type':'application/json'}},opts||{}));if(!r.ok)throw new Error((await r.json().catch(()=>({}))).error||r.status);const o=await r.json();
- if(o&&o.feedback&&o.feedback.recorded===false){const done=JSON.parse(opts.body).state==='done';
-  toast(done?'Done. Assistant couldn’t record that for later.':'That worked. Assistant couldn’t record it for later.')}return o}
-function toast(msg,bad){document.querySelectorAll('.toast').forEach(t=>t.remove());const t=document.createElement('div');t.className=bad?'toast err':'toast';t.textContent=msg;document.body.append(t);setTimeout(()=>t.remove(),12000)}
+ if(o&&o.feedback&&o.feedback.recorded===false)LOST=JSON.parse(opts.body).state==='done'?'that':'it';return o}
+// An action that worked but whose note couldn't be saved: the next message says so as well as what it says itself, or says it alone.
+let LOST='';
+function flushLost(){if(LOST)toast('')}
+function toast(msg,bad){const lost=LOST;LOST='';if(lost){const said='Assistant couldn’t record '+lost+' for later.';
+  msg=msg?msg+(/[.!?…]$/.test(msg)?'':'.')+' '+said:(lost==='that'?'Done. ':'That worked. ')+said}
+ document.querySelectorAll('.toast').forEach(t=>t.remove());const t=document.createElement('div');t.className=bad?'toast err':'toast';t.textContent=msg;document.body.append(t);setTimeout(()=>t.remove(),12000)}
 function paint(){const now=Date.now(),sent=new Set(ST.sent||[]);let hidden=0;
  document.querySelectorAll('.sf-lane .sf-row,.ag-row,.start-list li:not([data-blocked])').forEach(r=>{if(sent.has(r.dataset.key))r.remove()});
  document.querySelectorAll('.sf-lane .sf-row').forEach(r=>{const v=MK[r.dataset.key],done=!!v&&v.state==='done';
@@ -718,7 +722,7 @@ async function undoCleared(b,id){b.disabled=true;
  catch(e){b.disabled=false;toast('Not saved: '+e.message)}}
 function button(label,cls,run){const b=document.createElement('button');b.className=cls;b.textContent=label;b.onclick=()=>run(b);return b}
 async function doneReady(b,id){b.disabled=true;
- try{MK=(await api('/api/mark',{method:'POST',body:JSON.stringify({key:readyKey(id),state:'done'})})).marks;paint()}
+ try{MK=(await api('/api/mark',{method:'POST',body:JSON.stringify({key:readyKey(id),state:'done'})})).marks;paint();flushLost()}
  catch(e){b.disabled=false;toast('Not saved: '+e.message)}}
 async function openWs(b,id){b.disabled=true;
  try{await api('/api/focus',{method:'POST',body:JSON.stringify({id})});toast('Brought the workspace for '+id+' to the front.')}
@@ -764,7 +768,7 @@ async function gmailAct(b,action){const r=b.closest('.em-row');b.disabled=true;
  b.disabled=false}
 async function setState(b,state){const k=b.closest('[data-key]').dataset.key,cur=MK[k]&&MK[k].state;
  const body=cur===state?{key:k,state:'clear'}:{key:k,state,until:state==='snoozed'?Date.now()+3*DAY:0};
- try{MK=(await api('/api/mark',{method:'POST',body:JSON.stringify(body)})).marks}catch(e){toast('Not saved: '+e.message)}paint()}
+ try{MK=(await api('/api/mark',{method:'POST',body:JSON.stringify(body)})).marks}catch(e){toast('Not saved: '+e.message)}paint();flushLost()}
 if($('showhidden'))$('showhidden').onclick=()=>{document.body.classList.toggle('show-hidden');paint()};
 function mailSearch(){const appr=new Set(MAILDATA.filter(m=>(ST.decisions[m.k]||{}).decision==='approve'&&!GONE.has(m.k)).map(m=>m.k));
  if(!appr.size)return{q:'',n:0,manual:[]};const terms=[];
@@ -829,7 +833,7 @@ function reloadIfIdle(){if([...document.querySelectorAll('.compose textarea')].s
  if(asked.some(u=>u.pop))return toast('The refresh finished. Pick a reason or Skip, then reload to see the new rows.');
  if(asked.some(u=>u.tell&&(u.words||'').trim()))return toast('The refresh finished. Send or cancel what you are telling Assistant, then reload to see the new rows.');
  location.reload()}
-async function decide(keys,decision){try{ST.decisions=(await api('/api/decide',{method:'POST',body:JSON.stringify({keys,decision})})).decisions;renderAp()}catch(e){$('ap-msg').textContent='Not saved: '+e.message}}
+async function decide(keys,decision){try{ST.decisions=(await api('/api/decide',{method:'POST',body:JSON.stringify({keys,decision})})).decisions;renderAp();flushLost()}catch(e){$('ap-msg').textContent='Not saved: '+e.message}}
 function approveGroup(b){const keys=[...b.closest('.ap-group').querySelectorAll('.ap-row:not(.applied):not(.approved):not(.kept):not(.em-gone)')].map(r=>r.dataset.key);decide(keys,'approve')}
 async function applyNow(){try{await api('/api/apply',{method:'POST',body:'{}'});ST.status={running:true};renderAp();setTimeout(refresh,1500)}catch(e){$('ap-msg').textContent='Not started: '+e.message}}
 async function refreshNow(){try{await api('/api/refresh',{method:'POST',body:'{}'});ST.refresh={running:true};renderRefresh();polling=true;setTimeout(refresh,2500)}catch(e){$('refresh-msg').textContent='Not started: '+e.message}}

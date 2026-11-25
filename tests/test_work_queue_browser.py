@@ -2482,6 +2482,85 @@ def test_when_a_note_cant_be_saved_the_page_says_so_once_and_the_work_still_happ
         browser.close()
 
 
+LOST_IT = "Assistant couldn’t record it for later."
+
+
+def block_the_feedback_file(wq) -> None:
+    import shutil
+    (wq.home / ".assistant").mkdir(exist_ok=True)
+    shutil.rmtree(wq.home / ".assistant/feedback", ignore_errors=True)
+    (wq.home / ".assistant/feedback").write_text("in the way")
+
+
+def toast_is(tab, expected: str) -> None:
+    tab.wait_for_function("(want) => document.querySelectorAll('.toast').length === 1 && document.querySelector('.toast').textContent === want", arg=expected)
+
+
+def test_a_row_action_whose_note_cant_be_saved_says_so_as_well_as_what_it_says_itself(site, wq):
+    keys = fb_seed(wq)
+    block_the_feedback_file(wq)
+    a, plain = Sel(keys["row"]), Sel(keys["plain"])
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 1280, "height": 900})
+        tab.clock.install()
+        tab.goto(site + "#all")
+        tab.locator(f"{plain.bar} .sf-send").click()  # Send to Agent: it has a message of its own
+        tab.locator(f"{plain.row} .cp-go").click()
+        tab.wait_for_function("document.querySelector('.toast')?.textContent.startsWith('Sent to an agent as td-')")
+        said = text(tab, ".toast")
+        assert said.endswith(" " + LOST_IT) and said.count("Assistant couldn’t record") == 1 and tab.locator(".toast").count() == 1, said
+        tab.locator(f"{a.bar} .sf-mark").click()
+        tab.wait_for_selector(f"{a.row}.is-done")
+        toast_is(tab, "Done. Assistant couldn’t record that for later.")
+        tab.locator(f"{a.bar} .sf-mark").click()  # Undo, with no message of its own: the notice stands alone
+        tab.wait_for_selector(f"{a.row}.is-done", state="detached")
+        toast_is(tab, "That worked. " + LOST_IT)
+        tab.locator(f"{a.bar} button", has_text="Snooze").click()
+        toast_is(tab, "That worked. " + LOST_IT)
+        tab.locator("#gmail-1 > summary").click()
+        tab.locator("#gmail-1 details").first.evaluate("d => d.open = true")
+        tab.locator(f'.ap-row[data-key="{keys["cand"]}"] .ap-ok').click()  # Approve
+        toast_is(tab, "That worked. " + LOST_IT)
+        tab.locator("#ready li[data-id='td-101'] .sf-mark").click()  # Done on a Ready for you result
+        toast_is(tab, "Done. Assistant couldn’t record that for later.")
+        browser.close()
+
+
+def test_an_email_action_whose_note_cant_be_saved_says_so_as_well_as_what_it_says_itself(site, wq):
+    write_page(mailbox_snapshot())
+    wq.sources({"gmail": {"accounts": [ACCT_A, ACCT_B]}})
+    fake_tool(wq.bin, "gog", [
+        ("thread modify", {}),
+        ("thread get t-g-act", {"seq": [{"thread": {"messages": [{"id": "1", "labelIds": ["UNREAD"]}]}},
+                                        {"thread": {"messages": [{"id": "1", "labelIds": ["INBOX", "UNREAD"]}]}}]}),
+        ("thread get t-g-news", {"thread": {"messages": [{"id": "1", "labelIds": ["INBOX"]}, {"id": "2"}]}})])
+    block_the_feedback_file(wq)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 1280, "height": 900})
+        tab.clock.install()
+        tab.goto(site + "#mailbox")
+        tab.wait_for_selector(em("g-act"), state="visible")
+        tab.locator('#gmail-1 .ap-group[data-group="gmail-news"] > summary').click()
+        tab.locator(f"{em('o-read')} .sf-send").click()
+        tab.locator(f"{em('o-read')} .cp-go").click()
+        tab.wait_for_function("document.querySelector('.toast')?.textContent.startsWith('Sent to an agent as td-')")
+        assert text(tab, ".toast").endswith(" " + LOST_IT) and tab.locator(".toast").count() == 1
+        tab.locator(f"{em('g-news2')} .em-acts button", has_text="Snooze").click()  # a message for the mark of several keys
+        toast_is(tab, "Snoozed for 3 days. Show hidden email lists it, with Undo. " + LOST_IT)
+        tab.locator(f"{em('g-act')} .em-archive").click()
+        toast_is(tab, "Archived in Gmail. Gmail confirmed that no message in the conversation is in your inbox. " + LOST_IT)
+        tab.locator(f"{em('g-news')} .em-readbtn").click()
+        toast_is(tab, "Marked read in Gmail. Gmail confirmed that every message in the conversation is read. " + LOST_IT)
+        tab.locator("#em-showhidden").click()
+        tab.locator(f"{em('g-news2')} .em-undo").click()  # undo of a snooze
+        toast_is(tab, "It’s back on the list. " + LOST_IT)
+        tab.locator(f"{em('g-act')} .em-undo").click()  # undo of an archive: moved back to the inbox
+        toast_is(tab, "Moved back to your Gmail inbox. " + LOST_IT)
+        browser.close()
+
+
 def test_a_reason_or_a_take_back_that_the_server_refuses_leaves_the_page_as_it_was(site, wq):
     keys = fb_seed(wq)
     a = Sel(keys["row"])
