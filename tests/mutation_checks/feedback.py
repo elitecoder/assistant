@@ -844,13 +844,6 @@ CHECKS = (
         TB + "test_the_thumb_on_every_kind_of_row_has_a_44_pixel_tap_area_on_a_phone_that_no_other_tap_area_overlaps",
     ),
     (
-        "on a narrow window the list's middle is within one row's height of its thumb's, up or down",
-        P,
-        '+(innerWidth<=620&&v>reach?1000:0)+',
-        '+',
-        TB + "test_with_every_row_below_already_thumbed_the_reasons_still_open_next_to_their_thumb_at_the_top_of_the_window[390]",
-    ),
-    (
         "the reasons keep off their own row's Tell Assistant link where they can",
         P,
         '+c/20+(clear(link,x,y,4)?0:400)+',
@@ -858,10 +851,10 @@ CHECKS = (
         TB + "test_with_every_row_below_already_thumbed_the_reasons_still_open_next_to_their_thumb_at_the_top_of_the_window[390]",
     ),
     (
-        "on a narrow window the list is 224 wide, so it fits between a row's controls",
+        "on a narrow window the list is 224 wide with small choices, so it opens by its thumb and covers nothing it must not",
         P,
-        '@media (max-width:620px){.fb-pop{width:min(224px,',
-        '@media (max-width:620px){.fb-pop{width:min(280px,',
+        '@media (max-width:620px){.fb-pop{width:min(224px,calc(100vw - 16px))}.fb-pop{gap:4px}.fb-pop .btn{padding:5px 7px;font-size:10px}',
+        '@media (max-width:620px){.fb-pop{gap:4px}.fb-pop .btn{min-height:32px;padding:0 8px;font-size:12px}',
         TB + "test_with_every_row_below_already_thumbed_the_reasons_still_open_next_to_their_thumb_at_the_top_of_the_window[390]",
     ),
 )
