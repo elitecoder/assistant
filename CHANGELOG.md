@@ -156,7 +156,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   link. One tap records the thumbs-down and nothing else opens, so you can go
   down a list tapping; tapping again takes it back. A note under the buttons
   says what you said, with **Add a reason** and **Undo**. **Add a reason** opens
-  a small list over the page that never covers another row's controls (Not
+  a small list over the page that never covers another row's thumbs-down or
+  **Tell Assistant** link (Not
   important, Wrong order, Not mine, Already done; Wrong tone, Wrong facts, Not
   how I'd say it for a draft; Not what I asked, Didn't finish, Should not have
   been started for a result), and **Change** opens it again. The note is still

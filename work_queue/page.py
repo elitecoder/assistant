@@ -576,7 +576,7 @@ body{font:13px/1.55 var(--sans);padding:28px 32px 48px;-webkit-font-smoothing:an
 .ag-row{display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-top:1px solid var(--line);cursor:pointer}.ag-row:first-child{border-top:0}.ag-row[hidden]{display:none}
 .ag-text{display:flex;flex-direction:column;gap:2px;min-width:0;overflow-wrap:anywhere}#ag-msg{overflow-wrap:anywhere}
 .fb{position:relative;display:inline-flex;gap:6px;align-items:center;flex:none}.fb-what{font:11px/1.2 var(--mono);color:var(--quiet)}
-.fb-down{position:relative;margin:0 2px;padding:5px 7px;line-height:0;color:var(--quiet)}.fb-down::after{content:"";position:absolute;inset:-11px -12px}.fb-down svg{display:block}
+.fb-down{position:relative;margin:0 3px;padding:7px;line-height:0;color:var(--quiet)}.fb-down::after{content:"";position:absolute;inset:-8.5px}.fb-down svg{display:block}
 .fb-down[aria-pressed="true"]{color:var(--text);border-color:var(--red);background:var(--red-bg)}
 .btn.fb-open,.btn.why-link{border-color:transparent;background:none;color:var(--quiet);text-decoration:underline;text-underline-offset:2px}
 .fb-pop{position:fixed;z-index:30;display:flex;flex-wrap:wrap;gap:6px;width:min(280px,calc(100vw - 16px));padding:8px;
@@ -585,10 +585,10 @@ background:var(--panel);border:1px solid var(--line-strong);border-radius:8px;bo
 .fb-note,.fb-why{font:10px/12px var(--mono);color:var(--quiet)}.fb-part{display:block}
 .fb-link{background:none;border:0;padding:0 2px;color:var(--text-2);font:inherit;text-decoration:underline;cursor:pointer}
 .sf-main .fb-note{position:absolute;right:0;top:100%;margin-top:2px;white-space:nowrap;text-align:right}
-.fb-extra{display:block}.fb-line{display:flex;flex-wrap:wrap;gap:6px;align-items:center}.fb-line:not(:empty){margin-top:6px}
+.fb-extra{display:block}.fb-line{display:flex;flex-wrap:wrap;gap:6px;align-items:center}.fb-line:not(:empty){margin-top:9px}
 .fb-tell{display:flex;gap:6px;align-items:flex-start;margin-top:6px}
 .fb-tell textarea{flex:1;min-width:0;min-height:36px;resize:vertical;font:13px/1.5 var(--sans);padding:6px 8px;background:var(--hover);color:var(--text);border:1px solid var(--line-strong);border-radius:6px}
-.draft-fb{margin-top:4px}.fb-promise{margin:0}
+.draft-fb{margin-top:9px}.fb-promise{margin:0}
 .why-box{flex:1 0 100%;width:100%;margin:8px 0 4px;padding:8px 10px;border:1px solid var(--line-strong);border-radius:8px;background:var(--hover);font-size:13px;line-height:1.5;color:var(--text-2)}
 .ap-row:has(> .why-box){flex-wrap:wrap}.why-steps{margin:0 0 6px;padding:0;list-style:none}.why-steps li{display:flex;gap:10px;padding:2px 0}
 .why-steps time{flex:none;width:9.5em;font:11px/18px var(--mono);color:var(--quiet)}.why-box p{margin:0 0 6px}.why-foot{font:11px/16px var(--mono);color:var(--quiet)}
@@ -623,7 +623,7 @@ background:var(--panel);border:1px solid var(--line-strong);border-radius:8px;bo
 .mb-sec{border-top:1px solid var(--line);padding:4px 0;scroll-margin-top:64px}
 .mb-sec>summary{cursor:pointer;padding:8px 0;display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline}
 .mb-t{font:600 14px/1.4 var(--sans);color:var(--acc,var(--text))}
-.em-acts{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:6px}
+.em-acts{display:flex;flex-wrap:wrap;gap:9px;align-items:center;margin-top:6px}
 .em-status{font:600 11px/1.4 var(--mono);color:var(--amber)}.em-status:empty{display:none}
 .em-gone{display:none!important}body.show-em-hidden .em-gone{display:flex!important;opacity:.6}
 .em-read .em-readbtn,.em-read .pr-pill.amber{display:none}
@@ -634,14 +634,14 @@ border-radius:6px;border:1px solid var(--line-strong);background:var(--hover);co
 .compose-btns{display:flex;gap:6px}
 .ready{border:1px solid var(--line);border-left:3px solid var(--green);border-radius:8px;padding:10px 14px;margin:0 0 14px;overflow-wrap:anywhere}
 .ready-list{margin:6px 0 0;padding-left:22px;display:flex;flex-direction:column;gap:10px}
-.ready-list li>div{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-.ready-result{display:block;margin-top:4px;color:var(--text-2);font-size:12px;white-space:pre-line}
+.ready-list li>div{display:flex;flex-wrap:wrap;gap:9px;align-items:center}
+.ready-result{display:block;margin-top:9px;color:var(--text-2);font-size:12px;white-space:pre-line}
 .ready-result.blocked{color:var(--amber)}.ready-result a{color:var(--blue)}
 .ready-check{display:block;margin-top:4px;font-size:12px;color:var(--text-2)}.ready-check.note{color:var(--green)}
 .ready-cleared{margin:10px 0 0;padding-left:22px;display:flex;flex-direction:column;gap:8px;opacity:.75}
 .ready-cleared:empty{display:none}.ready-cleared li>div{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-@media (max-width:860px){.sf-main{flex-wrap:wrap}.sf-main>.fb{display:contents}.sf-main .fb-down{margin:0;padding:5px 6px}.sf-main .fb-open,.sf-main .why-link{position:relative;padding:0;margin-top:-4px}.sf-main .fb-open::after,.sf-main .why-link::after{content:"";position:absolute;inset:-8px -4px}.fb{flex-wrap:wrap}.sf-main .fb-note{position:static;flex-basis:100%;white-space:normal;text-align:left}.sf-link{flex-basis:100%}}
-@media (max-width:620px){body{padding:20px 16px 40px}.ap-row{flex-direction:column}.ap-group summary{flex-wrap:wrap}
+@media (max-width:860px){.sf-main{flex-wrap:wrap}.sf-main>.fb{display:contents}.sf-main .fb-down{margin:.5px 0 .5px .5px;padding:6.75px}.sf-main .fb-open,.sf-main .why-link{position:relative;padding:0;margin:-4px 0 0 .5px}.sf-main .fb-open::after,.sf-main .why-link::after{content:"";position:absolute;inset:-8px 0}.fb{flex-wrap:wrap}.sf-main .fb-note{position:static;flex-basis:100%;white-space:normal;text-align:left}.sf-link{flex-basis:100%}}
+@media (max-width:620px){.fb-pop{gap:4px}.fb-pop .btn{min-height:32px;padding:0 8px;font-size:12px}body{padding:20px 16px 40px}.ap-row{flex-direction:column}.ap-group summary{flex-wrap:wrap}
 .draft{flex-direction:column}.draft textarea{width:100%}}
 """
 
@@ -652,9 +652,13 @@ ST.queued={};ST.mail={};ST.checks={};ST.feedback={};let GONE=new Set(),qTimer=0;
 const CLEARED_FOR=7*DAY,READY_MARK='https://work-queue.local/ready/',MARKED={done:'Marked done',dropped:'Dropped',snoozed:'Snoozed'};
 const $=id=>document.getElementById(id);
 async function api(path,opts){const r=await fetch(path,Object.assign({headers:{'Content-Type':'application/json'}},opts||{}));if(!r.ok)throw new Error((await r.json().catch(()=>({}))).error||r.status);const o=await r.json();
- if(o&&o.feedback&&o.feedback.recorded===false){const done=JSON.parse(opts.body).state==='done';
-  toast(done?'Done. Assistant couldn’t record that for later.':'That worked. Assistant couldn’t record it for later.')}return o}
-function toast(msg,bad){document.querySelectorAll('.toast').forEach(t=>t.remove());const t=document.createElement('div');t.className=bad?'toast err':'toast';t.textContent=msg;document.body.append(t);setTimeout(()=>t.remove(),12000)}
+ if(o&&o.feedback&&o.feedback.recorded===false)LOST=JSON.parse(opts.body).state==='done'?'that':'it';return o}
+// An action that worked but whose note couldn't be saved: the next message says so as well as what it says itself, or says it alone.
+let LOST='';
+function flushLost(){if(LOST)toast('')}
+function toast(msg,bad){const lost=LOST;LOST='';if(lost){const said='Assistant couldn’t record '+lost+' for later.';
+  msg=msg?msg+(/[.!?…]$/.test(msg)?'':'.')+' '+said:(lost==='that'?'Done. ':'That worked. ')+said}
+ document.querySelectorAll('.toast').forEach(t=>t.remove());const t=document.createElement('div');t.className=bad?'toast err':'toast';t.textContent=msg;document.body.append(t);setTimeout(()=>t.remove(),12000)}
 function paint(){const now=Date.now(),sent=new Set(ST.sent||[]);let hidden=0;
  document.querySelectorAll('.sf-lane .sf-row,.ag-row,.start-list li:not([data-blocked])').forEach(r=>{if(sent.has(r.dataset.key))r.remove()});
  document.querySelectorAll('.sf-lane .sf-row').forEach(r=>{const v=MK[r.dataset.key],done=!!v&&v.state==='done';
@@ -724,7 +728,7 @@ async function undoCleared(b,id){b.disabled=true;
  catch(e){b.disabled=false;toast('Not saved: '+e.message)}}
 function button(label,cls,run){const b=document.createElement('button');b.className=cls;b.textContent=label;b.onclick=()=>run(b);return b}
 async function doneReady(b,id){b.disabled=true;
- try{MK=(await api('/api/mark',{method:'POST',body:JSON.stringify({key:readyKey(id),state:'done'})})).marks;paint()}
+ try{MK=(await api('/api/mark',{method:'POST',body:JSON.stringify({key:readyKey(id),state:'done'})})).marks;paint();flushLost()}
  catch(e){b.disabled=false;toast('Not saved: '+e.message)}}
 async function openWs(b,id){b.disabled=true;
  try{await api('/api/focus',{method:'POST',body:JSON.stringify({id})});toast('Brought the workspace for '+id+' to the front.')}
@@ -770,7 +774,7 @@ async function gmailAct(b,action){const r=b.closest('.em-row');b.disabled=true;
  b.disabled=false}
 async function setState(b,state){const k=b.closest('[data-key]').dataset.key,cur=MK[k]&&MK[k].state;
  const body=cur===state?{key:k,state:'clear'}:{key:k,state,until:state==='snoozed'?Date.now()+3*DAY:0};
- try{MK=(await api('/api/mark',{method:'POST',body:JSON.stringify(body)})).marks}catch(e){toast('Not saved: '+e.message)}paint()}
+ try{MK=(await api('/api/mark',{method:'POST',body:JSON.stringify(body)})).marks}catch(e){toast('Not saved: '+e.message)}paint();flushLost()}
 if($('showhidden'))$('showhidden').onclick=()=>{document.body.classList.toggle('show-hidden');paint()};
 function mailSearch(){const appr=new Set(MAILDATA.filter(m=>(ST.decisions[m.k]||{}).decision==='approve'&&!GONE.has(m.k)).map(m=>m.k));
  if(!appr.size)return{q:'',n:0,manual:[]};const terms=[];
@@ -836,7 +840,7 @@ function reloadIfIdle(){if(Object.keys(WHY).length)return toast('The refresh fin
  if(asked.some(u=>u.pop))return toast('The refresh finished. Pick a reason or Skip, then reload to see the new rows.');
  if(asked.some(u=>u.tell&&(u.words||'').trim()))return toast('The refresh finished. Send or cancel what you are telling Assistant, then reload to see the new rows.');
  location.reload()}
-async function decide(keys,decision){try{ST.decisions=(await api('/api/decide',{method:'POST',body:JSON.stringify({keys,decision})})).decisions;renderAp()}catch(e){$('ap-msg').textContent='Not saved: '+e.message}}
+async function decide(keys,decision){try{ST.decisions=(await api('/api/decide',{method:'POST',body:JSON.stringify({keys,decision})})).decisions;renderAp();flushLost()}catch(e){$('ap-msg').textContent='Not saved: '+e.message}}
 function approveGroup(b){const keys=[...b.closest('.ap-group').querySelectorAll('.ap-row:not(.applied):not(.approved):not(.kept):not(.em-gone)')].map(r=>r.dataset.key);decide(keys,'approve')}
 async function applyNow(){try{await api('/api/apply',{method:'POST',body:'{}'});ST.status={running:true};renderAp();setTimeout(refresh,1500)}catch(e){$('ap-msg').textContent='Not started: '+e.message}}
 async function refreshNow(){try{await api('/api/refresh',{method:'POST',body:'{}'});ST.refresh={running:true};renderRefresh();polling=true;setTimeout(refresh,2500)}catch(e){$('refresh-msg').textContent='Not started: '+e.message}}
@@ -867,12 +871,12 @@ function fbBuild(s){const k=s.dataset.fk,h={},x=document.createElement('span'),l
  s.append(h.open);if(k!=='page'&&k!=='draft'){h.why=fbBtn('Why?','why',()=>whyToggle(s));h.why.classList.remove('ghost');h.why.classList.add('why-link');h.why.setAttribute('aria-expanded','false');
   h.why.setAttribute('aria-label','Why is this here?');h.why.title='Why is this here?';s.append(h.why)}
  if(h.pop)s.append(h.pop);x.className='fb-extra';x.dataset.fp=s.dataset.fp;line.className='fb-line';x.append(line);h.x=x;FBX.set(s,h);const at=s.closest('.ap-row');if(at)at.querySelector('.ap-text').append(x);else s.parentElement.after(x)}
-function fbPlace(s){const h=FBX.get(s),p=h.pop,w=p.offsetWidth,t=p.offsetHeight,r=h.down.getBoundingClientRect(),
+function fbPlace(s){const h=FBX.get(s),p=h.pop,{width:w,height:t}=p.getBoundingClientRect(),r=h.down.getBoundingClientRect(),
  own=s.closest('.sf-row,.ap-row,li')||s.parentElement,reach=Math.max(60,own.getBoundingClientRect().height),
  mine=s.querySelector('.fb-note')||h.x.querySelector('.fb-note'),n=(mine||h.down).getBoundingClientRect(),
  card=(s.closest('.section')||document.body).getBoundingClientRect(),lo=Math.max(8,card.left),hi=Math.min(innerWidth-8,card.right),
  rects=(q,keep)=>[...document.querySelectorAll(q)].filter(keep).map(b=>b.getBoundingClientRect()).filter(b=>b.width&&b.bottom>0&&b.top<innerHeight),
- must=rects('.fb-down,.fb-open',b=>b!==h.open).concat([n]),link=h.open.getBoundingClientRect(),notes=rects('.fb-note',b=>b!==mine),
+ must=rects('.fb-down,.fb-open',b=>b!==h.open).concat([n]),notes=rects('.fb-note',b=>b!==mine),
  btns=rects('.sf-main > .btn,.why-link',()=>true),clamp=x=>Math.max(lo,Math.min(x,hi-w)),
  xs=[...new Set([n.left-8-w,r.left-8-w,r.right-w,lo,hi-w,...btns.filter(b=>Math.abs(b.top-r.top)<160).map(b=>b.left-8-w),
    ...Array.from({length:Math.ceil((hi-lo-w)/24)+1},(_,k)=>lo+24*k)].map(clamp))],
@@ -881,7 +885,7 @@ function fbPlace(s){const h=FBX.get(s),p=h.pop,w=p.offsetWidth,t=p.offsetHeight,
  area=(b,x,y)=>Math.max(0,Math.min(x+w,b.right)-Math.max(x,b.left))*Math.max(0,Math.min(y+t,b.bottom)-Math.max(y,b.top)),
  // never over another thumb, another Tell Assistant or its own note; as far as it can be, not over its own link, another note or a button;
  // and always within one row's height of its thumb
- cost=(x,y)=>{const g=gap(x,y);return g+(g>reach?1000:0)+(clear(link,x,y,4)?0:400)+100*notes.filter(b=>!clear(b,x,y,0)).length+btns.reduce((a,b)=>a+area(b,x,y),0)/400};
+ cost=(x,y)=>{const g=gap(x,y),c=Math.hypot(x+w/2-r.left-r.width/2,y+t/2-r.top-r.height/2);return g+(g>reach?1000:0)+c/20+100*notes.filter(b=>!clear(b,x,y,0)).length+btns.reduce((a,b)=>a+area(b,x,y),0)/400};
  let pick=null,low=1e9;for(const x of xs)for(let y=8;y<=innerHeight-t-8;y+=6)if(must.every(b=>clear(b,x,y,4))){const c=cost(x,y);if(c<low){low=c;pick=[x,y]}}
  pick=pick||[clamp(r.right-w),Math.max(8,Math.min(r.bottom+4,innerHeight-t-8))];
  p.style.left=pick[0]+'px';p.style.top=pick[1]+'px'}

@@ -2065,12 +2065,73 @@ def test_the_reasons_never_cover_a_thumb_a_tell_assistant_link_their_own_note_or
         browser.close()
 
 
+TAP_AREAS = """(thumb) => { const num = v => parseFloat(v) || 0;
+  const area = el => { const r = el.getBoundingClientRect(), a = getComputedStyle(el, '::after');
+    return a.content !== 'none' && a.position === 'absolute' ? {left: r.left + num(a.left), top: r.top + num(a.top), right: r.right - num(a.right), bottom: r.bottom - num(a.bottom)}
+      : {left: r.left, top: r.top, right: r.right, bottom: r.bottom}; };
+  const t = thumb.getBoundingClientRect(), cx = t.left + t.width / 2, cy = t.top + t.height / 2;
+  // The strict reading: walk out from each edge along the thumb's own middle lines, a whole pixel at a time, for as long as the thumb is what is there.
+  const mine = (x, y) => { const e = document.elementFromPoint(x, y); return !!e && e.closest('.fb-down') === thumb; };
+  let l = 0, r = 0, u = 0, d = 0;
+  while (mine(cx - t.width / 2 - l - 1, cy)) l++;
+  while (mine(cx + t.width / 2 + r + 1, cy)) r++;
+  while (mine(cx, cy - t.height / 2 - u - 1)) u++;
+  while (mine(cx, cy + t.height / 2 + d + 1)) d++;
+  // The generous reading: the extent of every point within 30 px that is the thumb, a quarter pixel at a time.
+  const xs = [], ys = [];
+  for (let x = cx - 30; x <= cx + 30; x += 0.25) for (let y = cy - 30; y <= cy + 30; y += 0.25) if (mine(x, y)) { xs.push(x); ys.push(y); }
+  const own = area(thumb), over = [];
+  for (const el of document.querySelectorAll('button, a[href], textarea, input, summary')) {
+    if (el === thumb || el.closest('.fb-pop') || el.contains(thumb)) continue;
+    const b = el.getBoundingClientRect(); if (!b.width || Math.abs(b.top - t.top) > 90) continue;
+    const o = area(el), w = Math.min(own.right, o.right) - Math.max(own.left, o.left), h = Math.min(own.bottom, o.bottom) - Math.max(own.top, o.top);
+    if (w > 0 && h > 0) over.push((el.className || el.tagName) + ' ' + el.textContent.slice(0, 14) + ' ' + w.toFixed(1) + 'x' + h.toFixed(1)); }
+  return {strict: [Math.round(t.width + l + r), Math.round(t.height + u + d)], generous: [Math.max(...xs) - Math.min(...xs) + 0.25, Math.max(...ys) - Math.min(...ys) + 0.25], over}; }"""
+
+
+def test_the_thumb_on_every_kind_of_row_has_a_44_pixel_tap_area_on_a_phone_that_no_other_tap_area_overlaps(site, wq):
+    keys = fb_seed(wq)
+    kinds = {
+        "a row in a lane": f'.sf-lane .sf-row[data-key="{keys["row"]}"] > .sf-main .fb-down',
+        "a plain row": f'.sf-row[data-key="{keys["plain"]}"] > .sf-main .fb-down',
+        "a draft": ".sf-row .draft-fb .fb-down",
+        "a Start here item": f'.start-list li[data-key="{keys["row"]}"] .fb-down',
+        "a result": '#ready li[data-id="td-101"] .fb-down',
+        "an email row": f'.em-row[data-mk="{keys["mail"]}"] .fb-down',
+        "an approval row": f'.ap-row[data-key="{keys["cand"]}"] .fb-down',
+    }
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 390, "height": 844})
+        tab.goto(site + "#all")
+        tab.locator("#gmail-1 > summary").click()
+        tab.locator("#gmail-1 details").first.evaluate("d => d.open = true")
+        measured = {}
+        for kind, selector in kinds.items():
+            for pressed_too in (False, True):
+                thumb = tab.locator(selector).first
+                thumb.evaluate("e => e.scrollIntoView({block: 'center'})")
+                if pressed_too:
+                    if thumb.get_attribute("aria-pressed") != "true":  # the same row in two places says the same
+                        thumb.click()
+                    pressed(tab, selector)
+                    thumb.evaluate("e => e.scrollIntoView({block: 'center'})")
+                found = tab.evaluate(f"(sel) => ({TAP_AREAS})(document.querySelector(sel))", selector)
+                measured[kind + (", pressed" if pressed_too else "")] = (found["strict"], found["generous"], found["over"])
+        print("TAP AREAS (strict, generous, overlaps)", measured)
+        bad = {k: v for k, v in measured.items() if min(v[0]) < 44 or min(v[1]) < 43.75 or v[2]}  # the generous scan steps by a quarter: 44 reads as 43.75
+        assert not bad, bad
+        browser.close()
+
+
 OPEN_AT = {"top": "e => { e.scrollIntoView({block: 'start'}); window.scrollBy(0, -90); }", "middle": "e => e.scrollIntoView({block: 'center'})",
            "bottom": "e => e.scrollIntoView({block: 'end'})"}
 SPOTS = """(own) => {
   const pop = document.querySelector('.fb-pop:not([hidden])'), panel = pop.getBoundingClientRect(), w = panel.width, t = panel.height;
   const hit = (a, b, m = 0) => !(a.right + m <= b.left || a.left >= b.right + m || a.bottom + m <= b.top || a.top >= b.bottom + m);
   const row = document.querySelector(own), thumb = row.querySelector('.fb-down').getBoundingClientRect(), rowHeight = row.getBoundingClientRect().height;
+  const centre = Math.hypot(panel.left + w / 2 - thumb.left - thumb.width / 2, panel.top + t / 2 - thumb.top - thumb.height / 2);
+  const centreAt = (x, y) => Math.hypot(x + w / 2 - thumb.left - thumb.width / 2, y + t / 2 - thumb.top - thumb.height / 2);
   const gapOf = (x, y) => Math.hypot(Math.max(thumb.left - x - w, x - thumb.right, 0), Math.max(thumb.top - y - t, y - thumb.bottom, 0));
   const things = [...document.querySelectorAll('.fb-down, .fb-open, .fb-note')].map(e => ({e, r: e.getBoundingClientRect()})).filter(o => o.r.width && o.r.bottom > 0 && o.r.top < innerHeight);
   const name = o => o.e.className.split(' ').pop() + ' of ' + ((o.e.closest('.sf-row') || {dataset: {}}).dataset.key || '').split('/').pop();
@@ -2080,12 +2141,13 @@ SPOTS = """(own) => {
   const ownTell = row.querySelector('.fb-open'), isOwn = o => o.e === ownTell, isNote = o => o.e.classList.contains('fb-note');
   const must = o => !isOwn(o) && !isNote(o) || (isNote(o) && o.e.closest('.sf-row') === row);
   const clearOf = (x, y, keep) => !things.some(o => keep(o) && hit({left: x, right: x + w, top: y, bottom: y + t}, o.r, 4));
-  const exists = keep => { for (let x = lo; x <= hi - w; x += 6) for (let y = 8; y <= innerHeight - 8 - t; y += 6) if (gapOf(x, y) <= rowHeight && clearOf(x, y, keep)) return true; return false; };
+  const exists = keep => { for (let x = lo; x <= hi - w; x += 6) for (let y = 8; y <= innerHeight - 8 - t; y += 6) if (gapOf(x, y) <= rowHeight && (innerWidth > 620 || centreAt(x, y) <= rowHeight) && clearOf(x, y, keep)) return true; return false; };
   const free = exists(() => true);
+  const reachable = exists(must);  // somewhere near enough that covers no thumb, no other Tell Assistant link and not its own note
   const freeOfOwnLink = exists(o => must(o) || isOwn(o));
   const coveredObjs = things.filter(o => hit(panel, o.r));
   const ownLinkCovered = coveredObjs.some(isOwn), otherNoteCovered = coveredObjs.some(o => isNote(o) && !must(o));
-  return {gap: gapOf(panel.left, panel.top), rowHeight, covered, free, freeOfOwnLink, ownLinkCovered, otherNoteCovered,
+  return {gap: gapOf(panel.left, panel.top), centre, rowHeight, reachable, size: [Math.round(w), Math.round(t)], choices: [...pop.querySelectorAll('button')].map(b => [b.getBoundingClientRect().height, parseFloat(getComputedStyle(b).fontSize)]), covered, free, freeOfOwnLink, ownLinkCovered, otherNoteCovered,
           inScreen: panel.left >= 8 && panel.right <= innerWidth - 8 && panel.top >= 8 && panel.bottom <= innerHeight - 8};
 }"""
 
@@ -2111,7 +2173,10 @@ def test_the_reasons_open_next_to_their_thumb_at_the_top_the_middle_and_the_bott
                 tab.wait_for_selector(".fb-pop:not([hidden])")
                 tab.evaluate("new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))")
                 found = tab.evaluate(SPOTS, f'.sf-row[data-key="{keys[i]}"]')
-                assert found["gap"] <= found["rowHeight"] and found["inScreen"], (width, i, where, found)
+                assert found["inScreen"] and (not found["reachable"] or found["gap"] <= found["rowHeight"]), (width, i, where, found)
+                if width == 390:
+                    assert not found["reachable"] or found["centre"] <= found["rowHeight"], (width, i, where, found)
+                    assert min(h for h, _ in found["choices"]) >= 32 and min(f for _, f in found["choices"]) >= 12, found["choices"]
                 assert not [c for c in found["covered"] if c.startswith("fb-down") or c.startswith("fb-open")] or all(
                     c.endswith(f" of {keys[i].split('/')[-1]}") and c.startswith("fb-open") for c in found["covered"] if c.startswith(("fb-down", "fb-open"))), (width, i, where, found)
                 assert not found["free"] or found["covered"] == [], ("a place that covers nothing existed", width, i, where, found)
@@ -2121,6 +2186,36 @@ def test_the_reasons_open_next_to_their_thumb_at_the_top_the_middle_and_the_bott
                     thumbs.nth(j).evaluate(OPEN_AT["middle"])
                     thumbs.nth(j).click()
                 tab.wait_for_selector(".fb-note", state="detached")
+        browser.close()
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_with_every_row_below_already_thumbed_the_reasons_still_open_next_to_their_thumb_at_the_top_of_the_window(site, wq, width):
+    keys = many_rows(wq, 24)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": width, "height": 800})
+        tab.goto(site + "#open-list")
+        thumbs = tab.locator(ROW_THUMBS)
+        thumbs.first.wait_for()
+        for j in range(12, 24):  # a long run of rows with notes of their own
+            thumbs.nth(j).evaluate(OPEN_AT["middle"])
+            thumbs.nth(j).click()
+        # the row just under the tab bar, a little lower, and (for the last row) as far down as the page lets it go
+        for i, offset in ((12, 0), (12, 58), (13, 90), (15, 140), (17, 120), (23, 0), (23, 90)):
+            tab.locator(".sf-row").nth(i).evaluate("(e, y) => { e.scrollIntoView({block: 'start'}); window.scrollBy(0, -y); }", offset)
+            tab.locator(".sf-row").nth(i).locator(":scope > .sf-main .fb-note button", has_text="Add a reason").evaluate("e => e.click()")  # the tab bar may cover it
+            tab.wait_for_selector(".fb-pop:not([hidden])")
+            tab.evaluate("new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))")
+            found = tab.evaluate(SPOTS, f'.sf-row[data-key="{keys[i]}"]')
+            assert found["inScreen"], (width, i, offset, found)
+            if found["reachable"]:  # where something near enough keeps clear of what must stay uncovered, the list is on it
+                assert found["gap"] <= found["rowHeight"] and (width > 390 or found["centre"] <= found["rowHeight"]), (width, i, offset, found)
+            if width == 390:  # on a phone the choices are big enough to tap and to read
+                assert min(h for h, _ in found["choices"]) >= 32 and min(f for _, f in found["choices"]) >= 12, found["choices"]
+            assert not found["free"] or found["covered"] == [], ("a place that covers nothing existed", width, i, offset, found)
+            assert not found["freeOfOwnLink"] or not found["ownLinkCovered"], (width, i, offset, found)
+            tab.keyboard.press("Escape")
         browser.close()
 
 
@@ -2187,10 +2282,11 @@ def test_the_thumb_has_a_44_pixel_touch_target_without_looking_bigger_and_fits_t
         assert hit[0] >= 44 and hit[1] >= 44, f"what a finger can hit (whatever sits beside it): {hit}"
         done = tab.locator(".sf-row").nth(4).locator(":scope > .sf-main .sf-mark").bounding_box()
         assert abs(done["y"] - box["y"]) < 12, "in the row of buttons, not on a line of its own"
-        with_controls = tab.evaluate("document.documentElement.scrollHeight")
+        rows = "() => { let sum = 0, n = 0; document.querySelectorAll('.sf-lane .sf-row, .sf-list > .sf-row').forEach(r => { if (n < 12 && r.offsetHeight) { sum += r.offsetHeight; n++; } }); return sum; }"
+        with_controls, rows_with = tab.evaluate("document.documentElement.scrollHeight"), tab.evaluate(rows)
         tab.evaluate("document.querySelectorAll('.fb').forEach(e => e.style.display = 'none')")
-        without = tab.evaluate("document.documentElement.scrollHeight")
-        print(f"page height at {width} wide, 12 rows: {without} without the controls, {with_controls} with them")
+        without, rows_without = tab.evaluate("document.documentElement.scrollHeight"), tab.evaluate(rows)
+        print(f"page height at {width} wide, 12 rows: {without} without the controls, {with_controls} with them; the rows alone: {rows_without} and {rows_with}")
         assert (with_controls - without) / 12 < (30 if width < 620 else 6)
         browser.close()
 
@@ -2479,6 +2575,102 @@ def test_when_a_note_cant_be_saved_the_page_says_so_once_and_the_work_still_happ
         wait_text(tab, ".toast", "That worked. Assistant couldn’t record it for later.")
         assert json.loads((wq.data / "marks.json").read_text())[keys["plain"]]["state"] == "snoozed"
         cov.snap()
+        browser.close()
+
+
+def test_a_new_message_replaces_the_one_before_it_at_once(site, wq):
+    """Two messages with nothing between them: only the newer one is on the page. They are shown in one step, so
+    the older one cannot have gone away by its own timer, however slow the machine is."""
+    fb_seed(wq)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_context(viewport={"width": 1280, "height": 900}).new_page()
+        tab.clock.install()
+        tab.goto(site + "#all")
+        shown = tab.evaluate(
+            "() => { toast('first'); toast('second'); return [...document.querySelectorAll('.toast')].map(t => t.textContent) }")
+        assert shown == ["second"]
+        browser.close()
+
+
+LOST_IT = "Assistant couldn’t record it for later."
+
+
+def block_the_feedback_file(wq) -> None:
+    import shutil
+    (wq.home / ".assistant").mkdir(exist_ok=True)
+    shutil.rmtree(wq.home / ".assistant/feedback", ignore_errors=True)
+    (wq.home / ".assistant/feedback").write_text("in the way")
+
+
+def toast_is(tab, expected: str) -> None:
+    tab.wait_for_function("(want) => document.querySelectorAll('.toast').length === 1 && document.querySelector('.toast').textContent === want", arg=expected)
+    tab.clock.run_for(13000)  # it goes away, so the next one can't be this one still showing
+    tab.wait_for_selector(".toast", state="detached")
+
+
+def test_a_row_action_whose_note_cant_be_saved_says_so_as_well_as_what_it_says_itself(site, wq):
+    keys = fb_seed(wq)
+    block_the_feedback_file(wq)
+    a, plain = Sel(keys["row"]), Sel(keys["plain"])
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 1280, "height": 900})
+        tab.clock.install()
+        tab.goto(site + "#all")
+        tab.locator(f"{plain.bar} .sf-send").click()  # Send to Agent: it has a message of its own
+        tab.locator(f"{plain.row} .cp-go").click()
+        tab.wait_for_function("document.querySelector('.toast')?.textContent.startsWith('Sent to an agent as td-')")
+        said = text(tab, ".toast")
+        assert said.endswith(" " + LOST_IT) and said.count("Assistant couldn’t record") == 1 and tab.locator(".toast").count() == 1, said
+        tab.locator(f"{a.bar} .sf-mark").click()
+        tab.wait_for_selector(f"{a.row}.is-done")
+        toast_is(tab, "Done. Assistant couldn’t record that for later.")
+        tab.locator(f"{a.bar} .sf-mark").click()  # Undo, with no message of its own: the notice stands alone
+        tab.wait_for_selector(f"{a.row}.is-done", state="detached")
+        toast_is(tab, "That worked. " + LOST_IT)
+        tab.locator(f"{a.bar} button", has_text="Snooze").click()
+        toast_is(tab, "That worked. " + LOST_IT)
+        tab.locator("#gmail-1 > summary").click()
+        tab.locator("#gmail-1 details").first.evaluate("d => d.open = true")
+        tab.locator(f'.ap-row[data-key="{keys["cand"]}"] .ap-ok').click()  # Approve
+        toast_is(tab, "That worked. " + LOST_IT)
+        tab.locator("#ready li[data-id='td-101'] .sf-mark").click()  # Done on a Ready for you result
+        toast_is(tab, "Done. Assistant couldn’t record that for later.")
+        browser.close()
+
+
+def test_an_email_action_whose_note_cant_be_saved_says_so_as_well_as_what_it_says_itself(site, wq):
+    write_page(mailbox_snapshot())
+    wq.sources({"gmail": {"accounts": [ACCT_A, ACCT_B]}})
+    fake_tool(wq.bin, "gog", [
+        ("thread modify", {}),
+        ("thread get t-g-act", {"seq": [{"thread": {"messages": [{"id": "1", "labelIds": ["UNREAD"]}]}},
+                                        {"thread": {"messages": [{"id": "1", "labelIds": ["INBOX", "UNREAD"]}]}}]}),
+        ("thread get t-g-news", {"thread": {"messages": [{"id": "1", "labelIds": ["INBOX"]}, {"id": "2"}]}})])
+    block_the_feedback_file(wq)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 1280, "height": 900})
+        tab.clock.install()
+        tab.goto(site + "#mailbox")
+        tab.wait_for_selector(em("g-act"), state="visible")
+        tab.locator('#gmail-1 .ap-group[data-group="gmail-news"] > summary').click()
+        tab.locator(f"{em('o-read')} .sf-send").click()
+        tab.locator(f"{em('o-read')} .cp-go").click()
+        tab.wait_for_function("document.querySelector('.toast')?.textContent.startsWith('Sent to an agent as td-')")
+        assert text(tab, ".toast").endswith(" " + LOST_IT) and tab.locator(".toast").count() == 1
+        tab.locator(f"{em('g-news2')} .em-acts button", has_text="Snooze").click()  # a message for the mark of several keys
+        toast_is(tab, "Snoozed for 3 days. Show hidden email lists it, with Undo. " + LOST_IT)
+        tab.locator(f"{em('g-act')} .em-archive").click()
+        toast_is(tab, "Archived in Gmail. Gmail confirmed that no message in the conversation is in your inbox. " + LOST_IT)
+        tab.locator(f"{em('g-news')} .em-readbtn").click()
+        toast_is(tab, "Marked read in Gmail. Gmail confirmed that every message in the conversation is read. " + LOST_IT)
+        tab.locator("#em-showhidden").click()
+        tab.locator(f"{em('g-news2')} .em-undo").click()  # undo of a snooze
+        toast_is(tab, "It’s back on the list. " + LOST_IT)
+        tab.locator(f"{em('g-act')} .em-undo").click()  # undo of an archive: moved back to the inbox
+        toast_is(tab, "Moved back to your Gmail inbox. " + LOST_IT)
         browser.close()
 
 
