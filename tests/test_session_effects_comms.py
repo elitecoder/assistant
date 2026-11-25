@@ -526,6 +526,8 @@ def _config(paths, target):
     ("W0OWNER", "", "W0OWNER", True),        # an Enterprise Grid id counts like a U id
     ("C0CHAN", "U0OWNER", "U0OWNER", True),  # a channel: the owner's id comes from SLACK_USER_ID
     ("C0CHAN", "W0OWNER", "W0OWNER", True),
+    ("C0CHAN", "W0OWNER", "U0OTHER", False),  # a W id names the owner like a U id does, so someone else is refused
+    ("W0OWNER", "", "U0OTHER", False),
     ("C0CHAN", "U0OWNER", "U0OTHER", False),
     ("C0CHAN", "U0OWNER", "", False),        # a message with no author is never the owner's
     ("C0CHAN", "", "U0OWNER", True),         # a channel and no owner id: typed, as it was before there was a rule
