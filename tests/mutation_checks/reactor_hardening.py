@@ -3,6 +3,9 @@
 CAPTURE = "slack-reactor/src/capture.js"
 STORE = "slack-reactor/src/todo-store.js"
 INDEX = "slack-reactor/src/index.js"
+MODE = "slack-reactor/src/mode.js"
+MODE_TESTS = "tests/test_reactor_hardening.py::test_reactor_mode_node_tests_pass"
+DOCTOR = "bin/assistant-doctor.py"
 CAPTURE_TESTS = "tests/test_reactor_hardening.py::test_reactor_capture_node_tests_pass"
 STORE_TESTS = "tests/test_reactor_hardening.py::test_reactor_todo_store_node_tests_pass"
 HOLDS = "tests/test_reactor_hardening.py::test_an_add_waits_while_a_python_writer_holds_the_lock"
@@ -298,8 +301,8 @@ CHECKS = (
     (
         "the capture log line says when the owner is unknown",
         CAPTURE,
-        "const mark = unknownOwner ? ' (Ask me: owner unknown)' : ''",
-        "const mark = ''",
+        "const mark = unknownOwner ? ' (Ask me: owner unknown)' : everyone",
+        "const mark = everyone",
         CAPTURE_TESTS,
     ),
     (
@@ -357,5 +360,159 @@ CHECKS = (
         '    log "   • Set SLACK_APP_TOKEN + SLACK_BOT_TOKEN in ~/.zprofile, and SLACK_USER_ID to"\n',
         '    log "   • Set SLACK_APP_TOKEN + SLACK_BOT_TOKEN in ~/.zprofile, then:"\n',
         "tests/test_reactor_hardening.py::test_the_installer_tells_you_to_set_your_slack_user_id",
+    ),
+    (
+        "in Pro mode a reaction with an unknown owner starts by itself",
+        CAPTURE,
+        "  if (everyone) return { capture: true, autoDispatch: autoDispatchOn }\n",
+        "  if (false) return { capture: true, autoDispatch: autoDispatchOn }\n",
+        CAPTURE_TESTS,
+    ),
+    (
+        "in the default mode a reaction with an unknown owner is still Ask me",
+        CAPTURE,
+        "  const unknownOwner = !owner.id && !everyone\n",
+        "  const unknownOwner = !owner.id && false\n",
+        CAPTURE_TESTS,
+    ),
+    (
+        "the 20-task limit does not apply in Pro mode",
+        CAPTURE,
+        "...(unknownOwner ? { priority: 'P3', reactedBy: event.user, unconfirmedCap: MAX_UNCONFIRMED }",
+        "...(!owner.id ? { priority: 'P3', reactedBy: event.user, unconfirmedCap: MAX_UNCONFIRMED }",
+        CAPTURE_TESTS,
+    ),
+    (
+        "the start-up line says in Pro mode that every member's reaction starts work",
+        CAPTURE,
+        "  if (everyone) {\n    return 'owner: unknown",
+        "  if (false) {\n    return 'owner: unknown",
+        CAPTURE_TESTS,
+    ),
+    (
+        "the mode function treats a failed command as the default mode",
+        MODE,
+        "  if (answer.code !== 0) throw new Error(",
+        "  if (false) throw new Error(",
+        MODE_TESTS,
+    ),
+    (
+        "the mode function treats output that is not a mode as the default mode",
+        MODE,
+        "  if (mode !== 'pro' && mode !== 'default') throw new Error(",
+        "  if (false) throw new Error(",
+        MODE_TESTS,
+    ),
+    (
+        "the mode function takes a saved mode that is not pro as the default mode",
+        MODE,
+        "    if (value === undefined || value === null || value === 'pro') return heuristic()\n    return 'default'\n",
+        "    if (value === undefined || value === null) return heuristic()\n    return value === 'default' ? 'default' : 'pro'\n",
+        MODE_TESTS,
+    ),
+    (
+        "the mode function takes a config it can't read as the default mode",
+        MODE,
+        "      if (e.code !== 'ENOENT') return 'default' // unreadable or not JSON\n",
+        "      if (false) return 'default' // unreadable or not JSON\n",
+        MODE_TESTS,
+    ),
+    (
+        "the mode function asks again once a minute is up",
+        MODE,
+        "    if (!cached || now() - cached.at >= CACHE_MS) {",
+        "    if (!cached) {",
+        MODE_TESTS,
+    ),
+    (
+        "the mode function says it could not tell only once",
+        MODE,
+        "        if (!told) {\n          told = true\n",
+        "        if (true) {\n          told = true\n",
+        MODE_TESTS,
+    ),
+    (
+        "the reactor passes the mode and the Pro owner to the handler",
+        INDEX,
+        "owner: OWNER, openBeforeOwnerRule: OPEN_BEFORE_OWNER_RULE, mode: currentMode, emojis",
+        "owner: OWNER, emojis",
+        CAPTURE_TESTS,
+    ),
+    (
+        "the doctor's remedy names the reactor's restart, which reads the id at its own start",
+        DOCTOR,
+        'com.assistant.assistant-comms`" + REACTOR_RESTART)',
+        'com.assistant.assistant-comms`")',
+        "tests/test_session_effects_comms.py::test_the_doctor_warns_when_a_channel_is_the_target_and_the_owner_is_unknown",
+    ),
+    (
+        "the doctor says reactions count in every channel Assistant is in",
+        DOCTOR,
+        '" Fine if you are the only person in the channels Assistant is in",',
+        '" Fine if you are the only person in that channel",',
+        "tests/test_session_effects_comms.py::test_the_doctor_warns_when_a_channel_is_the_target_and_the_owner_is_unknown",
+    ),
+    (
+        "the doctor says the reactor takes any member's reaction as yours when no SLACK_USER_ID is set",
+        DOCTOR,
+        'REACTOR_SAYS[bool(env_id)]',
+        'REACTOR_SAYS[True]',
+        "tests/test_session_effects_comms.py::test_the_doctor_warns_when_a_channel_is_the_target_and_the_owner_is_unknown",
+    ),
+    (
+        "the doctor doesn't claim the reactor takes everyone's reactions when SLACK_USER_ID is mistyped",
+        DOCTOR,
+        '    True: "The Slack reactor saves every reaction as Ask me until the ID is fixed.",\n',
+        '    True: "The Slack reactor can\'t tell either, so it takes a reaction with your task emoji from any member as yours.",\n',
+        "tests/test_session_effects_comms.py::test_the_doctor_warns_when_a_channel_is_the_target_and_the_owner_is_unknown",
+    ),
+    (
+        "the installer says a reaction from anyone starts a task in Pro mode",
+        "install.sh",
+        '    log "     or in Pro mode a reaction from anyone starts a task), then:"\n',
+        '    log "     ), then:"\n',
+        "tests/test_reactor_hardening.py::test_the_installer_tells_you_to_set_your_slack_user_id",
+    ),
+    (
+        "the installer says a reaction is saved as Ask me without the id",
+        "install.sh",
+        '    log "     ID; without it, a reaction is saved as Ask me and never starts by itself,"\n',
+        '    log "     ID,"\n',
+        "tests/test_reactor_hardening.py::test_the_installer_tells_you_to_set_your_slack_user_id",
+    ),
+    (
+        "the Pro fallback applies only when SLACK_USER_ID is absent or empty",
+        INDEX,
+        "const OPEN_BEFORE_OWNER_RULE = !process.env.SLACK_USER_ID\n",
+        "const OPEN_BEFORE_OWNER_RULE = true\n",
+        CAPTURE_TESTS,
+    ),
+    (
+        "the Pro fallback applies when SLACK_USER_ID is only spaces",
+        INDEX,
+        "const OPEN_BEFORE_OWNER_RULE = !process.env.SLACK_USER_ID\n",
+        "const OPEN_BEFORE_OWNER_RULE = !(process.env.SLACK_USER_ID ?? '').trim()\n",
+        CAPTURE_TESTS,
+    ),
+    (
+        "the Pro fallback applies to a mistyped SLACK_USER_ID in the handler",
+        CAPTURE,
+        "const everyone = !owner.id && ctx.openBeforeOwnerRule === true &&",
+        "const everyone = !owner.id &&",
+        CAPTURE_TESTS,
+    ),
+    (
+        "a saved pro is believed only when bin/assistant-mode.py says pro",
+        MODE,
+        "    if (value === undefined || value === null || value === 'pro') return heuristic()\n    return 'default'\n",
+        "    if (value === 'pro') return 'pro'\n    if (value === undefined || value === null) return heuristic()\n    return 'default'\n",
+        MODE_TESTS,
+    ),
+    (
+        "the log line says why a reaction started when the owner is unknown in Pro mode",
+        CAPTURE,
+        " : everyone ? ' (owner unknown: captured as before the owner rule)' : ''",
+        " : ''",
+        CAPTURE_TESTS,
     ),
 )

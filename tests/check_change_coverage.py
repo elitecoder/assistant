@@ -15,7 +15,7 @@ from pathlib import Path
 from coverage import Coverage
 from coverage.parser import PythonParser
 
-from mutation_smoke import CHECKS
+from mutation_smoke import ALL_CHECKS as CHECKS
 from run_python_coverage import PYTHON_SOURCE_DIRS, canonical_report_hash
 
 # Shell files with no line-coverage tool; each changed code hunk needs a

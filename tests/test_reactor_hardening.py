@@ -22,8 +22,8 @@ from assistant import todostore
 REPO = Path(__file__).resolve().parent.parent
 NODE = shutil.which("node")
 REACTOR = REPO / "slack-reactor"
-pytestmark = pytest.mark.skipif(NODE is None or os.uname().sysname != "Darwin",
-                                reason="the reactor takes the lock with a macOS flag, and needs node")
+pytestmark = pytest.mark.skipif(NODE is None, reason="the reactor needs node")
+MAC_LOCK = pytest.mark.skipif(os.uname().sysname != "Darwin", reason="the reactor takes the lock with a macOS flag")
 
 
 def node_tests(name: str) -> None:
@@ -40,10 +40,16 @@ def node_tests(name: str) -> None:
     assert proc.returncode == 0, out[-4000:] + err[-2000:]
 
 
+@MAC_LOCK
 def test_reactor_capture_node_tests_pass():
     node_tests("capture.test.js")
 
 
+def test_reactor_mode_node_tests_pass():
+    node_tests("mode.test.js")
+
+
+@MAC_LOCK
 def test_reactor_todo_store_node_tests_pass():
     node_tests("todo-store.test.js")
 
@@ -65,6 +71,7 @@ def node(home: Path, script: str, **kwargs) -> subprocess.Popen:
 ADD_ONE = "console.log(JSON.stringify(await addTodo({title: 't', detail: 'd', url: '', source: 'slack-react:C:1'})))"
 
 
+@MAC_LOCK
 def test_an_add_waits_while_a_python_writer_holds_the_lock(home):
     with todostore.todo_lock():
         proc = node(home, ADD_ONE)
@@ -77,6 +84,7 @@ def test_an_add_waits_while_a_python_writer_holds_the_lock(home):
     assert [i["id"] for i in json.loads(todostore.todo_path().read_text())["items"]] == ["td-001"]
 
 
+@MAC_LOCK
 def test_a_python_writer_waits_while_the_reactor_holds_the_lock(home):
     proc = node(home, "await withTodoLock(() => { console.log('held'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1500) })")
     assert proc.stdout.readline().strip() == "held"
@@ -93,6 +101,7 @@ def test_a_python_writer_waits_while_the_reactor_holds_the_lock(home):
     assert proc.wait(timeout=20) == 0
 
 
+@MAC_LOCK
 def test_an_add_that_cannot_get_the_lock_in_time_fails_and_writes_nothing(home):
     before = todostore.todo_path().read_text()
     with todostore.todo_lock():
@@ -102,6 +111,7 @@ def test_an_add_that_cannot_get_the_lock_in_time_fails_and_writes_nothing(home):
     assert todostore.todo_path().read_text() == before
 
 
+@MAC_LOCK
 def test_three_hundred_adds_while_python_rewrites_the_file_lose_nothing(home):
     added = 300
     proc = node(home, f"for (let i = 0; i < {added}; i++) await addTodo({{title: `t${{i}}`, detail: 'd', url: '', source: `slack-react:C:${{i}}`}})")
@@ -215,5 +225,5 @@ def test_a_task_the_reactor_could_not_attribute_waits_for_the_owner_to_decide(ho
 def test_the_installer_tells_you_to_set_your_slack_user_id():
     # The runbook prints only on --apply, which a test must not run, so read what it prints from the script.
     text = (REPO / "install.sh").read_text()
-    assert "and SLACK_USER_ID to\"" in text and "never starts by itself), then:" in text
+    assert "and SLACK_USER_ID to\"" in text and "never starts by itself,\"" in text and "or in Pro mode a reaction from anyone starts a task), then:" in text
     assert "your profile, the three dots, Copy member" in text

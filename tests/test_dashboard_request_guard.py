@@ -668,9 +668,16 @@ def test_the_page_holds_the_token_and_is_readable_by_its_owner_only(home):
     assert not list(page.parent.glob("*.tmp"))
 
 
-def test_two_renders_at_once_both_finish_and_leave_one_complete_page(home):
+def test_two_renders_at_once_both_finish_and_leave_one_complete_page(home, monkeypatch):
     renderer = renderer_for(home)
     errors = []
+    page = home / ".claude/assistant-dashboard.html"
+    renders = 4
+    # Every render waits with its page written to a temporary file, so they always overlap, however fast they run.
+    # This assumes renders don't take turns: if they ever do, the barrier times out after 30 seconds and the test fails.
+    all_written, replace = threading.Barrier(renders, timeout=30), renderer.os.replace
+    monkeypatch.setattr(renderer.os, "replace",
+                        lambda source, target: (Path(target) == page and all_written.wait(), replace(source, target)))
 
     def render():
         try:
@@ -678,13 +685,13 @@ def test_two_renders_at_once_both_finish_and_leave_one_complete_page(home):
         except BaseException as error:  # noqa: BLE001
             errors.append(error)
 
-    threads = [threading.Thread(target=render) for _ in range(4)]
+    threads = [threading.Thread(target=render) for _ in range(renders)]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join(timeout=120)
+    assert not any(thread.is_alive() for thread in threads), "a render didn't finish"
     assert errors == []
-    page = home / ".claude/assistant-dashboard.html"
     assert page.read_text().rstrip().endswith("</html>") and page.read_text().count("<!doctype html>") == 1
     assert not list(page.parent.glob("*.tmp")) and mode_of(page) == 0o600
 

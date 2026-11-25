@@ -346,10 +346,27 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   paused every other task's start, with a card blaming the session's name. It now types the
   instruction and records it without the task. A task parked this way earlier stays parked until
   you close its workspace and press "Queue to start" on it. Default mode is unchanged.
+- In Pro mode, a Slack reaction with your task emoji starts a task by itself
+  again when Assistant doesn't know your Slack member ID. Since 2026-11-24 such
+  a reaction was saved as an "Ask me" task that never started, so none of your
+  reactions started work if you had never set `SLACK_USER_ID` or `slack.owner`.
+  In Pro mode it is now captured as it was before: a plain title, the normal
+  priority, started by itself (unless `TODO_AUTODISPATCH=0`), with no limit on
+  how many wait. Until you set `SLACK_USER_ID`, anyone in a channel Assistant is
+  in can start a task the same way; the reactor's start-up line says so, and so
+  does `assistant-doctor.py` when your Slack target is a channel. Setting
+  `SLACK_USER_ID` restricts it to your reactions. A `SLACK_USER_ID` that is set
+  but mistyped still saves reactions as "Ask me". Pro mode here means that
+  `bin/assistant-mode.py` says so; if it can't be asked, the reactor treats the
+  install as the default mode. The default mode is unchanged: an unknown owner
+  is still saved as "Ask me". Tasks already saved as "Ask me" stay as they are;
+  they start with Queue to start.
 - In Pro mode, Assistant types your Slack messages into the warm session again
   when the target is a channel and `SLACK_USER_ID` isn't set. An update on
   2026-11-25 made it refuse them all and reply "I can't tell which Slack
   account is yours". A message it refused then isn't replayed: send it again.
+- Start the installer's list of changed agents empty. Under bash 5 (Homebrew's, or Linux's), an install that
+  changed no agent stopped at step 5 with `CHANGED_LABELS: unbound variable`.
 - The records of a dispatch and of an effect on a session now accept the ten-digit session numbers
   the session tool really uses (such as `workspace:1000020126`). Before, such a record was left out whole.
 - Running the tests no longer touches your real home folder. The test setup now moves `HOME` to a throwaway
@@ -504,6 +521,11 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - Build the fake AWS access key IDs in the secret-scrubber test from two parts, so GitHub secret scanning no longer flags them. The test values are unchanged.
 
 ### Changed
+- Run the four mutation-check shards on Linux. Only the coverage job still needs a Mac, and it also runs the
+  mutation checks whose tests save through the Slack task-list lock (`--mac-only`). Before, runs often failed
+  when GitHub had no Mac free for one of the five macOS jobs.
+  A new push to a pull request now cancels that pull request's older runs. A mutation check whose test
+  ran nothing fails, instead of passing its baseline unseen.
 - Keep each change's mutation checks in a file of its own under `tests/mutation_checks/`. Every pull request
   used to add its checks at the same place in one long list, so each conflicted with the next, and one merge
   joined two checks into one that nothing reported. The harness now also refuses a malformed or duplicated

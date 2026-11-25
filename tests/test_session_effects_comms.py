@@ -757,12 +757,18 @@ def test_the_doctor_warns_when_a_channel_is_the_target_and_the_owner_is_unknown(
     assert doctor.check_slack_owner in doctor.SLACK_CHECKS
     assert "not ~/.zshrc" in check.remedy  # the service reads ~/.zprofile, so that is where the id must be set
     assert "types every member's messages into the session, as it always has" in check.detail
+    assert "The Slack reactor can't tell either, so it takes a reaction with your task emoji from any member as yours." in check.detail
+    assert "Ask me" not in check.detail  # with no id at all, Pro mode doesn't save reactions as Ask me
+    assert "the only person in the channels Assistant is in" in check.detail  # reactions count in every channel it is in
+    assert "launchctl kickstart -k gui/$UID/com.assistant.slack-reactor" in check.remedy  # it reads the id at its own start
     assert "types none" not in check.detail and check.remedy.startswith("to have only your own messages typed, add ")
     assert "SLACK_USER_ID is set, but" not in check.detail  # it isn't set at all
     monkeypatch.setenv("SLACK_USER_ID", "<@U0OWNER>")  # set, and mistyped: the check says so, and still warns
     mistyped = doctor.check_slack_owner()
     assert mistyped.status == doctor.WARN and "is set to a member ID (SLACK_USER_ID is set, but to something that " \
         "isn't one: a member ID is a U or W followed by capital letters and digits), so Assistant can't tell" in mistyped.detail
+    assert "The Slack reactor saves every reaction as Ask me until the ID is fixed." in mistyped.detail
+    assert "from any member as yours" not in mistyped.detail  # a mistyped id doesn't open the reactor to everyone
     monkeypatch.delenv("SLACK_USER_ID")
     paths.config.write_text(json.dumps({"slack": {"target": "C0CHAN", "owner": "U0OWNER", "allowed_targets": ["C0CHAN"]}}))
     assert doctor.check_slack_owner().status == doctor.PASS  # slack.owner names the owner, as it does for the reactor

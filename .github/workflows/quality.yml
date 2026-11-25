@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels that pull request's older runs, so they don't all wait for a Mac.
+# Each run on main has a group of its own, so none is cancelled or held back: each push's changes get checked.
+concurrency:
+  group: quality-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   changed-code-coverage:
     name: Tests and coverage
@@ -69,6 +75,10 @@ jobs:
             --work-queue-browser-report "$RUNNER_TEMP/assistant-coverage/work-queue/istanbul.json" \
             --reactor-lcov "$RUNNER_TEMP/assistant-coverage/reactor.lcov" \
             --output "$RUNNER_TEMP/assistant-coverage/changed-code.json"
+      - name: Prove the Mac-only regression tests catch broken behavior
+        run: |
+          uv run --no-sync python tests/mutation_smoke.py --mac-only --workers 3 \
+            --output "$RUNNER_TEMP/assistant-coverage/mutations-mac-only.json"
       - name: Keep validation evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -79,13 +89,12 @@ jobs:
 
   # The mutation checks run in four shards at once. Shard i of n runs every n-th
   # check from the i-th, so the shards together run every check exactly once.
-  # Four shards plus the coverage job is five macOS jobs, the most this account
-  # runs at a time, so no job waits in a queue. Each shard runs three checks at
-  # once: a macOS runner has three cores, and every check has its own copy of the
-  # sources and its own home.
+  # They run on Linux, leaving out the checks whose tests need a Mac; the
+  # coverage job runs those. Each shard runs four checks at once, one per core of
+  # a Linux runner, and every check has its own copy of the sources and its own home.
   mutations:
     name: Mutation checks (shard ${{ matrix.shard }} of 4)
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -99,14 +108,16 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - name: Install development tools
         run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q zsh
           uv venv --python 3.13
           uv python install 3.11
           uv pip install pytest==9.1.1 coverage==7.16.1 playwright==1.63.0
-          uv run --no-sync python -m playwright install chromium
+          uv run --no-sync python -m playwright install --with-deps chromium
       - name: Prove critical regression tests catch broken behavior
         run: |
           mkdir -p "$RUNNER_TEMP/assistant-mutations"
-          uv run --no-sync python tests/mutation_smoke.py --shard "${{ matrix.shard }}/4" --workers 3 \
+          uv run --no-sync python tests/mutation_smoke.py --shard "${{ matrix.shard }}/4" --workers 4 \
             --output "$RUNNER_TEMP/assistant-mutations/mutations-${{ matrix.shard }}.json"
       - name: Keep validation evidence
         if: always()
