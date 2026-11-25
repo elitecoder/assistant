@@ -49,7 +49,7 @@ def typed(send, rpc, text, source, confirmed=True):
         return run(send, rpc, *argv, text=text)
 
 
-@pytest.mark.parametrize("source", se.DIGEST_SOURCES)
+@pytest.mark.parametrize("source", ["cli", "run-now", "merge"])
 def test_four_different_texts_into_one_session_are_all_typed_by_the_script(send, home, source):
     for text in TEXTS:
         rpc = Rpc(home)
@@ -61,7 +61,7 @@ def test_four_different_texts_into_one_session_are_all_typed_by_the_script(send,
     assert not any(t in raw for t in TEXTS)
 
 
-@pytest.mark.parametrize("source", se.DIGEST_SOURCES)
+@pytest.mark.parametrize("source", ["cli", "run-now", "merge"])
 def test_a_different_text_right_after_an_unconfirmed_one_is_typed_and_the_same_text_is_still_held(send, home, source):
     assert typed(send, Rpc(home), TEXTS[0], source, confirmed=False)[0] == 0
     assert send_ledger(home)[1]["outcome"] == "unknown"
@@ -73,7 +73,7 @@ def test_a_different_text_right_after_an_unconfirmed_one_is_typed_and_the_same_t
     assert "couldn't tell if it arrived" in record["refused"]["reason"]
 
 
-@pytest.mark.parametrize("source", se.DIGEST_SOURCES)
+@pytest.mark.parametrize("source", ["cli", "run-now", "merge"])
 def test_the_same_text_is_still_stopped_the_fourth_time_by_the_script(send, home, source):
     for _ in range(3):
         assert typed(send, Rpc(home), TEXTS[0], source)[0] == 0
@@ -99,6 +99,14 @@ def test_a_nudge_after_an_unconfirmed_one_is_still_held_whatever_its_text(send, 
         assert run(send, Rpc(home), *flags, text=TEXTS[0])[0] == 0
     code, record = run(send, Rpc(home), *flags, text=TEXTS[1])
     assert code == 4 and record["refused"]["code"] == "unknown"
+
+
+def test_the_script_makes_no_digest_for_a_source_that_doesnt_carry_one(send, home):
+    """No secret is read or made for a nudge: the digest is only asked for when the key will use it."""
+    with mock.patch.object(se, "typed_digest", side_effect=AssertionError("not for a nudge")):
+        assert run(send, Rpc(home), "--enter", "--source", "nudge:stranded", "--auth-kind", "standing",
+                   "--auth-ref", "nudge:stranded")[0] == 0
+    assert not (home / ".assistant/feedback").exists()
 
 
 def test_a_digest_that_cant_be_made_still_types_under_the_old_key(send, home):

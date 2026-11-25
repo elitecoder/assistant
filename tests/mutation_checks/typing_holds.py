@@ -30,20 +30,13 @@ CHECKS = (
         SE,
         '    keyed = {**target, "msg_digest": digest} if digest else target  # what is counted and held',
         '    keyed = target  # what is counted and held',
-        H + "test_four_different_texts_in_half_an_hour_are_all_typed",
+        H + "test_the_same_text_is_still_stopped_the_fourth_time",
     ),
     (
         "the same text is still held after an unconfirmed typing",
         SE,
         '_held_by_unknown(keyed, now):',
-        '_held_by_unknown({"source": source, "session": session}, now):',
-        H + "test_the_same_text_is_still_stopped_the_fourth_time",
-    ),
-    (
-        "a different text is typed after an unconfirmed one",
-        SE,
-        '_held_by_unknown(keyed, now):',
-        '_held_by_unknown(target, now):',
+        '_held_by_unknown({"source": source, "session": session, "msg_digest": "0" * 16}, now):',
         H + "test_a_different_text_is_typed_after_one_nobody_could_tell_about_and_the_same_text_is_held",
     ),
     (
@@ -121,7 +114,7 @@ CHECKS = (
         SEND,
         'if args.source in session_effects.DIGEST_SOURCES else ""',
         'if True else ""',
-        H + "test_every_other_source_is_still_limited_by_source_and_session_whatever_digest_it_is_given",
+        HS + "test_the_script_makes_no_digest_for_a_source_that_doesnt_carry_one",
     ),
     (
         "run now types a proposal of any length",

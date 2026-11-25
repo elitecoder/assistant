@@ -38,7 +38,11 @@ def go(source, digest, session=WS):
     return se.begin(session, source, kind="tap", ref="x:y", component="x", text_digest=digest)
 
 
-@pytest.mark.parametrize("source", se.DIGEST_SOURCES)
+def test_the_sources_that_carry_a_digest_are_the_three_whose_text_is_chosen_each_time():
+    assert se.DIGEST_SOURCES == ("cli", "run-now", "merge")
+
+
+@pytest.mark.parametrize("source", ["cli", "run-now", "merge"])
 def test_four_different_texts_in_half_an_hour_are_all_typed(home, clock, source):
     for n in range(se.LOOP_MAX + 2):
         se.finish(go(source, f"{n:016x}"), "done")
@@ -46,7 +50,7 @@ def test_four_different_texts_in_half_an_hour_are_all_typed(home, clock, source)
     assert [r["target"]["msg_digest"] for r in rows(home) if r["kind"] == "intent"][:2] == [f"{0:016x}", f"{1:016x}"]
 
 
-@pytest.mark.parametrize("source", se.DIGEST_SOURCES)
+@pytest.mark.parametrize("source", ["cli", "run-now", "merge"])
 def test_the_same_text_is_still_stopped_the_fourth_time(home, clock, source):
     for _ in range(se.LOOP_MAX):
         se.finish(go(source, DIGEST_A), "done")
@@ -56,7 +60,7 @@ def test_the_same_text_is_still_stopped_the_fourth_time(home, clock, source):
     se.finish(go(source, DIGEST_A, WS2), "done")  # and another session
 
 
-@pytest.mark.parametrize("source", se.DIGEST_SOURCES)
+@pytest.mark.parametrize("source", ["cli", "run-now", "merge"])
 def test_a_different_text_is_typed_after_one_nobody_could_tell_about_and_the_same_text_is_held(home, clock, source):
     se.finish(go(source, DIGEST_A), "unknown", error="timeout")
     clock.t += 600
@@ -133,7 +137,7 @@ def test_the_ledger_takes_a_text_digest_only_through_its_own_argument_and_only_a
     with pytest.raises(ValueError):
         effects.begin(se.CLASS, {**target, "msg_digest": DIGEST_A}, {"kind": "tap", "ref": "x:y", "at": "2026-11-01T00:00:00Z"})
     auth = {"kind": "tap", "ref": "x:y", "at": effects._iso(effects._now())}
-    for bad in ("zz", "A" * 16, 5):
+    for bad in ("zz", "A" * 16, 5, "0" * 17, "x" + "0" * 16):
         with pytest.raises(ValueError):
             effects.begin(se.CLASS, target, auth, text_digest=bad)
     # a conversation's own digest (a long Gmail thread) can't be replaced by one a caller gives
