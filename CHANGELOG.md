@@ -136,6 +136,11 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   below 860 px wide the buttons sit under the title so a title is never squeezed
   to nothing: between 621 and 860 px wide a plain row is about 98 px tall where
   it was 61, and its title has the full width. At 320 wide a row can gain a line.
+- In the **Why?** list, starting an agent is one step that says what was typed
+  into the new session ("Assistant started an agent on it and typed the task's
+  instruction into the new session", or "…but couldn't tell if it arrived"), instead
+  of a line for each thing typed. A typing that belongs to no start, such as a
+  nudge or `/cleanup`, says what it was.
 - Every Work queue row and every TODO now carries a short id that later
   features will use to show where a piece of work came from. Nothing you see
   changes yet.
