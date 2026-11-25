@@ -839,6 +839,39 @@ def events(trace=None, kind=None, subject=None, since=None, limit=200, *, until=
         return []
 
 
+def read_trace(trace: str, limit: int = 200) -> tuple:
+    """(state, records) for one piece of work, from ONE connection: the newest `limit` records filed under `trace`,
+    newest first, as `events()` gives them, and whether the store could be read. `events()` gives `[]` for a store that
+    is missing, damaged, busy, foreign or written by a newer Assistant, and for one with nothing recorded; this tells
+    them apart, and a store that goes busy between a check and a read can't read as "nothing recorded". The state is
+    "ok", "missing" (there is no store yet, or it has no records table yet, so nothing is recorded), "newer" (a newer
+    Assistant wrote it and this one leaves it alone), "foreign" (another program's file) or "unreadable" (damaged, or
+    busy for longer than the short wait). Never raises and writes no record; like `events()`, opening the store may
+    tighten the database file's permissions to owner-only."""
+    try:
+        if not os.path.isfile(_path(_DB)):
+            return "missing", []
+        conn = _connect(create=False)
+        try:
+            conn.execute("PRAGMA query_only=ON")
+            rows = conn.execute("SELECT id, ts, kind, trace, subject, component, fields FROM events WHERE trace=?"
+                                " ORDER BY ts DESC, seq DESC LIMIT ?",
+                                (trace if isinstance(trace, str) else None, max(1, min(int(limit), QUERY_LIMIT_MAX)))
+                                ).fetchall()
+        finally:
+            conn.close()
+        return "ok", [{"id": r[0], "ts": r[1], "kind": r[2], "trace": r[3], "subject": r[4], "component": r[5],
+                       "fields": json.loads(r[6])} for r in rows]
+    except _NewerSchema:
+        return "newer", []
+    except _ForeignDatabase:
+        return "foreign", []
+    except sqlite3.OperationalError as exc:
+        return ("missing" if "no such table" in str(exc) else "unreadable"), []
+    except Exception:  # noqa: BLE001 - a read that can't tell is "unreadable", never an error
+        return "unreadable", []
+
+
 # ---------------------------------------------------------------- upkeep
 
 

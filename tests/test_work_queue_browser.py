@@ -2233,7 +2233,7 @@ def test_choosing_a_reason_with_the_keyboard_puts_focus_on_the_notes_change_link
         tab.locator(a.thumb).focus()
         tab.keyboard.press("Enter")
         pressed(tab, a.thumb)
-        for _ in range(2):  # Tell Assistant, then Add a reason
+        for _ in range(3):  # Tell Assistant, Why?, then Add a reason
             tab.keyboard.press("Tab")
         assert tab.evaluate(focused) == "add"
         tab.keyboard.press("Enter")
@@ -2714,6 +2714,7 @@ def test_the_choices_are_real_buttons_reached_and_closed_with_the_keyboard_and_s
         pressed(tab, a.thumb)
         assert tab.locator(a.pop).is_hidden()
         tab.keyboard.press("Tab")  # Tell Assistant
+        tab.keyboard.press("Tab")  # Why is this here?
         tab.keyboard.press("Tab")  # Add a reason
         assert tab.evaluate("document.activeElement.dataset.fb") == "add"
         tab.keyboard.press("Enter")
@@ -2726,8 +2727,8 @@ def test_the_choices_are_real_buttons_reached_and_closed_with_the_keyboard_and_s
         tab.keyboard.press("Enter")
         tab.wait_for_selector(a.pop, state="hidden")
         assert fb_lines(wq)[-1]["reason"] == "not_mine"
-        assert tab.locator(f"{a.bar} .fb > button").evaluate_all("els => els.map(e => e.type)") == ["button", "button"]
-        assert labels(tab, f"{a.bar} .fb > button")[1] == "Tell Assistant"
+        assert tab.locator(f"{a.bar} .fb > button").evaluate_all("els => els.map(e => e.type)") == ["button", "button", "button"]
+        assert labels(tab, f"{a.bar} .fb > button")[1:] == ["Tell Assistant", "Why?"]
         # Scrolled near the bottom of a short screen, the choices open above the thumbs-down; scrolling moves them with it.
         last = Sel(pr(8)["key"])
         tab.locator(last.row).scroll_into_view_if_needed()
@@ -2781,5 +2782,544 @@ def test_the_thumb_and_the_small_labels_reach_4_5_to_1_on_the_pages_own_backgrou
             "the draft's link": f"{draft} .fb-open", "the page's promise": ".fb-promise"}.items() if tab.locator(selector).count()}
         low = {name: round(ratio, 2) for name, ratio in seen.items() if ratio < 4.5}
         assert not low and len(seen) >= 9, (scheme, low, sorted(seen))
+        cov.snap()
+        browser.close()
+
+
+# ─── "Why is this here?" ─────────────────────────────────────────────────────
+
+WHY_TRACE = "tr-" + "ab" * 8
+WHY_FIRST = 1_795_000_000.0
+WHY_LINES = ["Assistant first saw this, in GitHub.",
+             "The model sorted it into Do first and suggested you do it yourself. Model: claude-test-1. Sorting rules: version 1a2b3c4d.",
+             "You sent it to an agent for a first pass. It became task td-41.",
+             "Assistant started an agent on it.", "The agent reported it finished.",
+             "Archived in Gmail, because you pressed the button."]
+
+
+def why_seed(wq, monkeypatch=None) -> dict:
+    """fb_seed, plus a trail for its row (and the same trail for the task td-101 that came from another row)."""
+    from assistant import effects as ledger, telemetry
+    keys = fb_seed(wq)
+    config.write_json(wq.data / "traces.json", {keys["row"]: {"trace": WHY_TRACE, "seen": "2026-11-20", "first": WHY_FIRST},
+                                                pr(1)["key"]: {"trace": "tr-" + "cd" * 8, "seen": "2026-11-20"}})
+    sub = "row:" + "1" * 16
+    for kind, subject, fields in [
+            ("triage_verdict", sub, {"verdict": "you", "lane": "do_first", "model": "claude-test-1", "prompt_version": "rubric-1a2b3c4d",
+                                     "source": "github"}),
+            ("task", "td-41", {"state": "open", "origin": "work-queue", "mode": "assist"}),
+            ("dispatch", "td-41", {"outcome": "done", "ok": True, "workspace": "workspace:1000010013", "confirmed": True}),
+            ("task", "td-41", {"state": "done", "prev_state": "in-progress"})]:
+        telemetry.emit(kind, WHY_TRACE, subject, "work-queue", **fields)
+    ef = ledger.begin("gmail.archive", {"account": "me@example.com", "thread": "t1"},
+                      {"kind": "tap", "ref": "/api/gmail", "at": "2026-11-02T10:00:10Z"}, trace=WHY_TRACE)
+    ledger.finish(ef, "done", True)
+    return keys
+
+
+def why_link(key):
+    return f'.sf-row[data-key="{key}"] > .sf-main .why-link'
+
+
+def why_box(key):
+    return f'.sf-row[data-key="{key}"] > .why-box'
+
+
+def test_the_why_link_opens_only_on_a_click_and_shows_the_steps_in_order_with_their_times(site, wq):
+    keys = why_seed(wq)
+    link, box = why_link(keys["row"]), why_box(keys["row"])
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_context(viewport={"width": 1280, "height": 900}, locale="en-US", timezone_id="UTC").new_page()
+        cov = Coverage(tab)
+        requests = []
+        tab.on("request", lambda r: requests.append(r.url) if "/api/why" in r.url else None)
+        tab.clock.install(time=WHY_FIRST + 3600 * 5)  # the same day, five hours later
+        tab.goto(site + "#open-list")
+        tab.wait_for_selector(link)
+        assert tab.locator(link).inner_text() == "Why?"
+        assert tab.locator(link).get_attribute("aria-label") == "Why is this here?"
+        assert tab.locator(link).get_attribute("title") == "Why is this here?"
+        assert tab.locator(box).count() == 0 and requests == [], "nothing opens, and nothing is asked, by itself"
+        assert tab.locator(link).get_attribute("aria-expanded") == "false"
+        tab.locator(link).click()
+        tab.wait_for_selector(f"{box} .why-steps li")
+        assert tab.locator(link).get_attribute("aria-expanded") == "true"
+        assert len(requests) == 1 and "key=" + urllib.parse.quote(keys["row"], safe="") in requests[0]
+        assert tab.locator(f"{box} .why-head").inner_text() == "Why is this here?", "the full question is on screen"
+        lines = tab.locator(f"{box} .why-steps li").evaluate_all("els => els.map(e => e.lastChild.textContent)")
+        assert lines == WHY_LINES
+        times = tab.locator(f"{box} .why-steps time").evaluate_all("els => els.map(e => e.textContent)")
+        assert times[0] == "Today 11:06 am", times  # the reader's own clock, UTC here
+        assert all(re.fullmatch(r"(Today|[A-Z][a-z]{2} \d{1,2},) \d{1,2}:\d{2} [ap]m", t) for t in times), times
+        assert any(t.startswith("Nov ") for t in times), "a step from another day names the day"
+        assert tab.locator(f"{box} .why-foot").inner_text() == (
+            "This is everything Assistant has recorded about this item. The record stays on this Mac.")
+        assert tab.locator(f"{box} p", has_text="Loading").count() == 0
+        # directly under the row's own line of buttons, above the draft
+        order = tab.evaluate("""(sel) => { const box = document.querySelector(sel), row = box.parentElement;
+            return [...row.children].map(c => c.className.split(' ')[0]).filter(c => ['sf-main', 'fb-extra', 'why-box', 'draft'].includes(c)); }""", box)
+        assert order[:4] == ["sf-main", "fb-extra", "why-box", "draft"], order
+        no_sideways_scroll(tab)
+        cov.snap()
+        browser.close()
+
+
+def test_the_why_block_takes_focus_reaches_close_with_one_tab_and_closes_every_way_with_focus_back_on_the_link(site, wq):
+    keys = why_seed(wq)
+    link, box = why_link(keys["row"]), why_box(keys["row"])
+    focus_on = "document.activeElement.className"
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_context(viewport={"width": 1280, "height": 900}).new_page()
+        cov = Coverage(tab)
+        tab.goto(site + "#open-list")
+
+        def opened():
+            tab.locator(link).click()
+            tab.wait_for_selector(f"{box} .why-steps li")
+
+        def closed():
+            tab.wait_for_selector(box, state="detached")
+            assert tab.locator(link).get_attribute("aria-expanded") == "false"
+            assert "why-link" in tab.evaluate(focus_on), "focus returns to the link"
+
+        opened()
+        assert "why-head" in tab.evaluate(focus_on), "on open, focus is in the block"
+        tab.keyboard.press("Tab")
+        assert "why-close" in tab.evaluate(focus_on), "one Tab reaches Close, before the draft"
+        tab.keyboard.press("Enter")
+        closed()
+        opened()
+        tab.locator(link).click()  # a second click
+        closed()
+        opened()
+        tab.locator(f"{box} .why-steps li").first.click()  # Esc works after a click on the block's own text
+        tab.keyboard.press("Escape")
+        closed()
+        opened()
+        tab.locator("h2").first.click()  # and after a click on the page
+        tab.keyboard.press("Escape")
+        closed()
+        tab.keyboard.press("Escape")  # with nothing open, nothing happens
+        tab.locator(link).focus()
+        tab.keyboard.press("Enter")  # opens from the keyboard
+        tab.wait_for_selector(f"{box} .why-steps li")
+        cov.snap()
+        browser.close()
+
+
+def test_escape_closes_the_note_box_the_reasons_or_the_newest_block_in_that_order(site, wq):
+    keys = why_seed(wq)
+    a, b = Sel(keys["row"]), Sel(keys["plain"])
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_context(viewport={"width": 1280, "height": 900}).new_page()
+        cov = Coverage(tab)
+        tab.goto(site + "#open-list")
+        tab.locator(why_link(keys["row"])).click()
+        tab.wait_for_selector(f"{why_box(keys['row'])} .why-steps li")
+        tab.locator(why_link(keys["plain"])).click()
+        tab.wait_for_selector(f"{why_box(keys['plain'])} .why-foot")
+        tab.locator(a.open).click()  # a Tell Assistant box on the first row
+        tab.wait_for_selector(f"{a.x} .fb-tell textarea")
+        tab.keyboard.press("Escape")  # the note box closes first, and only it
+        tab.wait_for_selector(f"{a.x} .fb-tell", state="detached")
+        assert tab.locator(why_box(keys["row"])).count() == 1 and tab.locator(why_box(keys["plain"])).count() == 1
+        tab.locator(b.thumb).click()
+        pressed(tab, b.thumb)
+        tab.locator(f"{b.note} button", has_text="Add a reason").click()
+        tab.wait_for_selector(".fb-pop:not([hidden])")
+        tab.keyboard.press("Escape")  # then the reasons
+        tab.wait_for_selector(".fb-pop", state="hidden")
+        assert tab.locator(".why-box").count() == 2
+        tab.locator("h2").first.click()
+        tab.keyboard.press("Escape")  # then the block opened last
+        tab.wait_for_selector(why_box(keys["plain"]), state="detached")
+        assert tab.locator(why_box(keys["row"])).count() == 1
+        tab.keyboard.press("Escape")
+        tab.wait_for_selector(why_box(keys["row"]), state="detached")
+        cov.snap()
+        browser.close()
+
+
+def layout_seed(wq) -> dict:
+    """fb_seed with ten pull requests (a long title among them, and one the model says an agent can finish)."""
+    keys = fb_seed(wq)
+    row = keys["row"]
+    verdict = {**VERDICT, "disposition": "you", "lane": "do_first", "draft": "Hi Ana, I will take this one.", "title": "Review change 3"}
+    start = [{"key": pr(2)["key"], "title": "o/r#2: Change 2", "source": "GitHub", "effort": "", "reason": triage.BLOCKED_REASON,
+              "blocked": True},
+             {"key": row, "title": "o/r#3: Change 3", "source": "GitHub", "effort": "Quick", "reason": "Go", "blocked": False}]
+    github = [pr(n) for n in range(1, 11)]
+    github[7] = {**pr(8), "title": "o/r#8: " + "A long title that goes on and on about the change " * 2}
+    write_page({"built": "now", "github": github, "status": [],
+                "outlook": [mail("o-act", "act", "ana@example.com", "Can you review?")],
+                "gmail": {"me@example.com": [gmail_row("g-news", "news")]},
+                "triage": {"rows": {row: verdict, pr(9)["key"]: {**AGENT, "lane": "week"}}, "start": start, "changes": None,
+                           "waiting": 0, "skipped": 0, "note": "", "failed": []}})
+    return keys
+
+
+KINDS = {"a plain Open list row": '.sf-row[data-key="https://github.com/o/r/pull/8"]',
+         "a row with the Small pill and a draft": '.sf-row[data-key="https://github.com/o/r/pull/3"]',
+         "an agent row": '.sf-row[data-key="https://github.com/o/r/pull/9"]', "an email row": ".em-row",
+         "a row waiting for approval": ".ap-row", "a Start here item": ".start-list li"}
+HEIGHTS = "(s) => [...document.querySelectorAll(s)].filter(e => e.getBoundingClientRect().height).map(e => e.getBoundingClientRect().height)"
+
+
+@pytest.mark.parametrize("width", [390, 1280])
+def test_no_kind_of_row_gains_a_line_from_the_closed_why_link(site, wq, width):
+    layout_seed(wq)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": width, "height": 900})
+        tab.goto(site + "#all")
+        tab.wait_for_selector(".fb .why-link")
+        with_link = {name: tab.evaluate(HEIGHTS, sel) for name, sel in KINDS.items()}
+        total = tab.evaluate("document.documentElement.scrollHeight")
+        tab.evaluate("document.querySelectorAll('.why-link').forEach(e => e.style.display = 'none')")
+        without = {name: tab.evaluate(HEIGHTS, sel) for name, sel in KINDS.items()}
+        print(f"row heights at {width} wide, with the link / without it:",
+              {n: (round(sum(with_link[n])), round(sum(without[n]))) for n in KINDS},
+              f"page: {total} / {tab.evaluate('document.documentElement.scrollHeight')}")
+        for name in KINDS:
+            assert with_link[name] and len(with_link[name]) == len(without[name]), (width, name)
+            assert with_link[name] == without[name], (width, name, with_link[name], without[name])
+        no_sideways_scroll(tab)
+        browser.close()
+
+
+@pytest.mark.parametrize("width", [390, 1280])
+def test_a_ready_result_with_an_open_workspace_button_a_blocked_one_and_one_without_gain_no_line(site, wq, width):
+    fb_seed(wq)
+    many_rows(wq, 12)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": width, "height": 900})
+        tab.goto(site + "#all")
+        tab.wait_for_selector("#ready li .why-link")
+        probe = """() => Object.fromEntries([...document.querySelectorAll('#ready li[data-id]')].map(e => [e.dataset.id,
+            [e.getBoundingClientRect().height, !!e.querySelector('button:not(.sf-mark):not(.fb-down):not(.fb-open):not(.why-link)'),
+             e.querySelector('.ready-result').classList.contains('blocked')]]))"""
+        with_link = tab.evaluate(probe)
+        tab.evaluate("document.querySelectorAll('.why-link').forEach(e => e.style.display = 'none')")
+        without = tab.evaluate(probe)
+        print(f"ready results at {width} wide, with the link / without it:", {k: (v[0], without[k][0]) for k, v in with_link.items()})
+        assert with_link["td-101"][1] and with_link["td-102"][2] and not with_link["td-105"][1], "the three kinds are there"
+        assert {k: v[0] for k, v in with_link.items()} == {k: v[0] for k, v in without.items()}
+        browser.close()
+
+
+def test_with_the_link_hidden_a_ready_result_with_an_open_workspace_button_inside_start_here_is_one_line_shorter_at_390(site, wq):
+    """Compares the same page with the link shown and with it hidden; it is not a comparison with the page before this
+    change, which lays this result out just as tall (259 px). Start here holds the Ready for you box, which leaves a
+    result 274 px wide at 390, and its Open workspace button, thumb, Tell Assistant and Why? need about 300, so the
+    controls take a line the hidden-link page doesn't use. Every other result is the same either way."""
+    layout_seed(wq)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 390, "height": 900})
+        tab.goto(site + "#all")
+        tab.wait_for_selector("#ready li .why-link")
+        probe = "() => Object.fromEntries([...document.querySelectorAll('#ready li[data-id]')].map(e => [e.dataset.id, e.getBoundingClientRect().height]))"
+        with_link = tab.evaluate(probe)
+        tab.evaluate("document.querySelectorAll('.why-link').forEach(e => e.style.display = 'none')")
+        without = tab.evaluate(probe)
+        grown = {k: round(with_link[k] - without[k], 1) for k in with_link if abs(with_link[k] - without[k]) > 0.5}
+        print("results inside Start here at 390: height gained with the link:", grown, "of", {k: round(v) for k, v in without.items()})
+        assert set(grown) <= {"td-101"} and all(0 < g <= 40 for g in grown.values()), grown
+        browser.close()
+
+
+@pytest.mark.parametrize("width", [640, 700, 760, 800, 1024, 1280])
+def test_a_title_keeps_at_least_200_pixels_and_rows_stack_before_it_is_squeezed(site, wq, width):
+    layout_seed(wq)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": width, "height": 900})
+        tab.goto(site + "#all")
+        tab.wait_for_selector(".fb .why-link")
+        wide = tab.evaluate("""() => [...document.querySelectorAll('.sf-row')].filter(r => r.getBoundingClientRect().height)
+            .map(r => r.querySelector('.sf-link').getBoundingClientRect().width)""")
+        assert wide and min(wide) >= 200, (width, wide)
+        no_sideways_scroll(tab)
+        browser.close()
+
+
+def test_at_1280_the_link_moves_the_buttons_and_narrows_the_title_by_at_most_60_pixels(site, wq):
+    layout_seed(wq)
+    probe = """() => [...document.querySelectorAll('.sf-row')].filter(r => r.getBoundingClientRect().height).map(r => {
+        const x = s => r.querySelector(s).getBoundingClientRect(); return {title: x('.sf-link').width, done: x('.sf-mark').left, send: x('.sf-send').left}; })"""
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 1280, "height": 900})
+        tab.goto(site + "#all")
+        tab.wait_for_selector(".fb .why-link")
+        with_link = tab.evaluate(probe)
+        tab.evaluate("document.querySelectorAll('.why-link').forEach(e => e.style.display = 'none')")
+        without = tab.evaluate(probe)
+        moved = [(round(b["title"] - a["title"], 1), round(b["done"] - a["done"], 1), round(b["send"] - a["send"], 1))
+                 for a, b in zip(with_link, without)]
+        print("at 1280 the link narrows the title, and moves Done and Send to Agent, by (title, Done, Send):", moved)
+        assert moved and all(0 <= t <= 60 and 0 <= d <= 60 and 0 <= s <= 60 for t, d, s in moved), moved
+        browser.close()
+
+
+@pytest.mark.parametrize("width, least", [(1280, 20), (390, 12)])
+def test_why_is_a_link_of_its_own_with_clear_space_between_the_end_of_tell_assistant_and_it(site, wq, width, least):
+    layout_seed(wq)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": width, "height": 900})
+        tab.goto(site + "#all")
+        tab.wait_for_selector("#ready li .why-link")
+        gaps = tab.evaluate("""() => [...document.querySelectorAll('.fb')].filter(f => f.querySelector('.why-link')).map(f => {
+            const tell = f.querySelector('.fb-open'), r = document.createRange(); r.selectNodeContents(tell);
+            const why = f.querySelector('.why-link').getBoundingClientRect(), end = r.getBoundingClientRect();
+            return [f.dataset.fk, Math.abs(why.top - end.top) < 14 ? why.left - end.right : 99]; })""")
+        print(f"space between the end of Tell Assistant and Why? at {width} wide:", gaps)
+        assert gaps and all(g >= least for _, g in gaps), gaps
+        browser.close()
+
+
+def test_the_why_link_is_on_every_kind_of_item_that_has_tell_assistant_and_nowhere_else(site, wq):
+    keys = why_seed(wq)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_context(viewport={"width": 1280, "height": 900}).new_page()
+        cov = Coverage(tab)
+        tab.goto(site + "#all")
+        tab.wait_for_selector(".fb .why-link")
+        every = tab.evaluate("""() => [...document.querySelectorAll('.fb')].map(f => ({kind: f.dataset.fk, tell: !!f.querySelector('.fb-open'),
+            why: !!f.querySelector('.why-link'), name: (f.querySelector('.fb-open') || {}).textContent}))""")
+        assert {e["kind"] for e in every} >= {"row", "start_here", "email", "candidate", "result", "draft", "page"}
+        for e in every:
+            assert e["why"] == (e["kind"] not in ("draft", "page")), e
+            assert e["tell"], e
+        assert tab.locator('.fb[data-fk="page"] .why-link, .draft-fb .why-link').count() == 0
+        assert tab.locator("#ready li .why-link").count() >= 1 and tab.locator(".start-list li .why-link").count() >= 1
+        cov.snap()
+        browser.close()
+
+
+def test_a_ready_result_shows_the_steps_of_the_row_it_came_from(site, wq):
+    keys = why_seed(wq)
+    config.write_json(wq.data / "traces.json", {**json.loads((wq.data / "traces.json").read_text()),
+                                                pr(1)["key"]: {"trace": WHY_TRACE, "seen": "2026-11-20", "first": WHY_FIRST}})
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_context(viewport={"width": 1280, "height": 900}).new_page()
+        cov = Coverage(tab)
+        tab.goto(site + "#all")
+        item = '#ready li[data-id="td-101"]'
+        tab.locator(f"{item} .why-link").click()
+        tab.wait_for_selector(f"{item} > .why-box .why-steps li")
+        assert tab.locator(f"{item} > .why-box .why-steps li").count() == 6
+        cov.snap()
+        browser.close()
+
+
+def test_the_why_block_says_each_empty_state_and_a_failed_request_in_the_block(site, wq):
+    keys = why_seed(wq)
+    plain = why_link(keys["plain"])
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_context(viewport={"width": 1280, "height": 900}).new_page()
+        cov = Coverage(tab)
+        tab.goto(site + "#open-list")
+        tab.locator(plain).click()
+        tab.wait_for_selector(f"{why_box(keys['plain'])} .why-foot")
+        body = tab.locator(why_box(keys["plain"])).inner_text()
+        assert "Assistant has no record for this yet. It starts one at the next refresh." in body
+        assert "This is everything Assistant has recorded about this item." in body and "Close" in body
+        tab.locator(plain).click()
+        (wq.home / ".assistant/telemetry/telemetry.db").write_bytes(b"junk" * 200)
+        tab.locator(why_link(keys["row"])).click()
+        tab.wait_for_selector(f"{why_box(keys['row'])} .why-foot")
+        body = tab.locator(why_box(keys["row"])).inner_text()
+        assert "Assistant can't read its record right now. Nothing is lost; try again in a minute." in body
+        assert "Assistant first saw this, in GitHub." not in body and "Assistant first saw this." in body, "what could still be read is shown"
+        assert "Some of it couldn't be read, so this may be missing steps. The record stays on this Mac." in body
+        assert "This is everything" not in body, "a partial read never says it is everything"
+        tab.locator(why_link(keys["row"])).click()
+        tab.route("**/api/why*", lambda route: route.fulfill(status=500, body="{}", content_type="application/json"))
+        tab.locator(why_link(keys["row"])).click()
+        tab.wait_for_selector(f"{why_box(keys['row'])}")
+        tab.wait_for_function("(s) => document.querySelector(s).textContent.includes('couldn’t load')", arg=why_box(keys["row"]))
+        assert "Loading" not in tab.locator(why_box(keys["row"])).inner_text()
+        assert tab.locator(f"{why_box(keys['row'])} .why-close").count() == 1
+        cov.snap()
+        browser.close()
+
+
+def test_the_why_block_says_loading_while_it_waits_and_shows_everything_the_server_sends_as_text(site, wq):
+    keys = why_seed(wq)
+    markup = "<img src=x onerror=window.pwned=1><script>window.pwned=1</script><b>x</b>"
+    hostile = {"state": "ok", "more": 3, "left_out": "3 earlier steps aren't shown here. " + markup, "note": "<b>note</b>" + markup,
+               "message": "<u>message</u>" + markup, "footer": "<i>footer</i>" + markup,
+               "steps": [{"at": WHY_FIRST, "kind": "sorted", "text": "<img src=x onerror=window.pwned=1> Model: <script>window.pwned=1</script>"}]}
+    release = []
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_context(viewport={"width": 1280, "height": 900}).new_page()
+        cov = Coverage(tab)
+        tab.goto(site + "#open-list")
+        tab.route("**/api/why*", lambda route: release.append(route))
+        tab.locator(why_link(keys["row"])).click()
+        tab.wait_for_selector(f"{why_box(keys['row'])}")
+        assert "Loading" in tab.locator(why_box(keys["row"])).inner_text()
+        tab.wait_for_function("() => true")
+        assert len(release) == 1
+        release[0].fulfill(status=200, body=json.dumps(hostile), content_type="application/json")
+        tab.wait_for_selector(f"{why_box(keys['row'])} .why-steps li")
+        box = why_box(keys["row"])
+        assert tab.evaluate("window.pwned") is None and tab.locator(f"{box} img, {box} script, {box} b, {box} i, {box} u").count() == 0
+        body = tab.locator(box).inner_text()
+        for shown in ("<img src=x", "<script>", "<b>note</b>", "<i>footer</i>", "<u>message</u>", "3 earlier steps aren't shown here."):
+            assert shown in body, shown
+        cov.snap()
+        browser.close()
+
+
+def test_a_step_with_a_time_that_cannot_be_formatted_still_draws_the_block_with_its_close_button(site, wq):
+    keys = why_seed(wq)
+    odd = {"state": "ok", "more": 0, "left_out": "", "note": "", "message": "", "footer": "Footer.",
+           "steps": [{"at": 1e300, "kind": "task", "text": "A step with a time nobody can format."},
+                     {"at": WHY_FIRST, "kind": "task", "count": 3, "last": 1e300, "text": "Repeated step."}]}
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_context(viewport={"width": 1280, "height": 900}).new_page()
+        cov = Coverage(tab)
+        tab.goto(site + "#open-list")
+        tab.route("**/api/why*", lambda route: route.fulfill(status=200, body=json.dumps(odd), content_type="application/json"))
+        tab.locator(why_link(keys["row"])).click()
+        box = why_box(keys["row"])
+        tab.wait_for_selector(f"{box} .why-foot")
+        assert tab.locator(f"{box} .why-steps li").count() == 2 and tab.locator(f"{box} .why-close").count() == 1
+        assert tab.locator(f"{box} .why-steps li").first.inner_text().strip() == "A step with a time nobody can format."
+        assert "Last time" not in tab.locator(box).inner_text(), "a last time that can't be formatted is left out"
+        cov.snap()
+        browser.close()
+
+
+def test_a_step_that_happened_several_times_shows_its_first_time_and_says_when_the_last_was(site, wq):
+    keys = why_seed(wq)
+    answer = {"state": "ok", "more": 0, "left_out": "", "note": "", "message": "", "footer": "Footer.",
+              "steps": [{"at": WHY_FIRST, "kind": "start_failed", "count": 14, "last": WHY_FIRST + 3600,
+                         "text": "Assistant tried to start an agent 14 times and couldn't: cmux didn't answer. It will try again by itself."}]}
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_context(viewport={"width": 1280, "height": 900}, locale="en-US", timezone_id="UTC").new_page()
+        cov = Coverage(tab)
+        tab.goto(site + "#open-list")
+        tab.route("**/api/why*", lambda route: route.fulfill(status=200, body=json.dumps(answer), content_type="application/json"))
+        tab.locator(why_link(keys["row"])).click()
+        box = why_box(keys["row"])
+        tab.wait_for_selector(f"{box} .why-steps li")
+        assert tab.locator(f"{box} .why-steps time").inner_text() == "Nov 18, 11:06 am"
+        assert tab.locator(f"{box} .why-steps li").inner_text().endswith("Last time: Nov 18, 12:06 pm.")
+        cov.snap()
+        browser.close()
+
+
+def test_an_open_why_block_holds_off_the_automatic_reload_and_a_closed_one_does_not(site, wq):
+    keys = why_seed(wq)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_context(viewport={"width": 1280, "height": 900}).new_page()
+        cov = Coverage(tab)
+        tab.goto(site + "#open-list")
+        tab.evaluate("window.stayed = true")
+        tab.locator(why_link(keys["row"])).click()
+        tab.wait_for_selector(f"{why_box(keys['row'])} .why-steps li")
+        tab.evaluate("reloadIfIdle()")
+        tab.wait_for_selector(".toast")
+        assert "Close the explanation under “Why is this here?”" in tab.locator(".toast").inner_text()
+        assert tab.evaluate("window.stayed") is True and tab.locator(why_box(keys["row"])).count() == 1
+        tab.locator(f"{why_box(keys['row'])} .why-close").click()
+        cov.snap_before("location.reload()")
+        with tab.expect_navigation():
+            tab.evaluate("reloadIfIdle()")
+        cov.snap()
+        browser.close()
+
+
+def test_changing_tabs_closes_open_blocks_so_a_hidden_one_never_holds_the_reload(site, wq):
+    keys = why_seed(wq)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_context(viewport={"width": 1280, "height": 900}).new_page()
+        cov = Coverage(tab)
+        tab.goto(site + "#start")
+        item = ".start-list li"
+        tab.locator(f"{item} .why-link").last.click()
+        tab.wait_for_selector(f"{item} .why-box")
+        tab.locator('#tabs .tab[data-t="open-list"]').click()
+        tab.wait_for_selector(".why-box", state="detached")
+        tab.locator('#tabs .tab[data-t="start"]').click()
+        assert tab.locator(".why-box").count() == 0 and tab.locator(f"{item} .why-link").last.get_attribute("aria-expanded") == "false"
+        cov.snap_before("location.reload()")
+        with tab.expect_navigation():
+            tab.evaluate("reloadIfIdle()")
+        cov.snap()
+        browser.close()
+
+
+def test_an_open_why_block_survives_the_page_repainting_its_lists(site, wq):
+    keys = why_seed(wq)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_context(viewport={"width": 1280, "height": 900}).new_page()
+        cov = Coverage(tab)
+        tab.goto(site + "#all")
+        item = '#ready li[data-id="td-101"]'
+        tab.locator(f"{item} .why-link").click()
+        tab.wait_for_selector(f"{item} > .why-box")
+        tab.evaluate("paint()")
+        tab.wait_for_selector(f"{item} > .why-box")
+        assert tab.locator(f"{item} .why-link").get_attribute("aria-expanded") == "true"
+        assert tab.locator(".why-box").count() == 1
+        cov.snap()
+        browser.close()
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_the_open_why_block_fits_the_screen_and_the_row_without_sideways_scroll(site, wq, width):
+    keys = why_seed(wq)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": width, "height": 800})
+        tab.goto(site + "#all")
+        tab.locator(why_link(keys["row"])).click()
+        tab.wait_for_selector(f"{why_box(keys['row'])} .why-steps li")
+        no_sideways_scroll(tab)
+        box = tab.locator(why_box(keys["row"])).bounding_box()
+        assert box["x"] >= 0 and box["x"] + box["width"] <= width
+        for sel in ("li", "time"):
+            for el in tab.locator(f"{why_box(keys['row'])} .why-steps {sel}").all():
+                b = el.bounding_box()
+                assert b["x"] + b["width"] <= width + 0.5
+        browser.close()
+
+
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_the_why_link_and_block_reach_4_5_to_1_on_the_pages_own_backgrounds(site, wq, scheme):
+    keys = why_seed(wq)
+    link, box = why_link(keys["row"]), why_box(keys["row"])
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_context(viewport={"width": 1280, "height": 900}, color_scheme=scheme).new_page()
+        cov = Coverage(tab)
+        tab.goto(site + "#open-list")
+        tab.locator(link).click()
+        tab.wait_for_selector(f"{box} .why-steps li")
+        seen = {"the link": tab.evaluate(CONTRAST, link), "the heading": tab.evaluate(CONTRAST, f"{box} .why-head"),
+                "a step": tab.evaluate(CONTRAST, f"{box} .why-steps li"),
+                "a time": tab.evaluate(CONTRAST, f"{box} time"), "the footer": tab.evaluate(CONTRAST, f"{box} .why-foot"),
+                "Close": tab.evaluate(CONTRAST, f"{box} .why-close")}
+        low = {name: round(ratio, 2) for name, ratio in seen.items() if ratio < 4.5}
+        print(scheme, {name: round(ratio, 2) for name, ratio in seen.items()})
+        assert not low, (scheme, low)
         cov.snap()
         browser.close()

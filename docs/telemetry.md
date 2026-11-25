@@ -1,6 +1,6 @@
 # Telemetry
 
-Assistant keeps a local record of what it did, so later features can follow one piece of work from the moment it arrives to your decision on it. Nothing in it leaves your Mac, and nothing in it shows on a page yet.
+Assistant keeps a local record of what it did, so later features can follow one piece of work from the moment it arrives to your decision on it. Nothing in it leaves your Mac. The Work queue's **Why is this here?** link on each row shows it in plain sentences, together with the changes Assistant made and what you said about the row; no other page shows it yet.
 
 ## What is recorded
 

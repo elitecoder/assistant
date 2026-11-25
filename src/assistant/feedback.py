@@ -286,6 +286,17 @@ def recent(subject=None, trace=None, signal=None, since=None, limit=200) -> list
         return []
 
 
+def readable() -> bool:
+    """Whether the file can be read: True for one that doesn't exist yet (nothing is recorded), False for one that is
+    there and can't be read. `recent()` gives `[]` for both. Never raises."""
+    try:
+        with _STATE_LOCK:
+            _sync()
+        return True
+    except Exception:  # noqa: BLE001 - a read that can't tell is "no"
+        return False
+
+
 def _brief(rec_id: str, state: _State) -> dict:
     subject, kind, signal, amends, reason, ts, told = state.recs[rec_id]
     return {"id": rec_id, "ts": ts, "signal": signal, "kind": kind, "subject": subject, "amends": amends,
