@@ -341,6 +341,11 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   trailing period out, and only `http`, `https`, and `file` links are made.
 
 ### Fixed
+- In Pro mode, a task Assistant made itself (its id looks like `td-auto-1a2b3c4d`) is started
+  again. Before, Assistant opened a session for it, refused to type into it, parked the task and
+  paused every other task's start, with a card blaming the session's name. It now types the
+  instruction and records it without the task. A task parked this way earlier stays parked until
+  you close its workspace and press "Queue to start" on it. Default mode is unchanged.
 - In Pro mode, a Slack reaction with your task emoji starts a task by itself
   again when Assistant doesn't know your Slack member ID. Since 2026-11-24 such
   a reaction was saved as an "Ask me" task that never started, so none of your

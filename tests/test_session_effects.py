@@ -483,3 +483,18 @@ def pro_mode(monkeypatch):
     """Everything this file tests is Pro mode's; the test says so, instead of leaning on the suite's default."""
     from assistant import mode
     monkeypatch.setattr(mode, "current", lambda: "pro")
+
+
+# --- a task id the record can't hold ---------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("task", ["td-auto-1a2b3c4d", "td-auto-1793613610", "td-", "TD-1", "td-1234567890", "free text"])
+def test_a_task_id_the_record_cant_hold_is_left_out_and_the_typing_goes_ahead(home, task):
+    ef = se.begin(WS, "task", kind="owner_flag", ref="td-auto-1a2b3c4d", component="pulse", task=task)
+    row = rows(home)[0]
+    assert row["id"] == ef and row["target"] == {"source": "task", "session": WS}
+    assert row["auth"]["ref"] == "td-auto-1a2b3c4d"  # what allowed it is still named
+
+
+def test_a_task_id_the_record_can_hold_is_still_recorded(home):
+    se.begin(WS, "task", kind="owner_flag", ref="td-12", component="pulse", task="td-12")
+    assert rows(home)[0]["target"] == {"source": "task", "session": WS, "task": "td-12"}

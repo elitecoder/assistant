@@ -9,8 +9,8 @@ back, so:
   * No record, no typing. `begin()` raises `Refused` when the intent can't be written, and the caller types nothing.
   * Every typing names what allowed it: a person's tap, a task whose owner turned on auto-start, or a standing
     setting that is on. Text somebody else wrote is never what allows typing.
-  * The ledger holds the session, the task, and where the text came from (a fixed name such as `nudge:stranded`),
-    never the text, a prompt path, a title or a Slack message.
+  * The ledger holds the session, the task (when its id has the record's shape, `td-N`), and where the text came
+    from (a fixed name such as `nudge:stranded`), never the text, a prompt path, a title or a Slack message.
   * The same thing typed into the same session more than three times in half an hour is refused (a loop), whatever
     allowed it, except the first use of a one-time tap (a Slack message the owner rule let through). A task or a Slack message
     counts as its own thing.
@@ -158,14 +158,15 @@ def begin(session: str, source: str, *, kind: str, ref: str, component: str, tas
     or `standing`, and a pointer: a task id, the name of a nudge, a route). `anchor` is the time that allowance was
     given, when it has one of its own (a Slack message's time): the ledger then refuses a second typing of the same
     thing without a newer allowance. `once_tap` names a one-time tap (see below). `surface` names a terminal for a session known only by that id (`session` is
-    then empty). Raises `Refused`."""
+    then empty). A task id the record can't hold is left out of the record; such a task is still typed into.
+    Raises `Refused`."""
     now = _now()
     target: dict = {"source": source}
     if session:
         target["session"] = session
     if surface:
         target["surface"] = surface
-    if task:
+    if task and effects.TARGET_KEYS["task"].fullmatch(task):  # a task like `td-auto-1a2b` has no id in a record
         target["task"] = task
     if slack_ts:
         target["ts"] = slack_ts

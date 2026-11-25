@@ -192,7 +192,9 @@ What the record does for you:
   three times in thirty minutes is refused, and the log says it tries again
   once the oldest of them is 30 minutes old. Typings that failed don't count;
   ones nobody could tell about do. Each task and each Slack message counts as
-  its own thing. For `bin/cmux-send.py`, "the same thing" is everything sent
+  its own thing. A task whose id the record can't hold (one Assistant made
+  itself, such as `td-auto-1a2b3c4d`) is recorded without the task and is still
+  typed into. For `bin/cmux-send.py`, "the same thing" is everything sent
   with the same `--source`, because the record never holds the text: by default
   all of its sends into one session count together, so a fourth inside thirty
   minutes is refused even when the text differs. Name a different `--source`

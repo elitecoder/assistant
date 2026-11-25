@@ -394,3 +394,8 @@ def test_the_pro_send_logs_a_send_with_no_terminal_and_a_good_send_to_the_send_l
     assert stop.value.code == 0
     rows = [json.loads(line)["outcome"] for line in (home / "sends.jsonl").read_text().splitlines()]
     assert rows == ["no_terminal_surface", "sent"]
+
+
+def test_a_task_with_an_auto_id_given_to_the_script_is_typed_and_recorded_without_the_task(send, home):
+    code, _ = run(send, Rpc(home), "--enter", "--task", "td-auto-1a2b3c4d")
+    assert code == 0 and "task" not in ledger(home)[0]["target"]

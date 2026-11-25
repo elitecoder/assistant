@@ -349,6 +349,12 @@ def test_the_send_script_never_refuses_a_loop_in_the_default_mode(default_mode):
     effects_untouched(default_mode)
 
 
+def test_the_pulse_types_into_a_task_with_an_auto_id_in_the_default_mode_and_records_nothing(default_mode):
+    pulse = load("pulse_default_auto", "pulse.py")
+    assert pulse._begin_dispatch_typing("td-auto-1a2b3c4d", {}, WS, "task") == pulse.DEFAULT_TYPING
+    effects_untouched(default_mode)
+
+
 # --- the Slack session ------------------------------------------------------------------------------------------
 
 @pytest.fixture
