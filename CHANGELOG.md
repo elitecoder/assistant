@@ -345,6 +345,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   when the target is a channel and `SLACK_USER_ID` isn't set. An update on
   2026-11-25 made it refuse them all and reply "I can't tell which Slack
   account is yours". A message it refused then isn't replayed: send it again.
+- Start the installer's list of changed agents empty. Under bash 5 (Homebrew's, or Linux's), an install that
+  changed no agent stopped at step 5 with `CHANGED_LABELS: unbound variable`.
 - The records of a dispatch and of an effect on a session now accept the ten-digit session numbers
   the session tool really uses (such as `workspace:1000020126`). Before, such a record was left out whole.
 - Running the tests no longer touches your real home folder. The test setup now moves `HOME` to a throwaway
@@ -499,6 +501,11 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - Build the fake AWS access key IDs in the secret-scrubber test from two parts, so GitHub secret scanning no longer flags them. The test values are unchanged.
 
 ### Changed
+- Run the four mutation-check shards on Linux. Only the coverage job still needs a Mac, and it also runs the
+  mutation checks whose tests save through the Slack task-list lock (`--mac-only`). Before, runs often failed
+  when GitHub had no Mac free for one of the five macOS jobs.
+  A new push to a pull request now cancels that pull request's older runs. A mutation check whose test
+  ran nothing fails, instead of passing its baseline unseen.
 - Keep each change's mutation checks in a file of its own under `tests/mutation_checks/`. Every pull request
   used to add its checks at the same place in one long list, so each conflicted with the next, and one merge
   joined two checks into one that nothing reported. The harness now also refuses a malformed or duplicated

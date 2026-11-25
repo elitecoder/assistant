@@ -5903,6 +5903,9 @@ def run_baseline(name: str, repo: Path, home: Path, selector: str):
         raise RuntimeError(f"{name}: baseline {selector} didn't finish within {TEST_TIMEOUT_SEC} seconds") from None
     if baseline.returncode != 0:
         raise RuntimeError(f"{name}: baseline failed\n{baseline.stdout}\n{baseline.stderr}")
+    if not re.search(r"\b[0-9]+ passed\b", baseline.stdout):
+        raise RuntimeError(f"{name}: baseline {selector} ran no test here, so it can't catch the mutant. If its test "
+                           f"needs a Mac, add it to MAC_ONLY_TESTS.\n{baseline.stdout}")
 
 
 def run_check(name: str, filename: str, original: str, broken: str, selector: str,
@@ -5977,6 +5980,21 @@ def well_formed(checks: tuple, where: str = "") -> tuple:
 
 
 CHECKS = well_formed(CHECKS + checks_in(CHECKS_DIR))
+# These tests need macOS: today, they save through the Slack task-list lock, which takes a macOS-only flag. A test
+# that needs another macOS-only feature, such as select.kqueue, belongs here too. They skip on other systems, so the
+# checks they back run only on a Mac: --mac-only runs just those, and elsewhere they're left out.
+MAC_ONLY_TESTS = frozenset((
+    "tests/test_reactor_hardening.py::test_reactor_capture_node_tests_pass",
+    "tests/test_secrets_in_logs.py::test_reactor_node_tests_pass",
+    "tests/test_trace_ids.py::test_the_slack_reactors_tests_for_its_task_writer_pass",
+    "tests/test_reactor_hardening.py::test_reactor_todo_store_node_tests_pass",
+    "tests/test_reactor_hardening.py::test_an_add_waits_while_a_python_writer_holds_the_lock",
+    "tests/test_reactor_hardening.py::test_an_add_that_cannot_get_the_lock_in_time_fails_and_writes_nothing",
+))
+ALL_CHECKS = CHECKS
+MAC_ONLY_CHECKS = tuple(check for check in ALL_CHECKS if check[4] in MAC_ONLY_TESTS)
+if sys.platform != "darwin":
+    CHECKS = tuple(check for check in ALL_CHECKS if check[4] not in MAC_ONLY_TESTS)
 
 
 def shard(spec: str) -> tuple:
@@ -6000,13 +6018,20 @@ def workers(spec: str) -> int:
 def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--shard", type=shard, default=CHECKS, metavar="I/N",
-                        help="run only shard I of N; the N shards together run every check once")
+    which = parser.add_mutually_exclusive_group()
+    which.add_argument("--shard", type=shard, default=CHECKS, metavar="I/N",
+                       help="run only shard I of N; the N shards together run every check once")
     parser.add_argument("--workers", type=workers, default=1, metavar="N",
                         help="run N checks at a time; each check works in its own copy of the sources and its own home")
     parser.add_argument("--name", default="", metavar="TEXT",
                         help="run only the checks whose name contains TEXT, to try the ones you just wrote")
+    which.add_argument("--mac-only", action="store_true",
+                       help="run only the checks whose tests need a Mac; the shards leave them out on other systems")
     args = parser.parse_args(argv)
+    if args.mac_only:
+        if sys.platform != "darwin":
+            parser.error("--mac-only runs checks whose tests need a Mac, and this isn't one")
+        args.shard = MAC_ONLY_CHECKS
     if args.name:
         args.shard = tuple(check for check in args.shard if args.name in check[0])
         if not args.shard:
