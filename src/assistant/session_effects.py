@@ -29,11 +29,10 @@ What this can't prove: that the text typed is the text the caller says it came f
 `authorization` a caller gives is true (`bin/cmux-send.py` trusts the flags it is run with), or that the terminal a
 caller types into is the one in the named session. The record says what Assistant did and what it said allowed it.
 
-Pro mode only. In the default mode none of this runs: `begin()` returns "" and every typing goes through
-unchecked, unrecorded and exactly as it did before this module existed (`Keys` with that empty id is a plain pass-
-through: its text, then its Enter, whatever cmux answers). The mode is asked once per typing, in `begin()`, so a
-mode switch part-way leaves a typing as it began: begun in Pro it still gets its result line, begun in the default
-mode it writes nothing. The pass-through lives here, inside the one function, so the fence stays as it is.
+Pro mode only. The default mode never loads this module: each service that types asks `assistant.session_gate`
+whether this is Pro mode, once when a typing begins, and in the default mode types through that module's own `Keys`
+(its text, then its Enter, whatever cmux answers), unrecorded and unchecked, exactly as before this module existed.
+A typing begun in Pro mode keeps this module's rules to its end, whatever the mode is by then.
 
 Standard library plus `assistant.effects`, `assistant.mode` and `assistant.pointers`; it loads on the system Python
 (3.9).
@@ -43,7 +42,6 @@ from __future__ import annotations
 import math
 import os
 import re
-import subprocess
 import time
 from datetime import datetime, timezone
 
@@ -74,18 +72,9 @@ INVALID = "Assistant didn't recognise the session this was meant for (it expects
 LATER = ("This message is dated later than this Mac's clock says it is now, so Assistant is waiting before typing "
          "it. If this Mac's clock is wrong, fix it.")
 
-PASSTHROUGH = ""  # the id `begin()` gives a typing in the default mode: nothing was recorded, nothing will be
-
 _now = time.time  # a seam, so tests set the clock
 
 
-def active() -> bool:
-    """Whether typing is recorded and checked: Pro mode only. A config that can't be read is the default mode."""
-    try:
-        from assistant import mode  # noqa: PLC0415
-        return mode.is_pro()
-    except Exception:  # noqa: BLE001 - never let the mode lookup change what a typing does
-        return False
 _USED: set = set()  # effect ids that already have their one Keys
 
 
@@ -169,9 +158,7 @@ def begin(session: str, source: str, *, kind: str, ref: str, component: str, tas
     or `standing`, and a pointer: a task id, the name of a nudge, a route). `anchor` is the time that allowance was
     given, when it has one of its own (a Slack message's time): the ledger then refuses a second typing of the same
     thing without a newer allowance. `once_tap` names a one-time tap (see below). `surface` names a terminal for a session known only by that id (`session` is
-    then empty). Raises `Refused`. In the default mode it returns PASSTHROUGH and does nothing else."""
-    if not active():
-        return PASSTHROUGH
+    then empty). Raises `Refused`."""
     now = _now()
     target: dict = {"source": source}
     if session:
@@ -222,10 +209,7 @@ def begin(session: str, source: str, *, kind: str, ref: str, component: str, tas
 
 
 def finish(effect_id: str, outcome: str, verified: bool | None = None, error: str = "") -> None:
-    """Record how the typing ended: `done`, `failed` (nothing was sent) or `unknown` (the text may be there). A typing
-    begun in the default mode (no id) records nothing, whatever the mode is by now."""
-    if effect_id == PASSTHROUGH:
-        return
+    """Record how the typing ended: `done`, `failed` (nothing was sent) or `unknown` (the text may be there). """
     effects.finish(effect_id, outcome, verified=verified, error=error)
 
 
@@ -239,12 +223,6 @@ class Keys:
     outcome can be told honestly; an exception from the transport counts as "can't tell" and goes on up."""
 
     def __init__(self, effect_id: str, rpc, surface_id: str, session: str = "", also=()):
-        self.passthrough = effect_id == PASSTHROUGH  # begun in the default mode: type, and check nothing
-        if self.passthrough:
-            self.effect_id, self.rpc, self.surface_id, self.also = effect_id, rpc, surface_id, []
-            self.sent = self.refused = 0
-            self.raised, self.confirmed, self.finished = False, None, True
-            return
         found = effects.get(effect_id) if isinstance(effect_id, str) else None
         if not found or found["class"] != CLASS or found["outcome"] is not None or effect_id in _USED:
             raise Refused("unrecorded", UNRECORDED)
@@ -264,8 +242,6 @@ class Keys:
         self.finished = False
 
     def _go(self, method: str, params: dict) -> bool:
-        if self.passthrough:
-            return self.rpc(method, {"surface_id": self.surface_id, **params}) is not None
         found = effects.get(self.effect_id)
         if not found or found["outcome"] is not None:
             raise Refused("done", DONE.format(where="the session"))
@@ -293,13 +269,6 @@ class Keys:
 
     def line(self, text: str, enter: str = "key", pause: float = 0.0, sleep=None) -> None:
         """Type `text`, then Enter (`enter` is "key", "cr" or "" for none). A transport error is counted, not raised."""
-        if self.passthrough:  # as before: the Enter follows whatever cmux said about the text
-            self.text(text)
-            if enter:
-                if pause:
-                    (sleep or time.sleep)(pause)
-                self.key("enter") if enter == "key" else self.carriage_return()
-            return
         try:
             if self.text(text) and enter:
                 if pause:
@@ -313,8 +282,6 @@ class Keys:
     def outcome(self) -> str:
         """`done` when it was seen to land, or every keystroke went out and nothing said it hadn't landed; `failed`
         when nothing went out; else `unknown`."""
-        if self.passthrough:
-            return "done"
         if self.confirmed:
             return "done"
         if self.raised or (self.sent and (self.refused or self.confirmed is False)):
@@ -323,7 +290,7 @@ class Keys:
 
     def finish(self) -> None:
         """Record how it ended, once."""
-        if self.passthrough or self.finished:
+        if self.finished:
             return
         self.finished = True
         outcome = self.outcome()
@@ -350,9 +317,3 @@ def type_line(effect_id: str, rpc, surface_id: str, text: str, *, session: str =
         keys.finish()
     return keys.outcome()
 
-
-def run_now_legacy(cmux_bin: str, ws_ref: str, text: str) -> None:
-    """What the dashboard's "run now" has always typed in the default mode, exactly: `cmux send` to the workspace's
-    active surface, then Enter. It lives here with the other calls that type, so the fence has one place to look."""
-    subprocess.run([cmux_bin, "send", "--workspace", ws_ref, text], check=False, timeout=4, capture_output=True)
-    subprocess.run([cmux_bin, "send-key", "--workspace", ws_ref, "Enter"], check=False, timeout=4, capture_output=True)

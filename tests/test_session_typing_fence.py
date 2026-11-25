@@ -1,4 +1,5 @@
-"""Nothing in Assistant's own code types into an agent session except src/assistant/session_effects.py.
+"""Nothing in Assistant's own code types into an agent session except src/assistant/session_effects.py (and, for the
+default mode, which records nothing, src/assistant/session_gate.py).
 
 That module writes the intent to the effects ledger before the first keystroke, so a typing that isn't in the
 ledger can't happen from here. Caught, in Python files under bin/, src/, work_queue/ and hooks/:
@@ -24,6 +25,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 FOLDERS = ("bin", "src", "work_queue", "hooks")
 THE_ONE = "src/assistant/session_effects.py"
+# The default mode types as it always did, and must not depend on the ledger's modules loading, so its keystrokes are
+# named in a module of their own (standard library only) that never records anything. It is the only other place.
+THE_DEFAULT_MODE = "src/assistant/session_gate.py"
 # Nothing is listed here: every path that types is routed. A path that is not yet routed must be named in this
 # list, with the reason, so nothing is skipped silently.
 NOT_YET_ROUTED: dict = {}
@@ -130,13 +134,14 @@ def test_only_the_one_module_names_the_calls_that_type():
     for folder in FOLDERS:
         for path in sorted((REPO / folder).rglob("*.py")):
             rel = str(path.relative_to(REPO))
-            if rel != THE_ONE and rel not in NOT_YET_ROUTED:
+            if rel not in (THE_ONE, THE_DEFAULT_MODE) and rel not in NOT_YET_ROUTED:
                 found += [f"{rel}:{line}" for line in typing_calls(path.read_text())]
     assert found == [], "type through assistant.session_effects (it records the intent first): " + ", ".join(found)
 
 
 def test_the_one_module_is_where_the_calls_live_and_every_listed_exception_still_types():
     assert typing_calls((REPO / THE_ONE).read_text())
+    assert typing_calls((REPO / THE_DEFAULT_MODE).read_text())
     for rel in NOT_YET_ROUTED:  # a path that is now routed must be taken off the list
         assert typing_calls((REPO / rel).read_text()), rel
 

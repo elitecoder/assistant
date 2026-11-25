@@ -243,7 +243,7 @@ def _pro_mode():
         return False
 
 
-def step2_send_and_verify(ws_ref, slash_command, authorized_by="tap"):
+def step2_send_and_verify(ws_ref, slash_command, authorized_by="tap", pro=None):
     """Returns (ok, observed_last_user_text).
 
     Delegates the actual send to bin/cmux-send.py — the single sanctioned
@@ -252,7 +252,8 @@ def step2_send_and_verify(ws_ref, slash_command, authorized_by="tap"):
     distinguishes "cmux returned OK but claude never ingested" from "claude
     actually saw it".
     """
-    pro = _pro_mode()  # asked once; the default mode sends exactly what it always did
+    if pro is None:
+        pro = _pro_mode()  # asked once per run (by `main`); the default mode sends exactly what it always did
     argv = [
         CMUX_SEND,
         "--ws", ws_ref,
@@ -335,6 +336,7 @@ def step2_send_and_verify(ws_ref, slash_command, authorized_by="tap"):
 
 
 def main():
+    pro = _pro_mode()  # asked once, before the options are read
     p = argparse.ArgumentParser()
     p.add_argument("--ws", required=True, help="workspace:N")
     p.add_argument("--pr", type=int, required=True)
@@ -342,8 +344,9 @@ def main():
                    help="Dispatcher claims the workspace transcript shows full local G3 + unit suite green")
     p.add_argument("--e2e-attested", action="store_true",
                    help="Dispatcher claims the workspace transcript shows pnpm e2e:squirrel passed (required for Squirrel PRs)")
-    p.add_argument("--authorized-by", choices=("tap", "standing"), default="tap",
-                   help="what allowed the typing: a person running this (default) or the pulse's standing setting")
+    if pro:  # the default mode has the options this script always had, so its errors and `--help` are unchanged
+        p.add_argument("--authorized-by", choices=("tap", "standing"), default="tap",
+                       help="what allowed the typing: a person running this (default) or the pulse's standing setting")
     args = p.parse_args()
 
     if not re.fullmatch(r"workspace:\d+", args.ws):
@@ -398,7 +401,7 @@ def main():
     # Step 2 — send + verify
     slash = f"/{skill} {args.pr}"
     out["step2"] = {"slash_command": slash, "ws": args.ws}
-    submitted, observed = step2_send_and_verify(args.ws, slash, args.authorized_by)
+    submitted, observed = step2_send_and_verify(args.ws, slash, getattr(args, "authorized_by", "tap"), pro)
     out["step2"]["submitted"] = submitted
     out["step2"]["observed_last_user_text"] = observed
 

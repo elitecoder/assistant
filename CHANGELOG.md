@@ -29,7 +29,7 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   stay that way until you press On. To make sure your own reactions start work,
   set `SLACK_USER_ID` to your Slack user id in `~/.zprofile` and restart the
   reactor. `TODO_AUTODISPATCH=0` still turns self-starting off for everyone.
-- **Pro mode only; the default mode is unchanged for now.** In the default mode any member of a configured Slack channel can still have a message typed into the warm session, as before. In Pro mode: If you use a Slack channel and don't have `SLACK_USER_ID` set, Assistant
+- In Pro mode, if you use a Slack channel and don't have `SLACK_USER_ID` set, Assistant
   stops typing your messages into the warm session after this update and tells
   you so in Slack: add `export SLACK_USER_ID=U…` (your member ID: your Slack
   profile, the three dots, Copy member ID) to `~/.zprofile` and restart the
@@ -42,14 +42,19 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   person. A message from someone else is kept as received,
   never typed, and Assistant says once a day, in its thread, that it only takes
   instructions from you. The Slack check in `assistant-doctor.py` warns when
-  the target is a channel and the id isn't set.
-- **Pro mode only; the default mode is unchanged for now.** In the default mode "run now" still types whatever a proposal file says, as before. In Pro mode: Check what the dashboard's "run now" on a proposal types. Before, it typed
+  the target is a channel and the id isn't set. This is closed in Pro mode
+  only: in the default mode any member of a configured Slack channel can still
+  have a message typed into the warm session, as before, and nothing here
+  changes that for now.
+- In Pro mode, "run now" on a proposal is checked before it types. Before, it typed
   whatever a proposal file said, of any length, with any control characters,
   into whatever session the file named, with no check. Now the session must be
   a real `workspace:N`, the text one line of at most 500 characters with no
   control characters, and the typing is recorded first. It also types into the
   session's terminal, not whichever pane is on top, and says what happened when
-  it couldn't.
+  it couldn't. This is closed in Pro mode only: in the default mode "run now"
+  still types whatever a proposal file says, as before, and nothing here changes
+  that for now.
 - **Pro mode only.** The default mode types exactly as before, with no limit and no hold. In Pro mode: Stop the same text being typed into the same session in a loop. Before,
   nothing stopped a nudge or `/cleanup` going into one session every pulse,
   forever. Now the same thing typed into the same session more than three

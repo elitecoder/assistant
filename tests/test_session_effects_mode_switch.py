@@ -44,24 +44,10 @@ def test_a_typing_begun_in_pro_still_gets_its_result_after_the_mode_changes(curr
     assert [r["kind"] for r in ledger(tmp_path)] == ["intent", "result"] and ledger(tmp_path)[1]["outcome"] == "done"
 
 
-def test_a_typing_begun_in_the_default_mode_writes_nothing_even_if_pro_is_on_before_it_ends(current, tmp_path, capsys):
-    current["mode"] = "default"
-    ef = se.begin(WS, "nudge:stranded", kind="standing", ref="nudge:stranded", component="pulse")
-    assert ef == se.PASSTHROUGH
-    rpc = Rpc()
-    keys = se.Keys(ef, rpc, "s", WS)
-    current["mode"] = "pro"
-    keys.line("hi")
-    keys.finish()
-    se.finish(ef, "done")
-    assert capsys.readouterr().err == ""  # not even a complaint about a result with no intent
-    assert [m for m, _ in rpc.calls] == ["surface.send_text", "surface.send_key"]
-    assert ledger(tmp_path) == [] and not (tmp_path / ".assistant/effects").exists()
-
-
 def test_a_mode_that_cant_be_read_is_the_default_mode(monkeypatch):
+    from assistant import session_gate
     monkeypatch.setattr(mode, "is_pro", lambda: (_ for _ in ()).throw(OSError("unreadable")))
-    assert se.active() is False
+    assert session_gate.active() is False
 
 
 def test_a_scope_begun_in_pro_keeps_its_records_when_the_mode_changes_before_the_text_goes_out(current, tmp_path, monkeypatch):
@@ -72,25 +58,6 @@ def test_a_scope_begun_in_pro_keeps_its_records_when_the_mode_changes_before_the
         current["mode"] = "default"
         keys.text("/clear")
     assert sent == ["surface.send_text"] and [r["kind"] for r in ledger(tmp_path)] == ["intent", "result"]
-
-
-def test_a_batch_whose_mode_changed_part_way_closes_what_it_had_begun_and_types_unrecorded(current, tmp_path, monkeypatch):
-    sent = []
-    monkeypatch.setattr(cs, "_cmux_rpc", lambda p, m, params, timeout=15: sent.append(m) or {})
-    paths = cl.Paths.from_env({"HOME": str(tmp_path), "COMMS_HOME": str(tmp_path)})
-    real = se.begin
-    answers = iter([None, se.PASSTHROUGH])  # the first begin is real; by the second the mode is default
-
-    def begin(*a, **k):
-        return real(*a, **k) if next(answers) is None else se.PASSTHROUGH
-
-    monkeypatch.setattr(se, "begin", begin)
-    older = [{"ref": "slack:1793613610.000100", "anchor": 1793613610.0, "slack_ts": "1793613610.000100"}]
-    with cs.typing_scope(paths, WS, "surface:3", "slack-message", kind="tap", batch=older, ref="slack:1793613611.000100",
-                         anchor=1793613611.0, slack_ts="1793613611.000100") as keys:
-        keys.text("x")
-    assert sent == ["surface.send_text"]
-    assert [(r["kind"], r.get("outcome")) for r in ledger(tmp_path)] == [("intent", None), ("result", "failed")]
 
 
 def test_the_doctors_owner_check_runs_in_pro_and_not_in_the_default_mode(current, tmp_path, monkeypatch):
@@ -104,14 +71,108 @@ def test_the_doctors_owner_check_runs_in_pro_and_not_in_the_default_mode(current
     assert doctor.run_checks(only="slack") == []
 
 
-def test_a_time_out_after_the_mode_changed_to_default_is_a_refusal_not_an_unknown(current, tmp_path, monkeypatch):
+
+
+def timing_out(monkeypatch):
     def rpc(p, method, params, timeout=15):
         cl._last.result = (-1, "timeout after 15s")
         return None
 
     monkeypatch.setattr(cs, "_cmux_rpc", rpc)
+
+
+def test_a_time_out_after_the_mode_changed_to_default_is_still_unknown_for_a_typing_begun_in_pro(
+        current, tmp_path, monkeypatch):
+    timing_out(monkeypatch)
     paths = cl.Paths.from_env({"HOME": str(tmp_path), "COMMS_HOME": str(tmp_path)})
     with cs.typing_scope(paths, WS, "surface:3", "clear", kind="standing", ref="slack-comms") as keys:
         current["mode"] = "default"
         keys.text("/clear")
-    assert [r.get("outcome") for r in ledger(tmp_path)] == [None, "failed"]
+    assert [r.get("outcome") for r in ledger(tmp_path)] == [None, "unknown"]
+
+
+def test_a_time_out_after_pro_was_turned_on_is_still_a_refusal_for_a_typing_begun_in_the_default_mode(
+        current, tmp_path, monkeypatch):
+    current["mode"] = "default"
+    sent = []
+
+    def rpc(p, method, params, timeout=15):
+        sent.append(method)
+        if method.endswith("text"):
+            cl._last.result = (-1, "timeout after 15s")
+        return None
+
+    monkeypatch.setattr(cs, "_cmux_rpc", rpc)
+    paths = cl.Paths.from_env({"HOME": str(tmp_path), "COMMS_HOME": str(tmp_path)})
+    with cs.typing_scope(paths, WS, "surface:3", "clear", kind="standing", ref="slack-comms") as keys:
+        current["mode"] = "pro"
+        keys.line("/clear")  # as it always did: the Enter follows, nothing is raised or recorded
+    assert sent == ["surface.send_text", "surface.send_key"] and ledger(tmp_path) == []
+    assert not (tmp_path / ".assistant/effects").exists()
+
+
+def test_a_dispatch_begun_in_the_default_mode_carries_on_when_pro_is_turned_on_before_its_text_times_out(
+        current, tmp_path):
+    from test_default_mode_is_main import Dispatch
+    current["mode"] = "default"
+    run = Dispatch(tmp_path, timeout_text=True)
+    original = run.rpc
+
+    def rpc(method, params, timeout=15):
+        current["mode"] = "pro"  # turned on while the typing is under way
+        return original(method, params, timeout)
+
+    run.rpc = rpc
+    assert run.go() is True and [c[0] for c in run.calls] == ["surface.send_text", "surface.send_key"]
+    assert not (tmp_path / ".assistant/effects").exists()
+
+
+def test_a_restore_begun_in_the_default_mode_reads_a_time_out_as_a_refusal_even_when_pro_is_turned_on(
+        current, tmp_path):
+    from test_default_mode_is_main import PANEL, restore_module
+    current["mode"] = "default"
+    restore = restore_module()
+    seen = []
+
+    def run_cmux(*args, timeout=5):
+        seen.append(args[1])
+        current["mode"] = "pro"
+        return 124, "", "t"
+
+    restore.run_cmux = run_cmux
+    assert restore.respawn_panel({"title": "t"}, PANEL, "cd /x", False, False) is False
+    assert len(seen) == 2 and not (tmp_path / ".assistant/effects").exists()
+
+
+def results(tmp_path):
+    return [r.get("outcome") for r in ledger(tmp_path) if r["kind"] == "result"]
+
+
+def test_a_dispatch_begun_in_pro_keeps_a_time_out_unknown_when_the_mode_changes_to_default_before_it(
+        current, tmp_path):
+    from test_default_mode_is_main import Dispatch
+    run = Dispatch(tmp_path, timeout_text=True, source="manual:x")
+    original = run.rpc
+
+    def rpc(method, params, timeout=15):
+        current["mode"] = "default"  # turned off while the typing is under way
+        return original(method, params, timeout)
+
+    run.rpc = rpc
+    run.go()
+    assert results(tmp_path)[-1] == "unknown"
+
+
+def test_a_restore_begun_in_pro_keeps_a_time_out_unknown_when_the_mode_changes_to_default_before_it(
+        current, tmp_path):
+    from test_default_mode_is_main import restore_module
+    restore = restore_module()
+    panel = {"id": "panel-1", "terminal": {"surfaceId": "0123ABCD-0123-0123-0123-0123456789AB"}}
+
+    def run_cmux(*args, timeout=5):
+        current["mode"] = "default"
+        return 124, "", "t"
+
+    restore.run_cmux = run_cmux
+    assert restore.respawn_panel({"title": "t"}, panel, "cd /x", False, False) is False
+    assert results(tmp_path) == ["unknown"]

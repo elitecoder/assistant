@@ -85,7 +85,22 @@ HOME = Path(os.environ.get("HOME", str(Path.home())))
 SRC = REPO / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
-from assistant import logcap, mode, model_tiers, redact, session_effects, transcript_slice  # noqa: E402
+from assistant import logcap, mode, model_tiers, redact, transcript_slice  # noqa: E402
+
+# Pro mode's ledger is loaded only when Pro mode needs it, and the default mode types through the gate's own keys:
+# the default mode never depends on `session_effects`, `effects` or `pointers` loading (see assistant.session_gate).
+try:
+    from assistant import session_gate  # noqa: E402
+    session_effects = session_gate.effects
+except Exception:  # noqa: BLE001 - nothing here may stop the pulse from starting
+    session_gate = None
+
+    class session_effects:  # noqa: N801 - the default mode, when even the gate can't load
+        Refused = type("Refused", (Exception,), {})
+
+        @staticmethod
+        def active() -> bool:
+            return False
 
 # ASSISTANT_DIR is env-overridable so the launchd-spawned daemon (which cannot
 # rely on $HOME under macOS home sandboxing) points at the real tree.
@@ -2519,8 +2534,8 @@ def _cmux_type_rpc(method: str, params: dict) -> dict:
     answer = _cmux_rpc(method, params)
     if answer is not None:
         return answer
-    if _last_rpc_rc == 124 and session_effects.active():
-        raise TimeoutError(method)
+    if _last_rpc_rc == 124:
+        raise TimeoutError(method)  # a typing begun in the default mode reads this as a refusal, as it always did
     return {} if _last_rpc_rc == 0 else None
 
 
@@ -2544,6 +2559,7 @@ def _surface_read_text(surface_ref: str, lines: int = 200) -> str:
 # stops starting more this pulse. `_dispatch_started` holds the tasks started or parked this pulse.
 _dispatch_blocked = ""
 _dispatch_started: set = set()
+DEFAULT_TYPING = ""  # what `_begin_dispatch_typing` returns when the mode is the default: type, record nothing
 
 # What allowed a task's auto-start, from where the task came. `owner_flag` is only ever recorded when the owner set
 # the flag (a Work queue send, their own Slack reaction, `/todo` or a hand edit); a task the goals planner or a
@@ -2569,7 +2585,7 @@ def _begin_dispatch_typing(todo_id: str, item: dict, ws_ref: str, source: str):
     refused (logged; a refusal that repeats until something is fixed is kept for the card)."""
     global _dispatch_blocked
     if not session_effects.active():
-        return session_effects.PASSTHROUGH  # the default mode types as it always did: nothing recorded or checked
+        return DEFAULT_TYPING  # the default mode types as it always did: nothing recorded or checked
     kind, ref = _dispatch_allowance(item, todo_id)
     try:
         return session_effects.begin(ws_ref, source, kind=kind, ref=ref, component="pulse",
@@ -2792,12 +2808,15 @@ def dispatch_todo(todo_id: str) -> bool:
             trust_ef = _begin_dispatch_typing(todo_id, item, ws_ref, "trust")
             if trust_ef is None:
                 return _park_refused_dispatch(todo_id, ws_ref)
-            try:
-                session_effects.type_line(trust_ef, _cmux_type_rpc, surface_ref, agent_session.trust_answer(agent),
-                                          session=ws_ref)
-            except session_effects.Refused as refusal:  # its intent is closed; park like the instruction's
-                log.warning("dispatch %s: typing the trust answer into %s refused (%s)", todo_id, ws_ref, refusal)
-                return _park_refused_dispatch(todo_id, ws_ref)
+            if trust_ef == DEFAULT_TYPING:
+                session_gate.Keys(_cmux_type_rpc, surface_ref).line(agent_session.trust_answer(agent))
+            else:
+                try:
+                    session_effects.type_line(trust_ef, _cmux_type_rpc, surface_ref, agent_session.trust_answer(agent),
+                                              session=ws_ref)
+                except session_effects.Refused as refusal:  # its intent is closed; park like the instruction's
+                    log.warning("dispatch %s: typing the trust answer into %s refused (%s)", todo_id, ws_ref, refusal)
+                    return _park_refused_dispatch(todo_id, ws_ref)
             trust_answered = True
         elif agent_session.ready_re(agent).search(screen):
             ready = True
@@ -2827,12 +2846,15 @@ def dispatch_todo(todo_id: str) -> bool:
     task_ef = _begin_dispatch_typing(todo_id, item, ws_ref, "task")
     if task_ef is None:
         return _park_refused_dispatch(todo_id, ws_ref)
-    try:
-        typing = session_effects.Keys(task_ef, _cmux_type_rpc, surface_ref, ws_ref)
-    except session_effects.Refused as refusal:
-        session_effects.finish(task_ef, "failed", error="not recorded")
-        log.warning("dispatch %s: typing into %s refused (%s)", todo_id, ws_ref, refusal)
-        return _park_refused_dispatch(todo_id, ws_ref)
+    if task_ef == DEFAULT_TYPING:
+        typing = session_gate.Keys(_cmux_type_rpc, surface_ref)
+    else:
+        try:
+            typing = session_effects.Keys(task_ef, _cmux_type_rpc, surface_ref, ws_ref)
+        except session_effects.Refused as refusal:
+            session_effects.finish(task_ef, "failed", error="not recorded")
+            log.warning("dispatch %s: typing into %s refused (%s)", todo_id, ws_ref, refusal)
+            return _park_refused_dispatch(todo_id, ws_ref)
     typing.line(instruction.rstrip("\n"), pause=1)
     if typing.outcome() == "failed":
         # cmux refused the text: nothing is in the session, so this isn't a dispatch that went out.

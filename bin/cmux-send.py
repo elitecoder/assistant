@@ -60,7 +60,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from assistant import session_effects  # noqa: E402
+try:
+    from assistant import session_gate  # noqa: E402 - the default mode types through it; stdlib only
+except Exception:  # noqa: BLE001 - nothing here may stop the default mode from starting
+    session_gate = None
 
 CMUX = os.environ.get("CMUX_BIN", "/Applications/cmux.app/Contents/Resources/bin/cmux")
 WORLD = os.path.expanduser("~/.claude/cache/world.json")
@@ -142,10 +145,18 @@ def rpc(method, payload):
     return rc, body
 
 
+def _pro() -> bool:
+    """Pro mode. Asked once, before the options are read. Anything that goes wrong asking is the default mode."""
+    try:
+        return bool(session_gate and session_gate.active())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def legacy_main(args):
-    """What this script did before typing was recorded, exactly: the default mode runs this. Its keystrokes go through
-    the one pass-through in `assistant.session_effects` (the fence has one place to look), and its results and exit
-    statuses are 0, 1 and 2 only: a time-out is a refusal here, as it always was."""
+    """What this script did before typing was recorded, exactly: the default mode runs this, loading nothing from
+    `assistant` but the pass-through keys in `assistant.session_gate`. Its results and exit statuses are 0, 1 and 2
+    only: a time-out is a refusal here, as it always was."""
     ts = utc_iso()
     started_at = time.time()
 
@@ -184,7 +195,7 @@ def legacy_main(args):
         answers[method.rsplit("_", 1)[-1]] = (rc, body)
         return ({} if body is None else body) if rc == 0 else None
 
-    keys = session_effects.Keys(session_effects.PASSTHROUGH, transport, surface_id)
+    keys = session_gate.Keys(transport, surface_id)
 
     # Step 1: send_text
     keys.text(args.text)
@@ -229,7 +240,9 @@ def legacy_main(args):
     sys.exit(0)
 
 
-def main():
+def build_parser(pro: bool):
+    """The options. The default mode has the ones this script always had (so its errors, its abbreviations and its
+    `--help` are what they always were); Pro mode adds what the record of a typing needs."""
     p = argparse.ArgumentParser()
     p.add_argument("--ws", required=True, help="workspace:N")
     p.add_argument("--text", required=True, help="literal text to send")
@@ -237,21 +250,33 @@ def main():
                    help="press Enter after sending text (default: do not press Enter)")
     p.add_argument("--caller", default=os.path.basename(sys.argv[0]),
                    help="who is calling — recorded in the log")
-    p.add_argument("--source", default="cli", help="where the text comes from, a fixed name (recorded)")
-    p.add_argument("--auth-kind", default="tap", choices=("tap", "standing", "owner_flag"),
-                   help="what allowed the typing: a person's tap, a standing setting, or a task's flag")
-    p.add_argument("--auth-ref", default="cli:cmux-send", help="a pointer to what allowed it (recorded)")
-    p.add_argument("--task", default="", help="the task this is for, td-N (recorded)")
+    if pro:
+        p.add_argument("--source", default="cli", help="where the text comes from, a fixed name (recorded)")
+        p.add_argument("--auth-kind", default="tap", choices=("tap", "standing", "owner_flag"),
+                       help="what allowed the typing: a person's tap, a standing setting, or a task's flag")
+        p.add_argument("--auth-ref", default="cli:cmux-send", help="a pointer to what allowed it (recorded)")
+        p.add_argument("--task", default="", help="the task this is for, td-N (recorded)")
     p.add_argument("--no-log", action="store_true",
                    help="do not append to sends.jsonl (for debug runs)")
     p.add_argument("--post-send-wait", type=float, default=2.5,
                    help="seconds to wait before re-stat'ing the transcript "
                         "for the size-delta proof (default 2.5)")
-    args = p.parse_args()
+    return p
 
-    # Asked once, here: the default mode runs what this script always did, and nothing below.
-    if not session_effects.active():
+
+def main():
+    pro = _pro()  # asked once, before the options are read: the default mode is what this script always was
+    args = build_parser(pro).parse_args()
+    if not pro:
         legacy_main(args)
+    try:
+        from assistant import session_effects  # noqa: PLC0415 - Pro mode only
+    except Exception as exc:  # noqa: BLE001 - loud: without its record nothing is typed
+        print(json.dumps({"outcome": "refused", "refused": {
+            "code": "unrecorded", "reason": f"the record of what is typed can't be loaded ({type(exc).__name__}: {exc})"}},
+            indent=2))
+        print(f"cmux-send: the record of what is typed can't be loaded, so nothing was typed ({exc})", file=sys.stderr)
+        sys.exit(4)
 
     ts = utc_iso()
     started_at = time.time()

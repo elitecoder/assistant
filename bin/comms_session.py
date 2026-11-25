@@ -79,7 +79,22 @@ DISPATCH_CWD = REPO_ROOT
 SRC = REPO_ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
-from assistant import model_tiers, session_effects  # noqa: E402
+from assistant import model_tiers  # noqa: E402
+
+# Pro mode's ledger is loaded only when Pro mode needs it, and the default mode types through the gate's own keys:
+# the default mode never depends on `session_effects`, `effects` or `pointers` loading (see assistant.session_gate).
+try:
+    from assistant import session_gate  # noqa: E402
+    session_effects = session_gate.effects
+except Exception:  # noqa: BLE001 - nothing here may stop the Slack service from starting
+    session_gate = None
+
+    class session_effects:  # noqa: N801 - the default mode, when even the gate can't load
+        Refused = type("Refused", (Exception,), {})
+
+        @staticmethod
+        def active() -> bool:
+            return False
 
 # Comms is a narrow conversational role — Sonnet, not the Opus the ~/.zprofile
 # `claude` alias bakes in. We bypass the alias by invoking the binary at its
@@ -733,30 +748,35 @@ def typing_scope(paths: comms_lib.Paths, ws_ref: str, surface_ref: str, source: 
                 session_effects.finish(effect_id, "failed", error="not recorded")
             raise
 
-    if session_effects.active():  # asked once, here: the default mode types as it always did, recording nothing
-        for older in batch:
-            begin(**older)
-        begin(ref=ref, anchor=anchor, slack_ts=slack_ts)
-    else:
-        begun.append(session_effects.PASSTHROUGH)
-    effect_id, others = begun[-1], begun[:-1]
-    if effect_id == session_effects.PASSTHROUGH:  # the mode changed part-way: close what was begun, type unrecorded
-        for each in others:
-            session_effects.finish(each, "failed", error="not recorded")
-        others = []
-
     def transport(method, params):
         """An exit status of 0 is an answer whatever the body; a timeout raises, because the keystroke may have
-        landed and is then recorded as unknown, not failed."""
+        landed and is then recorded as unknown, not failed (a typing begun in the default mode reads it as a refusal,
+        as it always did)."""
         comms_lib.clear_last_run()
         answer = _cmux_rpc(paths, method, params)
         if answer is not None:
             return answer
         ran = comms_lib.last_run()  # how the command just run ended, if one was run
-        if session_effects.active() and ran and ran[1].startswith("timeout"):
+        if ran and ran[1].startswith("timeout"):
             raise TimeoutError(method)
         return {} if ran and ran[0] == 0 else None
 
+    # Asked once, here, when the typing begins: the default mode types as it always did, recording nothing, and a
+    # typing begun in Pro mode keeps Pro mode's rules to its end.
+    if not session_effects.active():
+        keys = session_gate.Keys(transport, surface_ref)
+        outer = getattr(_scope, "keys", None)
+        _scope.keys = keys
+        try:
+            yield keys
+        finally:
+            _scope.keys = outer
+        return
+
+    for older in batch:
+        begin(**older)
+    begin(ref=ref, anchor=anchor, slack_ts=slack_ts)
+    effect_id, others = begun[-1], begun[:-1]
     try:
         keys = session_effects.Keys(effect_id, transport, surface_ref, ws_ref, also=others)
     except session_effects.Refused:
@@ -776,16 +796,20 @@ def typing_scope(paths: comms_lib.Paths, ws_ref: str, surface_ref: str, source: 
 
 
 def _active_keys(surface_ref: str, paths: comms_lib.Paths | None = None):
+    keys = getattr(_scope, "keys", None)
+    if keys is not None and hasattr(keys, "effect_id"):  # a typing begun in Pro mode: only its own terminal
+        if keys.surface_id != surface_ref:
+            raise session_effects.Refused("invalid", session_effects.INVALID)
+        return keys
+    if keys is not None and keys.surface_id == surface_ref:  # a typing begun in the default mode
+        return keys
     if paths is not None and not session_effects.active():
         # The default mode types as it always did, with or without a scope: nothing is checked or recorded.
         def transport(method, params):
             return _cmux_rpc(paths, method, params)
 
-        return session_effects.Keys(session_effects.PASSTHROUGH, transport, surface_ref)
-    keys = getattr(_scope, "keys", None)
-    if keys is None or keys.surface_id != surface_ref:
-        raise session_effects.Refused("invalid", session_effects.INVALID)
-    return keys
+        return session_gate.Keys(transport, surface_ref)
+    raise session_effects.Refused("invalid", session_effects.INVALID)
 
 
 def send_enter(paths: comms_lib.Paths, surface_ref: str) -> None:

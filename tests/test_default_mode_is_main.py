@@ -3,7 +3,12 @@
 Each test runs the fakes a path always had and asserts what origin/main does for that input, as literals: the
 keystrokes in order, the task file, `sends.jsonl`, what a script prints and its exit status, what a route replies, the
 Slack sends, the cards, and that `~/.assistant/effects` is not made. The file uses only what both trees have, so it
-also passes when run inside a checkout of origin/main (that is how the literals were found).
+also passes when run inside a checkout of origin/main, which is how the literals were found and how to check them again:
+
+    mkdir /tmp/main-copy && git archive origin/main | tar -x -C /tmp/main-copy
+    cp tests/test_default_mode_is_main.py /tmp/main-copy/tests/ && cd /tmp/main-copy && python -m pytest tests/test_default_mode_is_main.py
+
+Every test in it passes there. Anything that needs code only this branch has is in `tests/test_session_gate.py`.
 """
 from __future__ import annotations
 
@@ -31,9 +36,11 @@ MARKER = "TEXT-MARKER"
 
 
 @pytest.fixture(autouse=True)
-def default_mode(monkeypatch, tmp_path):
-    """The default mode, said outright, and a home of its own for the test."""
-    monkeypatch.setattr(mode, "current", lambda: "default")
+def default_mode(request, monkeypatch, tmp_path):
+    """The default mode, said outright (a test marked `real_mode` reads the config file instead), and a home of its
+    own for the test."""
+    if "real_mode" not in request.keywords:
+        monkeypatch.setattr(mode, "current", lambda: "default")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     (tmp_path / "home/.assistant").mkdir(parents=True)
     (tmp_path / "home/.claude/cache").mkdir(parents=True)
@@ -660,8 +667,11 @@ def test_a_time_out_answer_from_cmux_in_restore_is_a_refusal_that_is_tried_again
 
 def test_a_cmux_time_out_in_restore_is_a_failure_with_the_exceptions_own_words(default_mode):
     restore = restore_module()
-    with mock.patch.object(restore.subprocess, "run", side_effect=subprocess.TimeoutExpired(cmd="cmux", timeout=5)):
-        assert restore.run_cmux("rpc", "x") == (1, "", "Command 'cmux' timed out after 5 seconds")
+    out = io.StringIO()
+    with mock.patch.object(restore.subprocess, "run", side_effect=subprocess.TimeoutExpired(cmd="cmux", timeout=5)), \
+            contextlib.redirect_stdout(out):
+        assert restore.respawn_panel({"title": "t"}, PANEL, "cd /x", False, True) is False
+    assert out.getvalue().splitlines()[-1] == "  ERROR: send_text failed: Command 'cmux' timed out after 5 seconds"
     effects_untouched(default_mode)
 
 
@@ -714,34 +724,84 @@ def test_a_blocked_or_parked_task_row_looks_as_it_always_did(default_mode):
     assert '<span class="pill status-blocked">blocked</span>' in row
 
 
-# --- the typing module itself ---------------------------------------------------------------------------------------
+# --- the options of the two scripts ---------------------------------------------------------------------------------
 
-def test_the_typing_module_is_a_pass_through_in_the_default_mode(default_mode):
-    if not (REPO / "src/assistant/session_effects.py").exists():  # origin/main has no such module
-        pytest.skip("origin/main has no typing module")
-    from assistant import session_effects as se
-    ef = se.begin("not-even-a-session", "anything at all", kind="nothing", ref="", component="")
-    assert ef == se.PASSTHROUGH == ""
-    calls = []
-    keys = se.Keys(ef, lambda method, params: calls.append((method, params)), "s")
-    keys.line("hi")  # the Enter follows the text whatever cmux answered
-    assert calls == [("surface.send_text", {"surface_id": "s", "text": "hi"}),
-                     ("surface.send_key", {"surface_id": "s", "key": "enter"})]
-    assert keys.outcome() == "done"
-    se.finish(ef, "failed")
+CONFIGS = [None, '{"mode": "default"}', "{ this is not json"]  # no file, the default mode, a file nobody can read
+
+
+def write_config(home, text):
+    if text is not None:
+        (home / ".assistant/config.json").write_text(text)
+
+
+def run_script(script, argv, columns="80"):
+    module = load("parser_" + script.replace("-", "_").replace(".py", ""), script)
+    sys.argv = [script, *argv]
+    out, err = io.StringIO(), io.StringIO()
+    with mock.patch.dict("os.environ", {"COLUMNS": columns}), contextlib.redirect_stdout(out), \
+            contextlib.redirect_stderr(err), \
+            mock.patch.object(module, "resolve_terminal_surface", create=True, return_value=("S", "surface:1", "tty", "t")), \
+            mock.patch.object(module, "rpc", create=True, return_value=(0, {})), pytest.raises(SystemExit) as stop:
+        module.main()
+    return stop.value.code, out.getvalue(), err.getvalue()
+
+
+SEND_USAGE = ("usage: cmux-send.py [-h] --ws WS --text TEXT [--enter] [--caller CALLER]\n"
+              "                    [--no-log] [--post-send-wait POST_SEND_WAIT]\n")
+MERGE_USAGE = ("usage: merge-pr-dispatch.py [-h] --ws WS --pr PR [--refactor-attested]\n"
+               "                            [--e2e-attested]\n")
+
+
+@pytest.mark.real_mode
+@pytest.mark.parametrize("config", CONFIGS)
+@pytest.mark.parametrize("extra", [["--source", "merge"], ["--auth-kind", "tap"], ["--auth-ref", "x"],
+                                   ["--task", "td-1"]])
+def test_the_send_script_rejects_the_options_only_pro_mode_has(default_mode, config, extra):
+    write_config(default_mode, config)
+    code, out, err = run_script("cmux-send.py", ["--ws", WS, "--text", "x", "--no-log", *extra])
+    assert (code, out) == (2, "")
+    assert err == SEND_USAGE + f"cmux-send.py: error: unrecognized arguments: {' '.join(extra)}\n"
     effects_untouched(default_mode)
 
 
-def test_a_mode_that_cant_be_read_by_the_merge_script_is_the_default_mode(default_mode, monkeypatch):
-    merge = load("merge_default_unreadable", "merge-pr-dispatch.py")
-    monkeypatch.setattr(mode, "is_pro", lambda: (_ for _ in ()).throw(OSError("unreadable")))
-    assert merge._pro_mode() is False
+@pytest.mark.real_mode
+@pytest.mark.parametrize("config", CONFIGS)
+def test_the_send_script_reads_a_shortened_text_option_as_it_always_did(default_mode, config):
+    write_config(default_mode, config)
+    code, out, err = run_script("cmux-send.py", ["--ws", WS, "--t", "hello", "--no-log", "--post-send-wait", "0"])
+    record = json.loads(out)
+    assert (code, err, record["text"], record["outcome"]) == (0, "", "hello", "sent")
+    effects_untouched(default_mode)
 
 
-def test_a_line_with_no_enter_types_only_the_text_in_the_default_mode(default_mode):
-    if not (REPO / "src/assistant/session_effects.py").exists():
-        pytest.skip("origin/main has no typing module")
-    from assistant import session_effects as se
-    calls = []
-    se.Keys(se.PASSTHROUGH, lambda method, params: calls.append(method), "s").line("hi", enter="")
-    assert calls == ["surface.send_text"]
+SEND_HELP = (SEND_USAGE + "\noptions:\n  -h, --help            show this help message and exit\n"
+             "  --ws WS               workspace:N\n  --text TEXT           literal text to send\n"
+             "  --enter               press Enter after sending text (default: do not press\n"
+             "                        Enter)\n  --caller CALLER       who is calling — recorded in the log\n"
+             "  --no-log              do not append to sends.jsonl (for debug runs)\n"
+             "  --post-send-wait POST_SEND_WAIT\n"
+             "                        seconds to wait before re-stat'ing the transcript for\n"
+             "                        the size-delta proof (default 2.5)\n")
+MERGE_HELP = (MERGE_USAGE + "\noptions:\n  -h, --help           show this help message and exit\n"
+              "  --ws WS              workspace:N\n  --pr PR\n"
+              "  --refactor-attested  Dispatcher claims the workspace transcript shows full\n"
+              "                       local G3 + unit suite green\n"
+              "  --e2e-attested       Dispatcher claims the workspace transcript shows pnpm\n"
+              "                       e2e:squirrel passed (required for Squirrel PRs)\n")
+
+
+@pytest.mark.real_mode
+@pytest.mark.parametrize("config", CONFIGS)
+def test_the_help_of_both_scripts_is_what_it_always_was(default_mode, config):
+    write_config(default_mode, config)
+    assert run_script("cmux-send.py", ["--help"]) == (0, SEND_HELP, "")
+    assert run_script("merge-pr-dispatch.py", ["--help"]) == (0, MERGE_HELP, "")
+
+
+@pytest.mark.real_mode
+@pytest.mark.parametrize("config", CONFIGS)
+def test_the_merge_script_rejects_the_option_only_pro_mode_has(default_mode, config):
+    write_config(default_mode, config)
+    code, out, err = run_script("merge-pr-dispatch.py", ["--ws", WS, "--pr", "7", "--authorized-by", "standing"])
+    assert (code, out) == (2, "")
+    assert err == MERGE_USAGE + "merge-pr-dispatch.py: error: unrecognized arguments: --authorized-by standing\n"

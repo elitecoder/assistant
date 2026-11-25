@@ -29,8 +29,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import agent_session  # noqa: E402
-from assistant import session_effects  # noqa: E402
 import cmux_sessions  # noqa: E402
+
+try:
+    from assistant import session_gate  # noqa: E402 - the default mode types through it; stdlib only
+except Exception:  # noqa: BLE001 - nothing here may stop the default mode from starting
+    session_gate = None
 
 REGISTRY = Path.home() / ".claude/cmux-registry.json"
 CMUX_STATE = Path.home() / "Library/Application Support/cmux/session-com.cmuxterm.app.json"
@@ -44,9 +48,7 @@ def run_cmux(*args, timeout=5):
         )
         return r.returncode, r.stdout.strip(), r.stderr.strip()
     except subprocess.TimeoutExpired as e:
-        if session_effects.active():  # Pro mode tells a time-out from a refusal; the default mode never did
-            return 124, "", "timeout"
-        return 1, "", str(e)
+        return 124, "", str(e)  # a time-out is "can't tell": whoever types decides what that means
     except Exception as e:
         return 1, "", str(e)
 
@@ -269,16 +271,42 @@ def respawn_panel(ws, panel, cmd: str, dry_run: bool, verbose: bool):
         print(f"  [DRY-RUN] Would send: {cmd}")
         return True
 
-    # A person ran this, which is what allows the typing. The intent is recorded first, and the saved state knows a
-    # panel only by its terminal id, which is what the record holds.
     last_error = [""]
 
     def rpc(method, params):
         rc, out, last_error[0] = run_cmux("rpc", method, json.dumps(params), timeout=5)
-        if rc == 124 and session_effects.active():
-            raise TimeoutError(method)  # the keystroke may have landed: recorded as unknown, not failed
+        if rc == 124:
+            raise TimeoutError(method)  # the keystroke may have landed
         return (out or "{}") if rc == 0 else None
 
+    # Asked once, here: a typing begun in the default mode stays what it always was, and one begun in Pro mode keeps
+    # Pro mode's rules to its end, whatever the mode is by then.
+    try:
+        pro = bool(session_gate and session_gate.active())
+    except Exception:  # noqa: BLE001
+        pro = False
+    if not pro:
+        # As it always was: text to the terminal, then to the panel's own id, then Enter; nothing recorded or checked.
+        keys = session_gate.Keys(rpc, surface_id)
+        ok = keys.text(cmd)
+        if not ok:
+            keys.surface_id = panel_id
+            ok = keys.text(cmd)
+        if ok:
+            keys.surface_id = surface_id or panel_id
+            keys.key("enter")
+            return True
+        if verbose:
+            print(f"  ERROR: send_text failed: {last_error[0]}")
+        return False
+
+    # Pro mode. A person ran this, which is what allows the typing. The intent is recorded first, and the saved state
+    # knows a panel only by its terminal id, which is what the record holds.
+    try:
+        from assistant import session_effects  # noqa: PLC0415
+    except Exception as exc:  # noqa: BLE001 - loud: without its record nothing is typed
+        print(f"  NOT TYPED: the record of what is typed can't be loaded ({type(exc).__name__}: {exc})")
+        return False
     try:
         effect_id = session_effects.begin("", "restore", kind="tap", ref="cli:restore", component="restore",
                                           surface=surface_id)
@@ -307,9 +335,7 @@ def respawn_panel(ws, panel, cmd: str, dry_run: bool, verbose: bool):
         keys.finish()
 
     if verbose:
-        # The default mode says what cmux said, as it always did; Pro mode has one sentence.
-        print(f"  ERROR: send_text failed: {last_error[0]}" if not session_effects.active()
-              else "  ERROR: send_text failed: the terminal didn't take the text")
+        print("  ERROR: send_text failed: the terminal didn't take the text")
     return False
 
 

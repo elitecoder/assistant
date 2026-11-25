@@ -101,7 +101,9 @@ page, so they can do whatever the dashboard can.
   round. The card stays as long as a parked task does, even on rounds where
   nothing is blocked. A name cmux gives a session that Assistant doesn't
   recognise has its own card, which says the tasks waiting will park the same
-  way until you update Assistant. See
+  way until you update Assistant. If you turn Pro mode off, a task parked in
+  Pro mode stays blocked: close its workspace and press "Queue to start" on it.
+  See
   [Typing into agent sessions](effects.md#typing-into-agent-sessions).
 
 ## Decisions and goals

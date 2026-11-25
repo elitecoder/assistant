@@ -43,6 +43,8 @@ def _layout(tmp: Path, pulse_body: str, model_tiers: str = "TIERS = {}\n") -> Pa
     (tmp / "src/assistant/redact.py").write_text("")
     (tmp / "src/assistant/mode.py").write_text("")
     (tmp / "src/assistant/session_effects.py").write_text("")
+    for name in ("effects", "pointers", "session_gate"):
+        (tmp / f"src/assistant/{name}.py").write_text("")
     return tmp / "bin/run-pulse.py"
 
 
@@ -154,19 +156,33 @@ def _module_level_imports(nodes):
             yield from _module_level_imports(getattr(node, field, []))
 
 
-def test_startup_files_match_pulse_module_level_imports():
-    tree = ast.parse((REPO / "bin/pulse.py").read_text())
-    imported = {"bin/pulse.py"}
-    for node in _module_level_imports(tree.body):
-        modules = ([alias.name for alias in node.names] if isinstance(node, ast.Import)
-                   else [node.module])
+PRO_LAZY = ("session_effects",)  # loaded by assistant.session_gate when Pro mode first types, not at module level
+
+
+def _assistant_imports(path):
+    """The `assistant` modules a file imports at module level (anything else must be the standard library)."""
+    found = set()
+    for node in _module_level_imports(ast.parse(path.read_text()).body):
+        modules = ([alias.name for alias in node.names] if isinstance(node, ast.Import) else [node.module])
         for module in modules:
             top = module.split(".")[0]
             if top in sys.stdlib_module_names or top == "__future__":
                 continue
-            assert module == "assistant", f"add {module} to run-pulse.py STARTUP_FILES"
-            imported.add("src/assistant/__init__.py")
-            imported.update(f"src/assistant/{alias.name}.py" for alias in node.names)
+            assert top == "assistant", f"add {module} to run-pulse.py STARTUP_FILES"
+            if module == "assistant":
+                found.update(alias.name for alias in node.names)
+            else:
+                found.add(module.split(".")[1])
+    return found
+
+
+def test_startup_files_match_pulse_module_level_imports_and_what_they_import():
+    todo, seen = _assistant_imports(REPO / "bin/pulse.py") | set(PRO_LAZY), set()
+    while todo:
+        name = todo.pop()
+        seen.add(name)
+        todo |= _assistant_imports(REPO / f"src/assistant/{name}.py") - seen
+    imported = {"bin/pulse.py", "src/assistant/__init__.py"} | {f"src/assistant/{name}.py" for name in seen}
     listed = {str(path.relative_to(REPO)) for path in _load().STARTUP_FILES}
     assert imported == listed
 

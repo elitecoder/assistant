@@ -102,7 +102,7 @@ call still open after 2 hours is a session waiting on a person, and stops
 counting. Sessions you are using yourself count. A plain terminal and an agent
 that has exited aren't busy, and a session whose transcript can't be read is.
 If the pulse can't read the open workspaces or the sessions, it starts nothing
-that pulse and shows a "Dispatch paused" card instead. It also starts nothing
+that pulse and shows a "Dispatch paused" card instead. In Pro mode it also starts nothing
 when it can't record what it would type into the new session (see
 `docs/effects.md`), and says so on the same card.
 

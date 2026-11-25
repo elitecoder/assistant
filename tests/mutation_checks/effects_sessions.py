@@ -328,8 +328,8 @@ CHECKS = (
     (
         "a timeout while typing into a new workspace is not recorded as a refusal",
         PULSE,
-        '    if _last_rpc_rc == 124 and session_effects.active():\n        raise TimeoutError(method)',
-        '    if False:\n        raise TimeoutError(method)',
+        '    if _last_rpc_rc == 124:\n        raise TimeoutError(method)  # a typing begun in the default mode reads this as a refusal, as it always did',
+        '    if False:\n        raise TimeoutError(method)  # a typing begun in the default mode reads this as a refusal, as it always did',
         P + "test_a_timeout_may_have_landed_so_it_is_unknown_not_failed",
     ),
 
@@ -343,8 +343,8 @@ CHECKS = (
     (
         "keys that can't be made for the instruction close the intent as failed",
         PULSE,
-        '        session_effects.finish(task_ef, "failed", error="not recorded")\n        log.warning("dispatch %s: typing into',
-        '        log.warning("dispatch %s: typing into',
+        '            session_effects.finish(task_ef, "failed", error="not recorded")\n            log.warning("dispatch %s: typing into',
+        '            log.warning("dispatch %s: typing into',
         P + "test_keys_that_cant_be_made_for_the_instruction_close_the_intent_as_failed",
     ),
     (
@@ -644,7 +644,7 @@ CHECKS = (
     (
         "Queue to start clears the park marker",
         TS,
-        '        if session_effects.active():\n            target.pop("parkedBy", None)  # asking again ends a park (Pro mode)',
+        '        if _pro():\n            target.pop("parkedBy", None)  # asking again ends a park (Pro mode)',
         '        if True:\n            pass  # asking again ends a park (Pro mode)',
         P + "test_queue_to_start_clears_the_park_marker_so_a_later_block_is_not_listed_as_parked",
     ),
@@ -754,66 +754,18 @@ CHECKS = (
         "tests/test_session_effects_records.py::test_a_dispatch_reason_of_typing_refused_is_accepted_and_free_text_still_is_not",
     ),
     # --- Pro mode only: the default mode is origin/main -------------------------------------------------
-    (
-        'typing is recorded in Pro mode only: begin does nothing in the default mode',
-        SE,
-        '    if not active():\n        return PASSTHROUGH\n    now = _now()',
-        '    if False:\n        return PASSTHROUGH\n    now = _now()',
-        'tests/test_default_mode_is_main.py::test_the_typing_module_is_a_pass_through_in_the_default_mode',
-    ),
-    (
-        'the mode is read once, from the mode setting',
-        SE,
-        '        return mode.is_pro()\n    except Exception:',
-        '        return True\n    except Exception:',
-        'tests/test_default_mode_is_main.py::test_a_task_is_started_with_two_keystroke_calls_and_nothing_is_recorded',
-    ),
-    (
-        'a typing begun in the default mode records no result',
-        SE,
-        '    if effect_id == PASSTHROUGH:\n        return\n    effects.finish',
-        '    if False:\n        return\n    effects.finish',
-        'tests/test_session_effects_mode_switch.py::test_a_typing_begun_in_the_default_mode_writes_nothing_even_if_pro_is_on_before_it_ends',
-    ),
-    (
-        'keys for a typing begun in the default mode check nothing',
-        SE,
-        '        self.passthrough = effect_id == PASSTHROUGH  # begun in the default mode: type, and check nothing',
-        '        self.passthrough = False  # begun in the default mode: type, and check nothing',
-        'tests/test_default_mode_is_main.py::test_the_typing_module_is_a_pass_through_in_the_default_mode',
-    ),
-    (
-        'in the default mode the Enter follows the text whatever cmux said',
-        SE,
-        '            self.text(text)\n            if enter:\n                if pause:',
-        '            if self.text(text) and enter:\n                if pause:',
-        'tests/test_default_mode_is_main.py::test_when_cmux_refuses_the_text_the_enter_is_still_pressed_and_the_task_is_still_stamped',
-    ),
-    (
-        'in the default mode a typing is never called failed',
-        SE,
-        '        if self.passthrough:\n            return "done"',
-        '        if False:\n            return "done"',
-        'tests/test_default_mode_is_main.py::test_when_cmux_refuses_the_text_the_enter_is_still_pressed_and_the_task_is_still_stamped',
-    ),
-    (
-        'run now types as it always did in the default mode',
-        SE,
-        '    subprocess.run([cmux_bin, "send", "--workspace", ws_ref, text], check=False, timeout=4, capture_output=True)',
-        '    subprocess.run([cmux_bin, "send", "--workspace", ws_ref, text], check=False, timeout=9, capture_output=True)',
-        'tests/test_default_mode_is_main.py::test_run_now_types_what_a_proposal_says_into_the_session_it_names_with_cmux_send_whatever_it_is',
-    ),
-    (
-        "a mode that can't be read is the default mode",
-        SE,
-        '    except Exception:  # noqa: BLE001 - never let the mode lookup change what a typing does\n        return False',
-        '    except Exception:  # noqa: BLE001 - never let the mode lookup change what a typing does\n        return True',
-        'tests/test_session_effects_mode_switch.py::test_a_mode_that_cant_be_read_is_the_default_mode',
-    ),
+
+
+
+
+
+
+
+
     (
         'the send script runs as it always did in the default mode',
         SEND,
-        '    if not session_effects.active():\n        legacy_main(args)',
+        '    if not pro:\n        legacy_main(args)',
         '    if False:\n        legacy_main(args)',
         'tests/test_default_mode_is_main.py::test_the_send_script_reads_a_time_out_as_a_refusal_and_exits_2',
     ),
@@ -867,13 +819,7 @@ CHECKS = (
         '        if True:\n            target.pop("parkedBy", None)',
         'tests/test_default_mode_is_main.py::test_a_good_dispatch_leaves_a_stale_park_marker_as_it_found_it',
     ),
-    (
-        'a time-out while typing into a new workspace is a refusal only in Pro mode',
-        PULSE,
-        '    if _last_rpc_rc == 124 and session_effects.active():',
-        '    if _last_rpc_rc == 124:',
-        'tests/test_default_mode_is_main.py::test_a_time_out_typing_the_instruction_is_ignored_as_before_and_the_enter_still_follows',
-    ),
+
 
     (
         "a Slack capture that isn't auto-start is refused in Pro mode only",
@@ -904,20 +850,8 @@ CHECKS = (
         '    if False:',
         'tests/test_default_mode_is_main.py::test_the_slack_session_types_without_any_scope_as_it_always_could',
     ),
-    (
-        'a Slack time-out is a refusal only in Pro mode',
-        CS,
-        '        if session_effects.active() and ran and ran[1].startswith("timeout"):',
-        '        if ran and ran[1].startswith("timeout"):',
-        'tests/test_session_effects_mode_switch.py::test_a_time_out_after_the_mode_changed_to_default_is_a_refusal_not_an_unknown',
-    ),
-    (
-        'a batch whose mode changed closes what it had begun',
-        CS,
-        '    if effect_id == session_effects.PASSTHROUGH:  # the mode changed part-way',
-        '    if False:  # the mode changed part-way',
-        'tests/test_session_effects_mode_switch.py::test_a_batch_whose_mode_changed_part_way_closes_what_it_had_begun_and_types_unrecorded',
-    ),
+
+
     (
         "only the owner's Slack messages are queued, in Pro mode only",
         CL,
@@ -946,41 +880,23 @@ CHECKS = (
         '    foreign = [r for r in fresh if classify_author(paths, r, env)[0] not in ("owner", "dm")]',
         'tests/test_default_mode_is_main.py::test_messages_queued_by_anyone_are_delivered_and_an_expired_one_is_dropped_without_a_word',
     ),
-    (
-        'restore reads a time-out as a refusal in Pro mode only',
-        RS,
-        '        if rc == 124 and session_effects.active():',
-        '        if rc == 124:',
-        'tests/test_default_mode_is_main.py::test_a_time_out_answer_from_cmux_in_restore_is_a_refusal_that_is_tried_again_with_the_panels_id',
-    ),
-    (
-        "restore's time-out words are Pro mode's",
-        RS,
-        '        if session_effects.active():  # Pro mode tells a time-out from a refusal; the default mode never did',
-        '        if True:  # Pro mode tells a time-out from a refusal; the default mode never did',
-        'tests/test_default_mode_is_main.py::test_a_cmux_time_out_in_restore_is_a_failure_with_the_exceptions_own_words',
-    ),
+
+
     (
         'restore says what cmux said in the default mode',
         RS,
-        '        print(f"  ERROR: send_text failed: {last_error[0]}" if not session_effects.active()',
-        '        print(f"  ERROR: send_text failed: {last_error[0]}" if False',
+        '            print(f"  ERROR: send_text failed: {last_error[0]}")',
+        '            print("  ERROR: send_text failed: the terminal didn\'t take the text")',
         'tests/test_default_mode_is_main.py::test_restore_tries_the_panels_id_when_the_first_try_fails_and_says_what_cmux_said',
     ),
     (
         'run now checks and records only in Pro mode',
         TS,
-        '    if not session_effects.active():\n        try:\n            session_effects.run_now_legacy',
-        '    if False:\n        try:\n            session_effects.run_now_legacy',
+        '    if not _pro():\n        try:\n            session_gate.run_now_legacy',
+        '    if False:\n        try:\n            session_gate.run_now_legacy',
         'tests/test_default_mode_is_main.py::test_run_now_types_what_a_proposal_says_into_the_session_it_names_with_cmux_send_whatever_it_is',
     ),
-    (
-        'Queue to start clears a park marker in Pro mode only',
-        TS,
-        '        if session_effects.active():\n            target.pop("parkedBy", None)  # asking again ends a park (Pro mode)',
-        '        if True:\n            target.pop("parkedBy", None)  # asking again ends a park (Pro mode)',
-        'tests/test_default_mode_is_main.py::test_queue_to_start_leaves_a_park_marker_alone_in_the_default_mode',
-    ),
+
     (
         "a parked task's row is changed in Pro mode only",
         "bin/render-assistant-page.py",
@@ -1140,8 +1056,8 @@ CHECKS = (
     (
         "a scope in the Slack session allows typing only into its own terminal",
         CS,
-        "    if keys is None or keys.surface_id != surface_ref:",
-        "    if keys is None:",
+        '    if keys is not None and hasattr(keys, "effect_id"):  # a typing begun in Pro mode: only its own terminal\n        if keys.surface_id != surface_ref:',
+        '    if keys is not None and hasattr(keys, "effect_id"):  # a typing begun in Pro mode: only its own terminal\n        if False:',
         C + "test_typing_outside_a_recorded_scope_is_refused_and_a_scope_is_per_thread",
     ),
     (
@@ -1161,7 +1077,7 @@ CHECKS = (
     (
         "a timeout while typing into the Slack session is not taken for a refusal",
         CS,
-        '        if session_effects.active() and ran and ran[1].startswith("timeout"):\n            raise TimeoutError(method)',
+        '        if ran and ran[1].startswith("timeout"):\n            raise TimeoutError(method)',
         '        if False:\n            raise TimeoutError(method)',
         C + "test_the_typing_transport_tells_a_timeout_a_refusal_and_a_silent_success_apart",
     ),
@@ -1225,8 +1141,8 @@ CHECKS = (
     (
         "each message in a batch has its own intent before anything is typed",
         CS,
-        '        for older in batch:\n            begin(**older)\n        begin(ref=ref',
-        '        begin(ref=ref',
+        '    for older in batch:\n        begin(**older)\n    begin(ref=ref',
+        '    begin(ref=ref',
         C + "test_each_message_in_a_batch_has_its_own_intent_begun_before_any_keystroke",
     ),
 
@@ -1494,16 +1410,16 @@ CHECKS = (
     (
         "restore says a timeout may have landed",
         RS,
-        '        if rc == 124 and session_effects.active():\n            raise TimeoutError(method)',
-        '        if False:\n            raise TimeoutError(method)',
+        '        if rc == 124:\n            raise TimeoutError(method)  # the keystroke may have landed',
+        '        if False:\n            raise TimeoutError(method)  # the keystroke may have landed',
         R + "test_a_timeout_on_the_text_is_unknown_and_is_not_tried_again_by_the_other_id",
     ),
 
     (
         "restore takes a timeout of cmux for a timeout",
         RS,
-        '        if session_effects.active():  # Pro mode tells a time-out from a refusal; the default mode never did\n            return 124, "", "timeout"',
-        '        if session_effects.active():  # Pro mode tells a time-out from a refusal; the default mode never did\n            return 1, "", "timeout"',
+        '        return 124, "", str(e)  # a time-out is "can\'t tell": whoever types decides what that means',
+        '        return 1, "", str(e)  # a time-out is "can\'t tell": whoever types decides what that means',
         R + "test_run_cmux_reports_a_timeout_as_one",
     ),
 
@@ -1520,8 +1436,30 @@ CHECKS = (
         "bin/run-pulse.py",
         '                 BIN.parent / "src/assistant/session_effects.py",\n',
         "",
-        "tests/test_run_pulse_wrapper.py::test_startup_files_match_pulse_module_level_imports",
+        "tests/test_run_pulse_wrapper.py::test_startup_files_match_pulse_module_level_imports_and_what_they_import",
     ),
+    (
+        "the pulse's start-up check covers the ledger the typing is recorded in",
+        "bin/run-pulse.py",
+        '                 BIN.parent / "src/assistant/effects.py",\n',
+        "",
+        "tests/test_run_pulse_wrapper.py::test_startup_files_match_pulse_module_level_imports_and_what_they_import",
+    ),
+    (
+        "the pulse's start-up check covers the pointers the ledger writes",
+        "bin/run-pulse.py",
+        '                 BIN.parent / "src/assistant/pointers.py",\n',
+        "",
+        "tests/test_run_pulse_wrapper.py::test_startup_files_match_pulse_module_level_imports_and_what_they_import",
+    ),
+    (
+        "the pulse's start-up check covers the gate Pro mode types through",
+        "bin/run-pulse.py",
+        '                 BIN.parent / "src/assistant/session_gate.py",\n',
+        "",
+        "tests/test_run_pulse_wrapper.py::test_startup_files_match_pulse_module_level_imports_and_what_they_import",
+    ),
+
     (
         "the fence sees the rpc method names however they are written",
         "tests/test_session_typing_fence.py",
@@ -1542,5 +1480,201 @@ CHECKS = (
         'VERBS = {"send"}  # the other verbs are caught as strings',
         "VERBS = set()  # the other verbs are caught as strings",
         F + WORDS,
+    ),
+    (
+        'the gate reads the mode from the mode setting',
+        'src/assistant/session_gate.py',
+        '        return bool(mode.is_pro())',
+        '        return True',
+        'tests/test_default_mode_is_main.py::test_the_send_script_reads_a_time_out_as_a_refusal_and_exits_2',
+    ),
+    (
+        "a mode that can't be read, or can't load, is the default mode",
+        'src/assistant/session_gate.py',
+        '    except Exception:  # noqa: BLE001 - never let the mode lookup change what a typing does\n        return False',
+        '    except KeyError:  # noqa: BLE001 - never let the mode lookup change what a typing does\n        return False',
+        'tests/test_session_gate.py::test_a_mode_that_cant_be_read_is_the_default_mode_for_the_gate',
+    ),
+    (
+        "the default mode's keys read a time-out as a refusal",
+        'src/assistant/session_gate.py',
+        '        except TimeoutError:\n            return False',
+        '        except KeyError:\n            return False',
+        'tests/test_session_gate.py::test_a_time_out_from_the_transport_is_a_refusal_in_the_default_mode',
+    ),
+    (
+        'in the default mode the Enter follows the text whatever cmux said',
+        'src/assistant/session_gate.py',
+        '        took = self.text(text)\n        if enter:',
+        '        took = self.text(text)\n        if enter and took:',
+        'tests/test_default_mode_is_main.py::test_when_cmux_refuses_the_text_the_enter_is_still_pressed_and_the_task_is_still_stamped',
+    ),
+    (
+        "the default mode's keys wait between the text and Enter as a task's start always did",
+        'src/assistant/session_gate.py',
+        '                (sleep or time.sleep)(pause)',
+        '                (sleep or time.sleep)(0)',
+        'tests/test_session_gate.py::test_a_line_can_end_with_a_carriage_return_or_with_nothing_and_can_wait_first',
+    ),
+    (
+        'run now types as it always did in the default mode',
+        'src/assistant/session_gate.py',
+        '    subprocess.run([cmux_bin, "send", "--workspace", ws_ref, text], check=False, timeout=4, capture_output=True)',
+        '    subprocess.run([cmux_bin, "send", "--workspace", ws_ref, text], check=False, timeout=9, capture_output=True)',
+        'tests/test_default_mode_is_main.py::test_run_now_types_what_a_proposal_says_into_the_session_it_names_with_cmux_send_whatever_it_is',
+    ),
+    (
+        'in the default mode nothing is loaded and a refusal is one nothing raises',
+        'src/assistant/session_gate.py',
+        '        if name == "Refused" and self._module is None and not active():\n            return _NothingRaised',
+        '        if False:\n            return _NothingRaised',
+        'tests/test_session_gate.py::test_in_the_default_mode_the_stand_in_loads_nothing_and_names_a_refusal_nothing_raises',
+    ),
+    (
+        'without the ledger Pro mode refuses what it would have typed',
+        'src/assistant/session_gate.py',
+        '    return {"Refused": Unavailable, ',
+        '    return {"Refused": _NothingRaised, ',
+        'tests/test_session_gate.py::test_pro_mode_without_the_ledger_refuses_everything_that_would_type_and_says_so',
+    ),
+    (
+        "without the ledger Pro mode says the record isn't there",
+        'src/assistant/session_gate.py',
+        '"writable": lambda: False,',
+        '"writable": lambda: True,',
+        'tests/test_session_gate.py::test_pro_mode_without_the_ledger_refuses_everything_that_would_type_and_says_so',
+    ),
+    (
+        'without the ledger Pro mode says so in the log',
+        'src/assistant/session_gate.py',
+        '                if not self._said:\n                    self._said = True\n',
+        '                if False:\n                    self._said = True\n',
+        'tests/test_session_gate.py::test_pro_mode_without_the_ledger_refuses_everything_that_would_type_and_says_so',
+    ),
+    (
+        'the send script has the options of Pro mode only in Pro mode',
+        'bin/cmux-send.py',
+        '    if pro:\n        p.add_argument("--source"',
+        '    if True:\n        p.add_argument("--source"',
+        'tests/test_default_mode_is_main.py::test_the_send_script_rejects_the_options_only_pro_mode_has',
+    ),
+    (
+        'the send script asks the mode before it reads the options',
+        'bin/cmux-send.py',
+        '    pro = _pro()  # asked once, before the options are read: the default mode is what this script always was\n    args = build_parser(pro)',
+        '    pro = True\n    args = build_parser(pro)',
+        'tests/test_default_mode_is_main.py::test_the_help_of_both_scripts_is_what_it_always_was',
+    ),
+    (
+        "the send script is the default mode when the gate can't say",
+        'bin/cmux-send.py',
+        '        return bool(session_gate and session_gate.active())',
+        '        return True',
+        'tests/test_default_mode_is_main.py::test_the_send_script_reads_a_shortened_text_option_as_it_always_did',
+    ),
+    (
+        "the send script types nothing in Pro mode when its record can't load",
+        'bin/cmux-send.py',
+        'so nothing was typed ({exc})", file=sys.stderr)\n        sys.exit(4)',
+        'so nothing was typed ({exc})", file=sys.stderr)\n        pass',
+        'tests/test_session_gate.py::test_cmux_send_in_pro_without_the_ledger_exits_4_and_types_nothing',
+    ),
+    (
+        'the merge script has its option of Pro mode only in Pro mode',
+        'bin/merge-pr-dispatch.py',
+        '    if pro:  # the default mode has the options this script always had',
+        '    if True:  # the default mode has the options this script always had',
+        'tests/test_default_mode_is_main.py::test_the_merge_script_rejects_the_option_only_pro_mode_has',
+    ),
+    (
+        'the merge script asks the mode before it reads the options',
+        'bin/merge-pr-dispatch.py',
+        '    pro = _pro_mode()  # asked once, before the options are read\n',
+        '    pro = True\n',
+        'tests/test_default_mode_is_main.py::test_the_help_of_both_scripts_is_what_it_always_was',
+    ),
+    (
+        "the pulse doesn't load the ledger to start",
+        'bin/pulse.py',
+        "# Pro mode's ledger is loaded only when Pro mode needs it, and the default mode types through the gate's own keys:",
+        "from assistant import session_effects  # noqa: E402\n# Pro mode's ledger is loaded only when Pro mode needs it, and the default mode types through the gate's own keys:",
+        'tests/test_session_gate.py::test_a_task_is_started_with_two_keystroke_calls_and_nothing_is_recorded',
+    ),
+    (
+        "the Slack session doesn't load the ledger to start",
+        'bin/comms_session.py',
+        "# Pro mode's ledger is loaded only when Pro mode needs it, and the default mode types through the gate's own keys:",
+        "from assistant import session_effects  # noqa: E402\n# Pro mode's ledger is loaded only when Pro mode needs it, and the default mode types through the gate's own keys:",
+        'tests/test_session_gate.py::test_a_message_from_anyone_is_typed_into_the_session_with_its_header_then_a_carriage_return',
+    ),
+    (
+        "the Slack service doesn't load the ledger to start",
+        'bin/comms-listen.py',
+        "session_effects = comms_session.session_effects  # Pro mode's ledger, loaded only when Pro mode needs it\n",
+        'from assistant import session_effects  # noqa: E402\n',
+        'tests/test_session_gate.py::test_a_message_from_anyone_is_typed_into_the_session_with_its_header_then_a_carriage_return',
+    ),
+    (
+        "the dashboard server doesn't load the ledger to start",
+        'bin/todo-server.py',
+        "try:\n    from assistant import session_gate  # noqa: E402 - Pro mode's doorway",
+        "from assistant import session_effects  # noqa: E402\ntry:\n    from assistant import session_gate  # noqa: E402 - Pro mode's doorway",
+        'tests/test_session_gate.py::test_run_now_types_what_a_proposal_says_into_the_session_it_names_with_cmux_send_whatever_it_is',
+    ),
+    (
+        "the send script doesn't load the ledger to start",
+        'bin/cmux-send.py',
+        'try:\n    from assistant import session_gate  # noqa: E402 - the default mode types through it; stdlib only',
+        'from assistant import session_effects  # noqa: E402\ntry:\n    from assistant import session_gate  # noqa: E402 - the default mode types through it; stdlib only',
+        'tests/test_session_gate.py::test_the_send_script_on_success_prints_and_logs_what_it_always_did',
+    ),
+    (
+        "restore doesn't load the ledger to start",
+        'bin/cmux-restore-sessions.py',
+        'try:\n    from assistant import session_gate  # noqa: E402 - the default mode types through it; stdlib only',
+        'from assistant import session_effects  # noqa: E402\ntry:\n    from assistant import session_gate  # noqa: E402 - the default mode types through it; stdlib only',
+        'tests/test_session_gate.py::test_restore_types_the_command_and_presses_enter_whatever_the_terminal_id_looks_like',
+    ),
+    (
+        'a Slack typing begun in Pro mode keeps a time-out unknown whatever the mode is by then',
+        'bin/comms_session.py',
+        '        if ran and ran[1].startswith("timeout"):',
+        '        if session_effects.active() and ran and ran[1].startswith("timeout"):',
+        'tests/test_session_effects_mode_switch.py::test_a_time_out_after_the_mode_changed_to_default_is_still_unknown_for_a_typing_begun_in_pro',
+    ),
+    (
+        'a task begun in Pro mode keeps a time-out unknown whatever the mode is by then',
+        'bin/pulse.py',
+        '    if _last_rpc_rc == 124:\n        raise TimeoutError(method)  # a typing',
+        '    if _last_rpc_rc == 124 and session_effects.active():\n        raise TimeoutError(method)  # a typing',
+        'tests/test_session_effects_mode_switch.py::test_a_dispatch_begun_in_pro_keeps_a_time_out_unknown_when_the_mode_changes_to_default_before_it',
+    ),
+    (
+        'a restore begun in Pro mode keeps a time-out unknown whatever the mode is by then',
+        'bin/cmux-restore-sessions.py',
+        '        if rc == 124:\n            raise TimeoutError(method)  # the keystroke may have landed',
+        '        if rc == 124 and session_gate.active():\n            raise TimeoutError(method)  # the keystroke may have landed',
+        'tests/test_session_effects_mode_switch.py::test_a_restore_begun_in_pro_keeps_a_time_out_unknown_when_the_mode_changes_to_default_before_it',
+    ),
+    (
+        'the Slack session asks the mode once, when a typing begins',
+        'bin/comms_session.py',
+        '    if not session_effects.active():\n        keys = session_gate.Keys(transport, surface_ref)',
+        '    if False:\n        keys = session_gate.Keys(transport, surface_ref)',
+        'tests/test_default_mode_is_main.py::test_a_message_from_anyone_is_typed_into_the_session_with_its_header_then_a_carriage_return',
+    ),
+    (
+        'a task asks the mode once, when its typing begins',
+        'bin/pulse.py',
+        '    if not session_effects.active():\n        return DEFAULT_TYPING',
+        '    if False:\n        return DEFAULT_TYPING',
+        'tests/test_default_mode_is_main.py::test_a_task_is_started_with_two_keystroke_calls_and_nothing_is_recorded',
+    ),
+    (
+        'restore asks the mode once, when its typing begins',
+        'bin/cmux-restore-sessions.py',
+        '    if not pro:\n        # As it always was',
+        '    if False:\n        # As it always was',
+        'tests/test_default_mode_is_main.py::test_restore_types_the_command_and_presses_enter_whatever_the_terminal_id_looks_like',
     ),
 )

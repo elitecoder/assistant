@@ -61,10 +61,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import agent_session  # noqa: E402
-from assistant import session_effects  # noqa: E402
 from assistant.redact import install_crash_hooks, redact  # noqa: E402
 import comms_lib  # noqa: E402
 import comms_session  # noqa: E402
+session_effects = comms_session.session_effects  # Pro mode's ledger, loaded only when Pro mode needs it
 
 
 def _load_doctor():

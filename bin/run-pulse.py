@@ -27,13 +27,19 @@ from pathlib import Path
 
 BIN = Path(__file__).resolve().parent
 PULSE = BIN / "pulse.py"
-# pulse.py plus its unguarded module-level imports. Keep in sync with pulse.py.
+# pulse.py plus its unguarded module-level imports, and what they import in turn. Pro mode also needs the ledger's
+# modules (`session_effects`, which `session_gate` loads when Pro mode first types, and what it imports), so a broken
+# one is caught here and not in the middle of a round. Keep in sync with pulse.py
+# (`tests/test_run_pulse_wrapper.py` checks the list).
 STARTUP_FILES = (PULSE, BIN.parent / "src/assistant/__init__.py",
+                 BIN.parent / "src/assistant/effects.py",
                  BIN.parent / "src/assistant/logcap.py",
                  BIN.parent / "src/assistant/mode.py",
                  BIN.parent / "src/assistant/model_tiers.py",
+                 BIN.parent / "src/assistant/pointers.py",
                  BIN.parent / "src/assistant/redact.py",
                  BIN.parent / "src/assistant/session_effects.py",
+                 BIN.parent / "src/assistant/session_gate.py",
                  BIN.parent / "src/assistant/transcript_slice.py")
 LEDGER_EVERY_SEC = 86400  # 1 day
 

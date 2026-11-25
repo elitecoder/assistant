@@ -117,7 +117,20 @@ BRIEF_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 sys.path.insert(0, str(SRC_DIR))
 from assistant.redact import install_crash_hooks, redact  # noqa: E402 - request lines can carry ?token=...
-from assistant import session_effects  # noqa: E402
+try:
+    from assistant import session_gate  # noqa: E402 - Pro mode's doorway and the default mode's "run now"; stdlib only
+except Exception:  # noqa: BLE001 - nothing here may stop the dashboard server from starting
+    session_gate = None
+
+
+def _pro() -> bool:
+    """Pro mode. Anything that goes wrong asking (or loading the gate) is the default mode."""
+    try:
+        return bool(session_gate and session_gate.active())
+    except Exception:  # noqa: BLE001
+        return False
+
+
 SEND_SCRIPT = Path(__file__).resolve().parent / "cmux-send.py"
 RUN_NOW_MAX = 500
 # cmux-send.py's worst case: the terminal lookup (10 s), two keystrokes (10 s each) and its 2.5 s wait.
@@ -274,7 +287,7 @@ def dispatch_now(td_id):
         target["autoDispatch"] = True
         target["dispatchedAt"] = None
         target["dispatchedWs"] = None
-        if session_effects.active():
+        if _pro():
             target.pop("parkedBy", None)  # asking again ends a park (Pro mode)
         if target.get("status") in ("deferred", "blocked", "done"):
             target["status"] = "open"
@@ -404,9 +417,9 @@ def _run_now(ws_ref, data) -> str:
     The default mode types what the file says, into whatever session it names, as it always did. In Pro mode the file
     is written by another tool, so it is checked before anything is typed (a real session, and one short line), and
     the typing goes through cmux-send.py, which records it first."""
-    if not session_effects.active():
+    if not _pro():
         try:
-            session_effects.run_now_legacy(CMUX_BIN, ws_ref, data.get("action", ""))
+            session_gate.run_now_legacy(CMUX_BIN, ws_ref, data.get("action", ""))
         except Exception as e:
             return f"cmux send failed: {e}"
         return ""

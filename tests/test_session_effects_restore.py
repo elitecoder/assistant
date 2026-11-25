@@ -122,7 +122,7 @@ def test_run_cmux_reports_a_timeout_as_one(restore, monkeypatch):
     def slow(*a, **k):
         raise restore.subprocess.TimeoutExpired(cmd="cmux", timeout=5)
     monkeypatch.setattr(restore.subprocess, "run", slow)
-    assert restore.run_cmux("rpc", "x") == (124, "", "timeout")
+    assert restore.run_cmux("rpc", "x")[:2] == (124, "")
     monkeypatch.setattr(restore.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError("gone")))
     assert restore.run_cmux("rpc", "x")[0] == 1
 
@@ -137,8 +137,9 @@ def test_the_restore_rpc_treats_exit_status_zero_as_an_answer_whatever_the_body(
 
 
 def test_keys_that_cant_be_made_close_the_intent_as_failed(restore, tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(restore.session_effects, "Keys", lambda *a, **k: (_ for _ in ()).throw(
-        restore.session_effects.Refused("invalid", "no")))
+    from assistant import session_effects
+    monkeypatch.setattr(session_effects, "Keys", lambda *a, **k: (_ for _ in ()).throw(
+        session_effects.Refused("invalid", "no")))
     cmux = Cmux(tmp_path)
     assert run(restore, cmux) is False and cmux.calls == []
     assert ledger(tmp_path)[1]["outcome"] == "failed" and "NOT TYPED: no" in capsys.readouterr().out

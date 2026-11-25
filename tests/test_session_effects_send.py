@@ -193,7 +193,7 @@ def test_the_pulse_runs_merge_dispatch_as_standing_and_a_person_as_a_tap(home):
             mock.patch.object(merge, "step_freeze_retarget", return_value=(False, "", {})), \
             mock.patch.object(merge, "step1_ci_route", return_value=("merge-when-ready", "", {})), \
             mock.patch.object(merge, "step2_send_and_verify",
-                              side_effect=lambda ws, slash, by: seen.update(by=by) or (True, "x")), \
+                              side_effect=lambda ws, slash, by, pro: seen.update(by=by) or (True, "x")), \
             mock.patch("sys.stdout", io.StringIO()), pytest.raises(SystemExit):
         merge.main()
     assert seen["by"] == "tap"
@@ -282,8 +282,8 @@ def test_a_transcript_that_did_not_grow_is_not_verified_and_leaves_the_typing_un
 
 def test_keys_that_cant_be_made_after_the_intent_exit_4_and_close_it_as_failed(send, home):
     rpc = Rpc(home)
-    with mock.patch.object(send.session_effects, "Keys",
-                           side_effect=send.session_effects.Refused("invalid", "no keys")):
+    from assistant import session_effects
+    with mock.patch.object(session_effects, "Keys", side_effect=session_effects.Refused("invalid", "no keys")):
         code, record = run(send, rpc, "--enter")
     assert code == 4 and rpc.calls == [] and record["refused"]["reason"] == "no keys"
     assert ledger(home)[1]["outcome"] == "failed"
