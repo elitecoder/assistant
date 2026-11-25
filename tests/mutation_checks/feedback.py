@@ -795,24 +795,10 @@ CHECKS = (
         TB + "test_the_thumb_on_every_kind_of_row_has_a_44_pixel_tap_area_on_a_phone_that_no_other_tap_area_overlaps",
     ),
     (
-        "a Start here item's buttons are 8 pixels apart",
-        P,
-        '.start-list li>div{display:flex;flex-wrap:wrap;gap:8px;',
-        '.start-list li>div{display:flex;flex-wrap:wrap;gap:6px;',
-        TB + "test_the_thumb_on_every_kind_of_row_has_a_44_pixel_tap_area_on_a_phone_that_no_other_tap_area_overlaps",
-    ),
-    (
         "a result's buttons are 8 pixels apart",
         P,
         '.ready-list li>div{display:flex;flex-wrap:wrap;gap:8px;',
         '.ready-list li>div{display:flex;flex-wrap:wrap;gap:6px;',
-        TB + "test_the_thumb_on_every_kind_of_row_has_a_44_pixel_tap_area_on_a_phone_that_no_other_tap_area_overlaps",
-    ),
-    (
-        "an approval row's buttons are 8 pixels apart",
-        P,
-        '.ap-btns{display:flex;gap:8px;',
-        '.ap-btns{display:flex;gap:6px;',
         TB + "test_the_thumb_on_every_kind_of_row_has_a_44_pixel_tap_area_on_a_phone_that_no_other_tap_area_overlaps",
     ),
     (

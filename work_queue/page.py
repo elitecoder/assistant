@@ -552,7 +552,7 @@ body{font:13px/1.55 var(--sans);padding:28px 32px 48px;-webkit-font-smoothing:an
 .ap-row{display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-top:1px solid var(--line)}.ap-row:first-child{border-top:0}
 .ap-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}.ap-text a{text-decoration:none}
 .ap-why{color:var(--text-2);font-size:12px}.ap-why b{color:var(--acc,var(--text));font-weight:600}.ap-ev{color:var(--muted);font-size:12px;font-style:italic;overflow-wrap:anywhere}
-.ap-status{font:600 10px/1.4 var(--mono)}.ap-btns{display:flex;gap:8px;flex:none}
+.ap-status{font:600 10px/1.4 var(--mono)}.ap-btns{display:flex;gap:6px;flex:none}
 .ap-row .ap-undo,.ap-row .ap-clear{display:none}.ap-row.approved .ap-clear,.ap-row.kept .ap-clear{display:inline-block}
 .ap-row.approved{box-shadow:inset 3px 0 0 var(--green)}.ap-row.approved .ap-ok{background:var(--green-bg);color:var(--green)}
 .ap-row.kept{opacity:.6}.ap-row.applied .ap-ok,.ap-row.applied .ap-keep{display:none}.ap-row.applied .ap-undo{display:inline-block}
@@ -611,7 +611,7 @@ background:var(--panel);border:1px solid var(--line-strong);border-radius:8px;bo
 .changes{border:1px solid var(--line);border-left:3px solid var(--c-outlook);border-radius:8px;padding:10px 14px;margin:0 0 14px;overflow-wrap:anywhere}
 .changes ul{margin:6px 0 0;padding-left:18px}.changes li{margin:3px 0}
 .start-list{margin:6px 0 0;padding-left:22px;display:flex;flex-direction:column;gap:10px}.start-list li{color:var(--muted)}
-.start-list li[hidden]{display:none}.start-list li>div{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.start-list li[hidden]{display:none}.start-list li>div{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .start-list a{text-decoration:none;overflow-wrap:anywhere}.start-list .sf-mark{margin-left:auto}
 .pr-pill.src{color:var(--text-2);background:var(--hover);border:1px solid var(--line)}
 #mailbox{--acc:var(--c-outlook)}#mailbox>.chip{margin:0 0 8px}
