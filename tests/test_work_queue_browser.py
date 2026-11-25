@@ -2065,6 +2065,57 @@ def test_the_reasons_never_cover_a_thumb_a_tell_assistant_link_their_own_note_or
         browser.close()
 
 
+TAP_AREAS = """(thumb) => { const num = v => parseFloat(v) || 0;
+  const area = el => { const r = el.getBoundingClientRect(), a = getComputedStyle(el, '::after');
+    return a.content !== 'none' && a.position === 'absolute' ? {left: r.left + num(a.left), top: r.top + num(a.top), right: r.right - num(a.right), bottom: r.bottom - num(a.bottom)}
+      : {left: r.left, top: r.top, right: r.right, bottom: r.bottom}; };
+  const t = thumb.getBoundingClientRect(), cx = t.left + t.width / 2, cy = t.top + t.height / 2, xs = [], ys = [];
+  for (let x = cx - 30; x <= cx + 30; x += 0.25) for (let y = cy - 30; y <= cy + 30; y += 0.25) {  // quarter pixels: the edges are not whole numbers
+    const e = document.elementFromPoint(x, y); if (e && e.closest('.fb-down') === thumb) { xs.push(x); ys.push(y); } }
+  const mine = area(thumb), over = [];
+  for (const el of document.querySelectorAll('button, a[href], textarea, input, summary')) {
+    if (el === thumb || el.closest('.fb-pop') || el.contains(thumb)) continue;
+    const r = el.getBoundingClientRect(); if (!r.width || Math.abs(r.top - t.top) > 90) continue;
+    const o = area(el), w = Math.min(mine.right, o.right) - Math.max(mine.left, o.left), h = Math.min(mine.bottom, o.bottom) - Math.max(mine.top, o.top);
+    if (w > 0.5 && h > 0.5) over.push((el.className || el.tagName) + ' ' + el.textContent.slice(0, 14) + ' ' + Math.round(w) + 'x' + Math.round(h)); }
+  return {width: Math.max(...xs) - Math.min(...xs) + 0.25, height: Math.max(...ys) - Math.min(...ys) + 0.25, over}; }"""
+
+
+def test_the_thumb_on_every_kind_of_row_has_a_44_pixel_tap_area_on_a_phone_that_no_other_tap_area_overlaps(site, wq):
+    keys = fb_seed(wq)
+    kinds = {
+        "a row in a lane": f'.sf-lane .sf-row[data-key="{keys["row"]}"] > .sf-main .fb-down',
+        "a plain row": f'.sf-row[data-key="{keys["plain"]}"] > .sf-main .fb-down',
+        "a draft": ".sf-row .draft-fb .fb-down",
+        "a Start here item": f'.start-list li[data-key="{keys["row"]}"] .fb-down',
+        "a result": '#ready li[data-id="td-101"] .fb-down',
+        "an email row": f'.em-row[data-mk="{keys["mail"]}"] .fb-down',
+        "an approval row": f'.ap-row[data-key="{keys["cand"]}"] .fb-down',
+    }
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 390, "height": 844})
+        tab.goto(site + "#all")
+        tab.locator("#gmail-1 > summary").click()
+        tab.locator("#gmail-1 details").first.evaluate("d => d.open = true")
+        measured = {}
+        for kind, selector in kinds.items():
+            for pressed_too in (False, True):
+                thumb = tab.locator(selector).first
+                thumb.evaluate("e => e.scrollIntoView({block: 'center'})")
+                if pressed_too:
+                    if thumb.get_attribute("aria-pressed") != "true":  # the same row in two places says the same
+                        thumb.click()
+                    pressed(tab, selector)
+                    thumb.evaluate("e => e.scrollIntoView({block: 'center'})")
+                found = tab.evaluate(f"(sel) => ({TAP_AREAS})(document.querySelector(sel))", selector)
+                measured[kind + (", pressed" if pressed_too else "")] = (found["width"], found["height"], found["over"])
+        print("TAP AREAS", measured)
+        bad = {k: v for k, v in measured.items() if v[0] < 43.75 or v[1] < 43.75 or v[2]}  # the scan steps by a quarter: 44 reads as 43.75
+        assert not bad, bad
+        browser.close()
+
+
 OPEN_AT = {"top": "e => { e.scrollIntoView({block: 'start'}); window.scrollBy(0, -90); }", "middle": "e => e.scrollIntoView({block: 'center'})",
            "bottom": "e => e.scrollIntoView({block: 'end'})"}
 SPOTS = """(own) => {
