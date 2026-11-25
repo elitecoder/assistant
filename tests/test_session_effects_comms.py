@@ -758,6 +758,8 @@ def test_the_doctor_warns_when_a_channel_is_the_target_and_the_owner_is_unknown(
     assert "not ~/.zshrc" in check.remedy  # the service reads ~/.zprofile, so that is where the id must be set
     assert "types every member's messages into the session, as it always has" in check.detail
     assert "a reaction with your task emoji from any member starts a task, as it always has" in check.detail  # the reactor too
+    assert "the only person in the channels Assistant is in" in check.detail  # reactions count in every channel it is in
+    assert "launchctl kickstart -k gui/$UID/com.assistant.slack-reactor" in check.remedy  # it reads the id at its own start
     assert "types none" not in check.detail and check.remedy.startswith("to have only your own messages typed, add ")
     assert "SLACK_USER_ID is set, but" not in check.detail  # it isn't set at all
     monkeypatch.setenv("SLACK_USER_ID", "<@U0OWNER>")  # set, and mistyped: the check says so, and still warns

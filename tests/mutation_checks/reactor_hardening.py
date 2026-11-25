@@ -466,4 +466,18 @@ CHECKS = (
         '"Fine if you "',
         "tests/test_session_effects_comms.py::test_the_doctor_warns_when_a_channel_is_the_target_and_the_owner_is_unknown",
     ),
+    (
+        "the doctor's remedy names the reactor's restart, which reads the id at its own start",
+        DOCTOR,
+        'com.assistant.assistant-comms`" + REACTOR_RESTART)',
+        'com.assistant.assistant-comms`")',
+        "tests/test_session_effects_comms.py::test_the_doctor_warns_when_a_channel_is_the_target_and_the_owner_is_unknown",
+    ),
+    (
+        "the doctor says reactions count in every channel Assistant is in",
+        DOCTOR,
+        '"are the only person in the channels Assistant is in",',
+        '"are the only person in that channel",',
+        "tests/test_session_effects_comms.py::test_the_doctor_warns_when_a_channel_is_the_target_and_the_owner_is_unknown",
+    ),
 )
