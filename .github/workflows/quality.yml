@@ -24,6 +24,8 @@ jobs:
           node-version: "24"
       - name: Install development tools
         run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q zsh
           uv venv --python 3.13
           uv python install 3.11
           uv pip install pytest==9.1.1 pytest-cov==7.1.0 coverage==7.16.1 playwright==1.63.0
@@ -97,6 +99,8 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - name: Install development tools
         run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q zsh
           uv venv --python 3.13
           uv python install 3.11
           uv pip install pytest==9.1.1 coverage==7.16.1 playwright==1.63.0

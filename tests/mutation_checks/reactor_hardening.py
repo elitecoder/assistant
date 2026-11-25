@@ -1,5 +1,7 @@
 """Checks for the Slack reactor's owner rule, the fence around a thread, and the task-list lock."""
 
+import sys
+
 CAPTURE = "slack-reactor/src/capture.js"
 STORE = "slack-reactor/src/todo-store.js"
 INDEX = "slack-reactor/src/index.js"
@@ -359,3 +361,8 @@ CHECKS = (
         "tests/test_reactor_hardening.py::test_the_installer_tells_you_to_set_your_slack_user_id",
     ),
 )
+
+# The task-list lock uses a macOS-only flag, so the tests that catch these mutants skip on other systems.
+OFF_MAC = "the reactor writes nothing on a platform where the lock can't be taken"
+if sys.platform != "darwin":
+    CHECKS = tuple(check for check in CHECKS if check[1] != STORE or check[0] == OFF_MAC)
