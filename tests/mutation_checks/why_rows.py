@@ -157,7 +157,7 @@ CHECKS = (
         W,
         "        if pair[0] - PAIR_SEC <= at <= pair[1] + PAIR_SEC:",
         "        if pair[0] - PAIR_SEC * 12 <= at <= pair[1] + PAIR_SEC * 12:",
-        T + "test_two_taps_for_one_change_show_the_second_and_a_tap_far_from_the_change_is_not_paired_with_it",
+        T + "test_a_tap_pairs_with_a_change_that_started_before_it_and_finished_after_it_give_or_take_five_seconds",
     ),
     (
         "a tap is dropped for one change only once",
