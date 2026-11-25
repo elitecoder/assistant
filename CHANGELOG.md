@@ -9,23 +9,6 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ## [Unreleased]
 
-### Fixed
-- In Pro mode, a Slack reaction with your task emoji starts a task by itself
-  again when Assistant doesn't know your Slack member ID. Since 2026-11-24 such
-  a reaction was saved as an "Ask me" task that never started, so none of your
-  reactions started work if you had never set `SLACK_USER_ID` or `slack.owner`.
-  In Pro mode it is now captured as it was before: a plain title, the normal
-  priority, started by itself (unless `TODO_AUTODISPATCH=0`), with no limit on
-  how many wait. Until you set `SLACK_USER_ID`, anyone in a channel Assistant is
-  in can start a task the same way; the reactor's start-up line says so, and so
-  does `assistant-doctor.py` when your Slack target is a channel. Setting
-  `SLACK_USER_ID` restricts it to your reactions. A `SLACK_USER_ID` that is set
-  but mistyped still saves reactions as "Ask me". Pro mode here means that
-  `bin/assistant-mode.py` says so; if it can't be asked, the reactor treats the
-  install as the default mode. The default mode is unchanged: an unknown owner
-  is still saved as "Ask me". Tasks already saved as "Ask me" stay as they are;
-  they start with Queue to start.
-
 ### Security
 - Stop a Slack reaction from anyone else starting an agent on your Mac. Until
   now, when `SLACK_USER_ID` wasn't set, a reaction with your task emoji from
@@ -358,6 +341,21 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   trailing period out, and only `http`, `https`, and `file` links are made.
 
 ### Fixed
+- In Pro mode, a Slack reaction with your task emoji starts a task by itself
+  again when Assistant doesn't know your Slack member ID. Since 2026-11-24 such
+  a reaction was saved as an "Ask me" task that never started, so none of your
+  reactions started work if you had never set `SLACK_USER_ID` or `slack.owner`.
+  In Pro mode it is now captured as it was before: a plain title, the normal
+  priority, started by itself (unless `TODO_AUTODISPATCH=0`), with no limit on
+  how many wait. Until you set `SLACK_USER_ID`, anyone in a channel Assistant is
+  in can start a task the same way; the reactor's start-up line says so, and so
+  does `assistant-doctor.py` when your Slack target is a channel. Setting
+  `SLACK_USER_ID` restricts it to your reactions. A `SLACK_USER_ID` that is set
+  but mistyped still saves reactions as "Ask me". Pro mode here means that
+  `bin/assistant-mode.py` says so; if it can't be asked, the reactor treats the
+  install as the default mode. The default mode is unchanged: an unknown owner
+  is still saved as "Ask me". Tasks already saved as "Ask me" stay as they are;
+  they start with Queue to start.
 - In Pro mode, Assistant types your Slack messages into the warm session again
   when the target is a channel and `SLACK_USER_ID` isn't set. An update on
   2026-11-25 made it refuse them all and reply "I can't tell which Slack
