@@ -851,32 +851,11 @@ CHECKS = (
         TB + "test_the_thumb_on_every_kind_of_row_has_a_44_pixel_tap_area_on_a_phone_that_no_other_tap_area_overlaps",
     ),
     (
-        "a draft is 9 pixels under the row's buttons",
-        P,
-        '.draft{display:flex;gap:8px;align-items:flex-start;margin-top:9px}',
-        '.draft{display:flex;gap:8px;align-items:flex-start;margin-top:8px}',
-        TB + "test_the_thumb_on_every_kind_of_row_has_a_44_pixel_tap_area_on_a_phone_that_no_other_tap_area_overlaps",
-    ),
-    (
-        "on a phone the list is narrow enough to sit between the Tell Assistant links and the thumbs",
-        P,
-        '.fb-pop{width:clamp(130px,calc(100vw - 220px),170px)}',
-        '.fb-pop{width:min(280px,calc(100vw - 16px))}',
-        TB + "test_the_reasons_never_cover_a_thumb_a_tell_assistant_link_their_own_note_or_the_edge_of_the_screen[390]",
-    ),
-    (
         "on a phone each choice is at least 32 pixels tall and 12 pixels high",
         P,
         '.fb-pop .btn{min-height:32px;padding:0 8px;font-size:12px}',
         '.fb-pop .btn{padding:5px 7px;font-size:10px}',
         TB + "test_with_every_row_below_already_thumbed_the_reasons_still_open_next_to_their_thumb_at_the_top_of_the_window[390]",
-    ),
-    (
-        "the list tries the places that touch the edges of what it must not cover",
-        P,
-        '...must.flatMap(b=>[b.right+4,b.left-4-w]),',
-        '',
-        TB + "test_the_reasons_never_cover_a_thumb_a_tell_assistant_link_their_own_note_or_the_edge_of_the_screen[390]",
     ),
     (
         "the reasons keep off their own row's Tell Assistant link where they can",

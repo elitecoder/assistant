@@ -604,7 +604,7 @@ background:var(--panel);border:1px solid var(--line-strong);border-radius:8px;bo
 .sf-medium,.sf-large{color:var(--amber);background:var(--amber-bg)}
 .sf-why{color:var(--text-2);font-size:12px;overflow-wrap:anywhere}
 .sf-row.is-done{opacity:.6}
-.draft{display:flex;gap:8px;align-items:flex-start;margin-top:9px}
+.draft{display:flex;gap:8px;align-items:flex-start;margin-top:8px}
 .draft textarea{flex:1;min-width:0;background:var(--hover);color:var(--text-2);border:1px solid var(--line-strong);border-radius:6px;padding:6px 8px;font:12px/1.5 var(--sans);resize:vertical}
 .triage-note{margin:0 0 14px;padding:8px 12px;border-left:3px solid var(--amber);border-radius:4px;background:var(--amber-bg);color:var(--text);overflow-wrap:anywhere}
 #start{--acc:var(--c-start)}
@@ -635,7 +635,7 @@ border-radius:6px;border:1px solid var(--line-strong);background:var(--hover);co
 .ready-check{display:block;margin-top:4px;font-size:12px;color:var(--text-2)}.ready-check.note{color:var(--green)}
 .ready-cleared{margin:10px 0 0;padding-left:22px;display:flex;flex-direction:column;gap:8px;opacity:.75}
 .ready-cleared:empty{display:none}.ready-cleared li>div{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-@media (max-width:620px){.fb-pop{width:clamp(130px,calc(100vw - 220px),170px)}.fb-pop{gap:4px}.fb-pop .btn{min-height:32px;padding:0 8px;font-size:12px}body{padding:20px 16px 40px}.sf-main{flex-wrap:wrap}.sf-main>.fb{display:contents}.sf-main .fb-down{margin:.5px 0 .5px .5px;padding:6.75px}.sf-main .fb-open{position:relative;padding:0;margin:-4px 0 0 .5px}.sf-main .fb-open::after{content:"";position:absolute;inset:-8px 0}.fb{flex-wrap:wrap}.sf-main .fb-note{position:static;flex-basis:100%;white-space:normal;text-align:left}.sf-link{flex-basis:100%}.ap-row{flex-direction:column}.ap-group summary{flex-wrap:wrap}
+@media (max-width:620px){.fb-pop{gap:4px}.fb-pop .btn{min-height:32px;padding:0 8px;font-size:12px}body{padding:20px 16px 40px}.sf-main{flex-wrap:wrap}.sf-main>.fb{display:contents}.sf-main .fb-down{margin:.5px 0 .5px .5px;padding:6.75px}.sf-main .fb-open{position:relative;padding:0;margin:-4px 0 0 .5px}.sf-main .fb-open::after{content:"";position:absolute;inset:-8px 0}.fb{flex-wrap:wrap}.sf-main .fb-note{position:static;flex-basis:100%;white-space:normal;text-align:left}.sf-link{flex-basis:100%}.ap-row{flex-direction:column}.ap-group summary{flex-wrap:wrap}
 .draft{flex-direction:column}.draft textarea{width:100%}}
 """
 
@@ -869,7 +869,7 @@ function fbPlace(s){const h=FBX.get(s),p=h.pop,{width:w,height:t}=p.getBoundingC
  rects=(q,keep)=>[...document.querySelectorAll(q)].filter(keep).map(b=>b.getBoundingClientRect()).filter(b=>b.width&&b.bottom>0&&b.top<innerHeight),
  must=rects('.fb-down,.fb-open',b=>b!==h.open).concat([n]),link=h.open.getBoundingClientRect(),notes=rects('.fb-note',b=>b!==mine),
  btns=rects('.sf-main > .btn',()=>true),clamp=x=>Math.max(lo,Math.min(x,hi-w)),
- xs=[...new Set([n.left-8-w,r.left-8-w,r.right-w,lo,hi-w,...must.flatMap(b=>[b.right+4,b.left-4-w]),...btns.filter(b=>Math.abs(b.top-r.top)<160).map(b=>b.left-8-w),
+ xs=[...new Set([n.left-8-w,r.left-8-w,r.right-w,lo,hi-w,...btns.filter(b=>Math.abs(b.top-r.top)<160).map(b=>b.left-8-w),
    ...Array.from({length:Math.ceil((hi-lo-w)/24)+1},(_,k)=>lo+24*k)].map(clamp))],
  gap=(x,y)=>Math.hypot(Math.max(r.left-x-w,x-r.right,0),Math.max(r.top-y-t,y-r.bottom,0)),
  clear=(b,x,y,m)=>x+w+m<=b.left||x>=b.right+m||y+t+m<=b.top||y>=b.bottom+m,
