@@ -90,6 +90,13 @@ CHECKS = (
         T + "test_a_sorted_row_names_the_model_and_the_sorting_rules_only_when_telemetry_takes_them_as_names",
     ),
     (
+        "a name that can't be checked is not shown",
+        W,
+        '    except Exception:  # noqa: BLE001 - no way to check it, so it is not shown\n        return ""',
+        '    except Exception:  # noqa: BLE001 - no way to check it, so it is not shown\n        return value if isinstance(value, str) else ""',
+        T + "test_when_telemetry_cannot_check_a_name_no_name_is_shown",
+    ),
+    (
         "a task is shown by its id only when it is one",
         W,
         'record["subject"] if TASK_ID.fullmatch(record["subject"] or "") else ""',

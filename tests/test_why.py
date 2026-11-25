@@ -70,6 +70,14 @@ def test_a_sorted_row_names_the_model_and_the_sorting_rules_only_when_telemetry_
         assert "Model" not in said and "rules" not in said, odd
 
 
+def test_when_telemetry_cannot_check_a_name_no_name_is_shown(monkeypatch):
+    from assistant import records
+    monkeypatch.setattr(records, "name_of", lambda value: 1 / 0)
+    said = one(ev("triage_verdict", NOW, verdict="you", lane="do_first", model="claude-sonnet-4", prompt_version="rubric-1a2b3c4d"))
+    assert said == "The model sorted it into Do first and suggested you do it yourself."
+    assert why.steps_of([ev("check", NOW, "td-1", name="new-check")]) == []
+
+
 @pytest.mark.parametrize("reason, said", [
     ("call_failed", "the model's answer didn't come back"), ("bad_answer", "the model's answer couldn't be used"),
     ("not_answered", "the model left this one out of its answer"), ("out_of_time", "the sorting run ran out of time"),
