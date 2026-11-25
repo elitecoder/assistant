@@ -397,6 +397,18 @@ def history(effect_class=None, target=None, trace=None, limit=100) -> list:
     return _publish(found)
 
 
+def readable() -> bool:
+    """Whether the ledger can be read: True for one that doesn't exist yet (nothing is recorded), False for one that is
+    there and can't be read. `history()` gives `[]` for both, so a caller that must not call an unreadable ledger empty
+    asks here too. Never raises."""
+    try:
+        with _STATE_LOCK:
+            _sync()
+        return True
+    except Exception:  # noqa: BLE001 - a read that can't tell is "no"
+        return False
+
+
 @_never_raises(lambda: None)
 def last(effect_class, target):
     """The newest effect of this class on this target, or None."""

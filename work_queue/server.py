@@ -1048,7 +1048,7 @@ def why_of(query: str) -> dict:
             trace = (traces.lookup(row) if row else "") or (todostore.trace_of(task) if task else "")  # the row's id wins
         else:
             trace, row = traces.lookup(key), key
-        return why.read(trace, traces.first_seen(row))
+        return why.read(trace, traces.first_seen(row), row=bool(row))  # a result with no row has no "before" to speak of
     except Exception:  # noqa: BLE001 — a record that can't be read answers in words, never with an error page
         traceback.print_exc()
         return why.empty("unreadable")

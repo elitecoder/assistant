@@ -64,11 +64,11 @@ def test_a_row_with_a_full_trail_answers_every_step_in_order_in_plain_sentences(
     code, answer, raw = ask(http, LINK)
     assert code == 200 and answer["state"] == "ok" and answer["more"] == 0 and answer["note"] == ""
     assert [(s["kind"], s["text"]) for s in answer["steps"]] == [
-        ("first_seen", "Assistant first saw this."),
-        ("sorted", "The model sorted it into Do first and suggested you do it yourself. Model: claude-test-1, rules: rubric-1a2b3c4d."),
+        ("first_seen", "Assistant first saw this, in Slack."),
+        ("sorted", "The model sorted it into Do first and suggested you do it yourself. Model: claude-test-1. Sorting rules: version 1a2b3c4d."),
         ("task", "You sent it to an agent for a first pass. It became task td-41."),
-        ("start_failed", "Assistant tried to start an agent and couldn't: the program that runs agent sessions didn't answer. It tries again on the next round."),
-        ("started", "Assistant started an agent on it in workspace:1000010013."),
+        ("start_failed", "Assistant tried to start an agent and couldn't: cmux didn't answer. It tries again on the next round."),
+        ("started", "Assistant started an agent on it."),
         ("task", "The agent reported it finished."),
         ("check", "Assistant checked the result: the pull request is merged."),
         ("effect", "Archived in Gmail, because you pressed the button."),
@@ -206,8 +206,7 @@ def test_a_record_that_holds_a_hostile_name_shows_none_of_it(wq, http, monkeypat
     row, _ = trail(wq, monkeypatch)
     for fake in ({"kind": "check", "ts": FIRST, "subject": "", "fields": {"name": "<script>alert(1)</script>"}},
                  {"kind": "triage_verdict", "ts": FIRST, "subject": "", "fields": {"verdict": "you", "model": "a b\n<b>"}}):
-        steps, _ = why.steps_of([fake])
-        assert all("<" not in s["text"] for s in steps)
+        assert all("<" not in s["text"] for s in why.steps_of([fake]))
 
 
 def test_a_key_that_is_too_long_or_not_printable_is_refused_even_when_the_registry_holds_it(wq, http, monkeypatch):
@@ -219,3 +218,28 @@ def test_a_key_that_is_too_long_or_not_printable_is_refused_even_when_the_regist
     traces.path().write_text(json.dumps(registry))
     for odd in ("x" * 3000, "a\nb", "tab\there"):
         assert ask(http, odd)[1] == why.empty("none"), odd[:10]
+
+
+def test_a_result_with_no_row_does_not_say_the_row_was_here_before_the_record(wq, http, monkeypatch):
+    pro(wq)
+    row, _ = trail(wq, monkeypatch)
+    (wq.data / "queued.json").write_text("{}")  # the task is there, the row it came from is not
+    _, answer, _ = ask(http, READY)
+    assert answer["state"] == "ok" and answer["note"] == "" and answer["steps"][0]["kind"] == "sorted"
+    _, row_answer, _ = ask(http, LINK)
+    assert row_answer["note"] == "", "a row with a first-seen time has no note either"
+
+
+def test_sixty_failed_starts_come_back_as_one_step_and_a_partial_read_says_so_in_its_footer(wq, http, monkeypatch):
+    pro(wq)
+    row, _ = trail(wq, monkeypatch)
+    for _ in range(60):
+        telemetry.emit("dispatch", row, "td-41", "pulse", outcome="failed", ok=False, reason="session_tool_down")
+    _, answer, _ = ask(http, LINK)
+    failed = [s for s in answer["steps"] if s["kind"] == "start_failed"]
+    assert len(answer["steps"]) < 20 and sum(s.get("count", 1) for s in failed) == 61
+    assert any(s["text"].startswith("Assistant tried to start an agent 60 times and couldn't: cmux didn't answer.") for s in failed)
+    assert answer["footer"].startswith("This is everything")
+    (wq.home / ".assistant/telemetry/telemetry.db").write_bytes(b"junk" * 200)
+    _, answer, _ = ask(http, LINK)
+    assert answer["state"] == "unreadable" and answer["footer"].startswith("Some of it couldn't be read")

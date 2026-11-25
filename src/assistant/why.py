@@ -8,18 +8,20 @@ made: the Work queue server only calls it, and the page only shows what it gets 
 
 What it says is built from fixed words, ids, states and times. A title, a sender, a message, a link, a path, the model's
 reason or the words a person typed is never read from a record, so it can't be copied into an answer. A name that a
-record holds (a model, a check) is shown only when it is made of the characters a name has.
+record holds (a model, a check) is shown only when telemetry itself would have accepted it as a name.
 
 The answer is `{"state", "steps", "more", "message", "left_out", "note", "footer"}`. `state` is "ok", "none" (nothing is
 recorded for it) or "unreadable" (a record couldn't be read, so what is shown may be missing something: it is never
-"nothing recorded"). A record of a kind or a value this module doesn't know is never an error: it is left out and
-counted in `more`, or given a general sentence where that reads true.
+"nothing recorded"). Each step is `{"at", "kind", "text"}`, and a step that happened several times in a row is one
+step with `count` and `last` (the time of the last). A record of a kind or a value this module doesn't know is never an
+error: it is left out, or given a general sentence where that reads true. `more` counts steps, never records.
 
 Standard library only at the top: each record is imported where it is read, so one that can't be loaded makes the answer
 "unreadable" and nothing worse. Reading never writes, and every read is bounded.
 """
 from __future__ import annotations
 
+import math
 import re
 import time
 from datetime import datetime, timezone
@@ -28,8 +30,11 @@ SHOWN = 50  # the newest steps shown; the count of the rest is `more`
 EVENTS_READ = 400
 EFFECTS_READ = 100
 FEEDBACK_READ = 100
+FUTURE_SEC = 86400  # a step further ahead than this is a clock gone wrong, and is left out
+PAIR_SEC = 5  # a thing you pressed and the change it made are recorded this close together
 
 FOOTER = "This is everything Assistant has recorded about this item. The record stays on this Mac."
+PARTIAL_FOOTER = "Some of it couldn't be read, so this may be missing steps. The record stays on this Mac."
 NONE_YET = "Assistant has no record for this yet. It starts one at the next refresh."
 NOTHING_SINCE = "Nothing has been recorded about this since Assistant started keeping this record."
 UNREADABLE = "Assistant can't read its record right now. Nothing is lost; try again in a minute."
@@ -37,6 +42,7 @@ BEFORE_RECORDS = ("This row was already here when Assistant started keeping this
                   "aren't shown.")
 
 LANES = {"do_first": "Do first", "promise": "Promise", "week": "This week", "optional": "Optional"}
+SOURCES = {"slack": "Slack", "gmail": "Gmail", "calendar": "Calendar", "outlook": "Outlook", "github": "GitHub"}
 SUGGESTS = {"you": "suggested you do it yourself", "agent": "said an agent can finish it",
             "handoff": "suggested you hand it off", "drop": "suggested you drop it"}
 UNSORTED = {"call_failed": "the model's answer didn't come back",
@@ -45,19 +51,34 @@ UNSORTED = {"call_failed": "the model's answer didn't come back",
             "out_of_time": "the sorting run ran out of time",
             "spend_limit": "today's spend limit for sorting was reached",
             "no_model": "no model is set up for sorting"}
-DISPATCH_FAILED = {"session_tool_down": "the program that runs agent sessions didn't answer",
-                   "no_workspace": "it couldn't open a workspace for it",
-                   "no_surface": "the new workspace had no window to type in",
-                   "session_not_ready": "the agent session wasn't ready for it",
-                   "todo_not_marked": "it couldn't mark the task as started",
-                   "other": "something went wrong"}
+STARTING = "Assistant tried to start an agent and couldn't"
+RETRY = "It tries again on the next round."
+# A task that was parked is marked as started, so nothing starts it again by itself. What does start it again is
+# removing it on the Tasks tab and sending the row to an agent again (tests/test_why_restart.py); "Queue to start"
+# on a task that is marked as started does not.
+PARKED_HOW = ("The task is marked as started and Assistant won't start it again by itself. To run it again, remove "
+              "the task on the Tasks tab of the Assistant dashboard and send the row to an agent again.")
+START_FAILED = {"session_tool_down": f"{STARTING}: cmux didn't answer. {RETRY}",
+                "no_workspace": f"{STARTING}: cmux couldn't open a workspace for it. {RETRY}",
+                "no_surface": f"{STARTING}: the new workspace had no window to type in. {RETRY}",
+                "todo_not_marked": ("Assistant started an agent on it, but couldn't mark the task as started, so "
+                                    "the next round may start a second one."),
+                "other": f"{STARTING}: something went wrong.",
+                "typing_refused": ("Assistant opened a session but wouldn't type into it, because it couldn't "
+                                   "record what it types. The task is parked."),
+                "session_refused_text": "cmux refused the instruction, so nothing was typed. The task is parked."}
 TASK_SAYS = {"done": "The agent reported it finished.", "blocked": "The agent reported it is blocked.",
              "removed": "The task was removed.", "deferred": "The task was put off."}
-CHECKS = {"pr-merged": "the pull request is merged",
-          "pr-closed": "the pull request is merged or closed",
-          "you-commented": "you commented on or reviewed the pull request after the agent finished",
-          "you-replied": "you replied in its Slack thread after the agent finished",
-          "unblocked": "what the agent was blocked on looks cleared"}
+# Who made a task that wasn't made from the row. `manual` is a person, or an agent running the /todo skill.
+MADE_BY = {"manual": ("Task {task} was made for it.", "A task was made for it."),
+           "goal": ("Assistant's goal planner made task {task} for it.", "Assistant's goal planner made a task for it."),
+           "agent": ("An agent made task {task} for it.", "An agent made a task for it.")}
+CHECKS = {"pr-merged": "Assistant checked the result: the pull request is merged.",
+          "pr-closed": "Assistant checked the result: the pull request is merged or closed.",
+          "you-commented": ("Assistant checked the result: you commented on or reviewed the pull request after the "
+                            "agent finished."),
+          "you-replied": "Assistant checked the result: you replied in its Slack thread after the agent finished.",
+          "unblocked": "Assistant checked the result: what the agent was blocked on looks cleared."}
 # For each kind of change Assistant makes: what it says when done, what it tried, what it is doing, what it undoes.
 EFFECTS = {
     "gmail.archive": ("Archived in Gmail", "archive it in Gmail", "Archiving it in Gmail", "archive"),
@@ -90,20 +111,27 @@ FEEDBACK = {"done": "You marked it done.", "drop": "You dropped it.", "snooze": 
             "send_handsoff": "You sent it to an agent, hands-off.", "approve": "You approved it.",
             "keep": "You chose to keep it.", "archive": "You archived it.", "mark_read": "You marked it read.",
             "used_draft": "You used the draft.", "kept_result": "You marked the result done.",
-            "tell": "You told Assistant something about it.", "retract": "You took that back."}
+            "tell": "You told Assistant something about it."}
+TOOK_BACK = {"thumbs_down": "You took back your “this is wrong”.", "tell": "You took back what you told Assistant.",
+             "used_draft": "You took back “used the draft”."}
 # What a feedback record is about, when it is not the row itself.
 WHAT = {"draft": "this draft", "result": "this result"}
 EFFECT_OF_SIGNAL = {"archive": "gmail.archive", "mark_read": "gmail.mark_read", "undo": "gmail.unarchive"}
+SIGNAL_OF_EFFECT = {v: k for k, v in EFFECT_OF_SIGNAL.items()}
 HTTP = re.compile(r"http ([1-5][0-9]{2})")
-NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,63}")
+RULES = re.compile(r"rubric-([0-9a-f]{4,16})")
 TASK_ID = re.compile(r"td-[0-9]{1,9}")
 WORKSPACE = re.compile(r"workspace:[0-9]{1,18}")
 IN_FLIGHT_SEC = 600  # as in effects.py: an effect with no result for this long is no longer "in progress"
 
 
 def _name(value) -> str:
-    """A name a record holds (a model, a rules version, a check), or "" when it isn't one."""
-    return value if isinstance(value, str) and NAME.fullmatch(value) else ""
+    """A name a record holds (a model, a rules version, a check), or "" unless telemetry itself would take it as one."""
+    try:
+        from assistant import records
+        return records.name_of(value) or ""
+    except Exception:  # noqa: BLE001 - no way to check it, so it is not shown
+        return ""
 
 
 def _step(at, kind: str, text: str) -> dict:
@@ -120,70 +148,88 @@ def _verdict(fields: dict) -> str:
     text = "The model " + (f"sorted it into {lane}" if lane else "looked at it")
     text += f" and {says}." if says else "."
     model, rules = _name(fields.get("model")), _name(fields.get("prompt_version"))
-    given = ([f"Model: {model}"] if model else []) + ([f"rules: {rules}"] if rules else [])
-    return text + (" " + ", ".join(given) + "." if given else "")
+    text += f" Model: {model}." if model else ""
+    if rules:
+        version = RULES.fullmatch(rules)
+        text += f" Sorting rules: {'version ' + version.group(1) if version else rules}."
+    return text
 
 
 def _task(record: dict) -> str | None:
     fields, task = record["fields"], record["subject"] if TASK_ID.fullmatch(record["subject"] or "") else ""
     state = fields.get("state")
     if state == "open" and not fields.get("prev_state"):
-        if fields.get("origin") != "work-queue":
-            return "Assistant made " + (f"task {task}" if task else "a task") + " for it."
+        origin = fields.get("origin")
+        if origin != "work-queue":
+            with_id, without = MADE_BY.get(origin, MADE_BY["manual"])
+            return with_id.format(task=task) if task else without
         how = ", hands-off" if fields.get("mode") == "handsoff" else " for a first pass"
         return f"You sent it to an agent{how}." + (f" It became task {task}." if task else "")
     if state == "open":
         return "The task was queued to start again."
+    if state == "in-progress":
+        return "The task was marked as started."
     return TASK_SAYS.get(state)
 
 
 def _dispatch(fields: dict) -> str | None:
     if fields.get("outcome") == "done":
-        where = fields.get("workspace")
-        text = "Assistant started an agent on it" + (f" in {where}." if WORKSPACE.fullmatch(where or "") else ".")
-        return text + (" It couldn't confirm the session got the instruction." if fields.get("confirmed") is False else "")
-    if fields.get("outcome") == "failed":
-        why = DISPATCH_FAILED.get(fields.get("reason"))
-        return "Assistant tried to start an agent and couldn't" + (f": {why}." if why else ".") \
-            + " It tries again on the next round."
-    return None
+        return "Assistant started an agent on it." + (
+            " It couldn't confirm the session got the instruction." if fields.get("confirmed") is False else "")
+    if fields.get("outcome") != "failed":
+        return None
+    reason = fields.get("reason")
+    if reason == "session_not_ready":  # parked only when the task was stamped, which the record shows as a workspace
+        parked = WORKSPACE.fullmatch(fields.get("workspace") or "") is not None
+        return f"{STARTING}: the agent session wasn't ready for it. " + (PARKED_HOW if parked else RETRY)
+    return START_FAILED.get(reason, f"{STARTING}.")
 
 
 def _check(fields: dict) -> str | None:
-    said = CHECKS.get(fields.get("name")) or _name(fields.get("name"))
-    return f"Assistant checked the result: {said}." if said else None
+    name = fields.get("name")
+    if name in CHECKS:
+        return CHECKS[name]
+    shown = _name(name)
+    return f"Assistant ran a check on the result ({shown})." if shown else None
 
 
 EVENT_TEXT = {"triage_verdict": ("sorted", lambda r: _verdict(r["fields"])), "task": ("task", _task),
               "dispatch": ("started", lambda r: _dispatch(r["fields"])),
               "check": ("check", lambda r: _check(r["fields"]))}
-# The telemetry copies of what the other two records hold: the ledger and the feedback record are the ones read.
-COPIES = ("effect", "feedback")
+# The telemetry copies of what the other two records hold (`effect`, `feedback`) have no entry above, so they say
+# nothing: the ledger and the feedback record are the ones read.
+JUST_AFTER = 10  # an `in-progress` this soon after a start is the start itself, already said
 
 
-def _event_steps(events: list) -> tuple:
-    """(steps, how many records had no sentence). The kind word of a failed start is `start_failed`."""
-    steps, skipped = [], 0
+def _event_steps(events: list) -> list:
+    steps, started = [], []
     for record in events:
         kind = record.get("kind")
-        if kind in COPIES:
-            continue
+        if kind == "dispatch":
+            started.append(record["ts"])
         kind_word, make = EVENT_TEXT.get(kind, (None, None))
         text = make(record) if make else None
-        if kind == "task" and record["fields"].get("state") == "in-progress":
-            continue  # right after a start: the start already says it
+        if kind == "task" and record["fields"].get("state") == "in-progress" and any(
+                0 <= record["ts"] - t <= JUST_AFTER for t in started):
+            continue
         if text is None:
-            skipped += 1
             continue
         if kind == "dispatch" and record["fields"].get("outcome") == "failed":
             kind_word = "start_failed"
         elif kind == "triage_verdict" and record["fields"].get("verdict") == "unsorted":
             kind_word = "unsorted"
         steps.append(_step(record["ts"], kind_word, text))
-    return steps, skipped
+    return steps
 
 
-# --- the ledger -----------------------------------------------------------------------------------------------
+def _source(events: list, feedback: list) -> str:
+    """Where the row came from, when a record says so: the name of the source."""
+    said = [r["fields"].get("source") for r in events if r.get("kind") == "triage_verdict"]
+    said += [(r.get("context") or {}).get("source") for r in feedback if isinstance(r.get("context"), dict)]
+    return next((SOURCES[s] for s in said if s in SOURCES), "")
+
+
+# --- the ledger -------------------------------------------------------------------------------------------------
 
 def _effect_text(e: dict, undone: str, now: float) -> str:
     done, tried, doing, _ = EFFECTS.get(e.get("class"), ("", "", "", ""))
@@ -200,9 +246,9 @@ def _effect_text(e: dict, undone: str, now: float) -> str:
         error = (e.get("error") or "")
         said = ERRORS.get(error) or (f"error {m.group(1)}" if (m := HTTP.fullmatch(error)) else "")
         return f"Tried to {tried} and it failed" + (f" ({said})." if said else ".")
-    if outcome == "unknown" or now - float(e.get("t") or 0) >= IN_FLIGHT_SEC:
-        return f"Tried to {tried} but didn't hear back, so it may or may not have gone through."
-    return f"{doing} is in progress."
+    if outcome == "unknown" or abs(now - float(e.get("t") or 0)) >= IN_FLIGHT_SEC:  # as effects.unfinished: a time
+        return f"Tried to {tried} but didn't hear back, so it may or may not have gone through."  # off by this much
+    return f"{doing} is in progress."  # can't be trusted, so what became of it isn't known
 
 
 def _effect_steps(effects: list, now: float) -> list:
@@ -224,7 +270,7 @@ def _iso_seconds(stamp) -> float | None:
         return None
 
 
-def _feedback_text(record: dict) -> str | None:
+def _feedback_text(record: dict, by_id: dict) -> str | None:
     signal = record.get("signal")
     what = WHAT.get(record.get("kind"), "this")
     if signal == "thumbs_down":
@@ -232,99 +278,156 @@ def _feedback_text(record: dict) -> str | None:
         if record.get("amends"):
             return "You said why: " + reason + "." if reason else None
         return f"You said {what} is wrong."
+    if signal == "retract":
+        return TOOK_BACK.get((by_id.get(record.get("amends")) or {}).get("signal"), "You took something back.")
     return FEEDBACK.get(signal)
 
 
-def _feedback_steps(records: list, sent: bool, classes: set) -> tuple:
-    steps, skipped = [], 0
+def _claim(pool: list, at: float) -> bool:
+    """Take the time in `pool` that is within PAIR_SEC of `at`, if there is one: one thing pressed, one change made."""
+    for t in pool:
+        if abs(t - at) <= PAIR_SEC:
+            pool.remove(t)
+            return True
+    return False
+
+
+def _feedback_steps(records: list, made: list, effects: list) -> list:
+    """What you said. A tap that the task or the ledger says again is dropped, but only one record for each task or
+    change, so a second tap that made nothing is still shown."""
+    by_id = {r.get("id"): r for r in records}
+    pools = {"send": list(made), "send_handsoff": list(made)}
+    for e in effects:
+        signal = SIGNAL_OF_EFFECT.get(e.get("class"))
+        if signal and isinstance(e.get("t"), (int, float)):
+            pools.setdefault(signal, []).append(float(e["t"]))
+    steps = []
     for record in records:
-        signal = record.get("signal")
-        at = _iso_seconds(record.get("ts"))
-        if (sent and signal in ("send", "send_handsoff")) or EFFECT_OF_SIGNAL.get(signal) in classes:
-            continue  # the task, or the change in the ledger, says it already
-        text = _feedback_text(record)
-        if text is None or at is None:
-            skipped += 1
+        signal, at = record.get("signal"), _iso_seconds(record.get("ts"))
+        if at is None:
             continue
-        steps.append(_step(at, "feedback", text))
-    return steps, skipped
+        if signal in pools and _claim(pools["send"] if signal.startswith("send") else pools[signal], at):
+            continue
+        text = _feedback_text(record, by_id)
+        if text is not None:
+            steps.append(_step(at, "feedback", text))
+    return steps
 
 
 # --- putting it together ---------------------------------------------------------------------------------------
 
-def steps_of(events=(), effects=(), feedback=(), first=None, now=None) -> tuple:
-    """(steps oldest first, how many records had no sentence) from telemetry records, ledger effects, feedback records
-    and the time the row was first seen. Never raises on a record it doesn't know."""
+def _repeat(step: dict, n: int, last: float) -> dict:
+    text = step["text"]
+    if text.startswith(STARTING):
+        text = f"Assistant tried to start an agent {n} times and couldn't" + text[len(STARTING):]
+    else:
+        text += f" This happened {n} times."
+    return {**step, "text": text, "count": n, "last": last}
+
+
+def _collapse(steps: list) -> list:
+    """Steps that say the same thing one after another are one step: the first time, how many, and the last time."""
+    out, run = [], []
+    for step in steps + [None]:
+        if run and (step is None or (step["kind"], step["text"]) != (run[0]["kind"], run[0]["text"])):
+            out.append(run[0] if len(run) == 1 else _repeat(run[0], len(run), run[-1]["at"]))
+            run = []
+        if step is not None:
+            run.append(step)
+    return out
+
+
+def steps_of(events=(), effects=(), feedback=(), first=None, now=None, source="") -> list:
+    """The steps, oldest first, from telemetry records, ledger effects, feedback records and the time the row was first
+    seen. A step with a time that can't be one (not a number, or more than a day ahead) is left out. Never raises on a
+    record it doesn't know."""
     now = time.time() if now is None else now
-    steps, skipped = _event_steps([r for r in events if isinstance(r, dict) and isinstance(r.get("fields"), dict)])
-    steps += _effect_steps([e for e in effects if isinstance(e, dict)], now)
-    sent = any(s["kind"] == "task" and s["text"].startswith("You sent it") for s in steps)
-    more, extra = _feedback_steps([r for r in feedback if isinstance(r, dict)], sent,
-                                  {e.get("class") for e in effects if isinstance(e, dict)})
-    steps += more
+    events = sorted([r for r in events if isinstance(r, dict) and isinstance(r.get("fields"), dict)
+                     and isinstance(r.get("ts"), (int, float))], key=lambda r: r["ts"])
+    effects = [e for e in effects if isinstance(e, dict)]
+    feedback = [r for r in feedback if isinstance(r, dict)]
+    steps = _event_steps(events) + _effect_steps(effects, now)
+    made = [r["ts"] for r in events if r.get("kind") == "task" and r["fields"].get("state") == "open"
+            and not r["fields"].get("prev_state") and r["fields"].get("origin") == "work-queue"]
+    steps += _feedback_steps(feedback, made, effects)
     if first is not None:
-        steps.append(_step(first, "first_seen", "Assistant first saw this."))
+        steps.append(_step(first, "first_seen", "Assistant first saw this" + (f", in {source}." if source else ".")))
+    steps = [s for s in steps if math.isfinite(s["at"]) and 0 < s["at"] <= now + FUTURE_SEC]
     steps.sort(key=lambda s: s["at"])  # stable: records at one moment keep the order they were gathered in
-    return steps, skipped + extra
+    return _collapse(steps)
 
 
-def answer(state: str, steps=(), more: int = 0, first_known: bool = True, message: str = "") -> dict:
-    """The answer the page gets. `message` is a sentence for a state that has no steps to show."""
-    return {"state": state, "steps": list(steps), "more": more,
-            "message": message, "left_out": f"{more} more steps aren't shown here." if more else "",
-            "note": "" if first_known else BEFORE_RECORDS, "footer": FOOTER}
+def answer(state: str, steps=(), more: int = 0, before: bool = False, message: str = "", floor: bool = False,
+           complete: bool = True) -> dict:
+    """The answer the page gets. `message` is a sentence for a state that has no steps to show; `more` is how many
+    earlier steps aren't shown, a floor (`floor`) when the read stopped at its limit; `before` says the row was here
+    before the record began; `complete` is False when part couldn't be read."""
+    plural = "steps aren't" if more != 1 else "step isn't"
+    left = (("At least " if floor else "") + f"{more} earlier {plural} shown here.") if more else (
+        "Earlier steps may not be shown here." if floor else "")
+    return {"state": state, "steps": list(steps), "more": more, "message": message,
+            "left_out": left[:1].upper() + left[1:], "note": BEFORE_RECORDS if before else "",
+            "footer": FOOTER if complete else PARTIAL_FOOTER}
 
 
 def empty(state: str) -> dict:
     """An answer with nothing in it: "none" (no record for this yet) or "unreadable"."""
-    return answer(state, message=UNREADABLE if state == "unreadable" else NONE_YET)
+    return answer(state, message=UNREADABLE if state == "unreadable" else NONE_YET, complete=state != "unreadable")
 
 
-def read(trace: str, first=None, now=None) -> dict:
+def read(trace: str, first=None, now=None, row: bool = True) -> dict:
     """Everything recorded about the piece of work with this trace id, as an answer. `first` is when it was first seen
-    (`work_queue.traces.first_seen`), or None for a row that was here before that was kept. Never raises."""
+    (`work_queue.traces.first_seen`); with none, and `row` true, the answer says the row was here before the record
+    began (`row` is False for a result with no row to speak of). Never raises."""
     try:
-        return _read(trace, first, now)
+        return _read(trace, first, now, row)
     except Exception:  # noqa: BLE001 - reading never breaks the page; what could not be read is said so
         return empty("unreadable")
 
 
 def _gather(trace: str) -> tuple:
-    """(telemetry records, effects, feedback records, whether any of the three couldn't be read)."""
+    """(telemetry records, effects, feedback records, whether any read stopped at its limit, whether any of the three
+    couldn't be read)."""
     unreadable, events, effects, feedback = False, [], [], []
     try:
         from assistant import telemetry
-        state = telemetry.store_state()
-        if state == "ok":
-            events = list(reversed(telemetry.events(trace=trace, limit=EVENTS_READ, newest_first=True)))
+        state, found = telemetry.read_trace(trace, EVENTS_READ)
+        events = list(reversed(found))
         unreadable = state not in ("ok", "missing")
     except Exception:  # noqa: BLE001
         unreadable = True
     try:
         from assistant import effects as ledger
-        effects = list(ledger.history(trace=trace, limit=EFFECTS_READ))
+        if ledger.readable():
+            effects = list(ledger.history(trace=trace, limit=EFFECTS_READ))
+        else:
+            unreadable = True
     except Exception:  # noqa: BLE001
         unreadable = True
     try:
         from assistant import feedback as said
-        feedback = list(reversed(said.recent(trace=trace, limit=FEEDBACK_READ)))
+        if said.readable():
+            feedback = list(reversed(said.recent(trace=trace, limit=FEEDBACK_READ)))
+        else:
+            unreadable = True
     except Exception:  # noqa: BLE001
         unreadable = True
-    return events, effects, feedback, unreadable
+    cut = len(events) >= EVENTS_READ or len(effects) >= EFFECTS_READ or len(feedback) >= FEEDBACK_READ
+    return events, effects, feedback, cut, unreadable
 
 
-def _read(trace: str, first, now) -> dict:
+def _read(trace: str, first, now, row: bool) -> dict:
     from assistant.pointers import is_trace_id
     if not is_trace_id(trace):
         return empty("none")
-    events, effects, feedback, unreadable = _gather(trace)
+    events, effects, feedback, cut, unreadable = _gather(trace)
     first = first if type(first) in (int, float) and first > 0 else None
-    steps, skipped = steps_of(events, effects, feedback, first, now)
+    steps = steps_of(events, effects, feedback, first, now, _source(events, feedback))
     more = max(0, len(steps) - SHOWN)
     shown = steps[-SHOWN:]
-    left = more + skipped
+    before = first is None and row
     if unreadable:
-        return answer("unreadable", shown, left, first is not None, UNREADABLE)
+        return answer("unreadable", shown, more, before, UNREADABLE, cut, False)
     if not shown:
-        return answer("none", (), left, first is not None, NOTHING_SINCE)
-    return answer("ok", shown, left, first is not None)
+        return answer("none", (), 0, before, NOTHING_SINCE, cut)
+    return answer("ok", shown, more, before, "", cut)

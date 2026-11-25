@@ -592,7 +592,7 @@ background:var(--panel);border:1px solid var(--line-strong);border-radius:8px;bo
 .why-box{flex:1 0 100%;width:100%;margin:8px 0 4px;padding:8px 10px;border:1px solid var(--line-strong);border-radius:8px;background:var(--hover);font-size:13px;line-height:1.5;color:var(--text-2)}
 .ap-row:has(> .why-box){flex-wrap:wrap}.why-steps{margin:0 0 6px;padding:0;list-style:none}.why-steps li{display:flex;gap:10px;padding:2px 0}
 .why-steps time{flex:none;width:9.5em;font:11px/18px var(--mono);color:var(--quiet)}.why-box p{margin:0 0 6px}.why-foot{font:11px/16px var(--mono);color:var(--quiet)}
-.btn.why-close{margin-top:4px;color:var(--text-2)}
+.btn.why-close{margin-top:4px;color:var(--text-2)}.btn.why-link{position:relative;padding:6px 0}.btn.why-link::after{content:"";position:absolute;inset:-4px -6px}.why-head{margin:0 0 4px;font:600 13px/1.4 var(--sans);color:var(--text)}.why-head:focus{outline:none}
 @media (max-width:620px){.why-steps li{flex-direction:column;gap:0}.why-steps time{width:auto}}
 .toast.err{border-color:var(--red)}.toast{position:fixed;right:16px;bottom:70px;max-width:min(360px,calc(100vw - 32px));padding:10px 14px;border-radius:8px;background:var(--panel);border:1px solid var(--green);font-size:13px;z-index:50}
 .mq{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 8px}.mq code{font:11px/1.5 var(--mono);color:var(--text-2);background:var(--hover);border:1px solid var(--line);border-radius:6px;padding:4px 8px;overflow-wrap:anywhere;min-width:0;flex:1}
@@ -640,7 +640,8 @@ border-radius:6px;border:1px solid var(--line-strong);background:var(--hover);co
 .ready-check{display:block;margin-top:4px;font-size:12px;color:var(--text-2)}.ready-check.note{color:var(--green)}
 .ready-cleared{margin:10px 0 0;padding-left:22px;display:flex;flex-direction:column;gap:8px;opacity:.75}
 .ready-cleared:empty{display:none}.ready-cleared li>div{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-@media (max-width:620px){body{padding:20px 16px 40px}.sf-main{flex-wrap:wrap}.sf-main>.fb{display:contents}.sf-main .fb-down{margin:0;padding:5px 6px}.sf-main .fb-open,.sf-main .why-link{position:relative;padding:0;margin-top:-4px}.sf-main .fb-open::after,.sf-main .why-link::after{content:"";position:absolute;inset:-8px -4px}.fb{flex-wrap:wrap}.sf-main .fb-note{position:static;flex-basis:100%;white-space:normal;text-align:left}.sf-link{flex-basis:100%}.ap-row{flex-direction:column}.ap-group summary{flex-wrap:wrap}
+@media (max-width:860px){.sf-main{flex-wrap:wrap}.sf-main>.fb{display:contents}.sf-main .fb-down{margin:0;padding:5px 6px}.sf-main .fb-open,.sf-main .why-link{position:relative;padding:0;margin-top:-4px}.sf-main .fb-open::after,.sf-main .why-link::after{content:"";position:absolute;inset:-8px -4px}.fb{flex-wrap:wrap}.sf-main .fb-note{position:static;flex-basis:100%;white-space:normal;text-align:left}.sf-link{flex-basis:100%}}
+@media (max-width:620px){body{padding:20px 16px 40px}.ap-row{flex-direction:column}.ap-group summary{flex-wrap:wrap}
 .draft{flex-direction:column}.draft textarea{width:100%}}
 """
 
@@ -863,8 +864,8 @@ function fbBuild(s){const k=s.dataset.fk,h={},x=document.createElement('span'),l
   h.pop=document.createElement('div');h.pop.className='fb-pop';h.pop.setAttribute('role','group');h.pop.setAttribute('aria-label','Why is this wrong?');h.pop.hidden=true;
   h.pop.onkeydown=ev=>{if(ev.key==='Escape'){FBUI[s.dataset.fp].pop=false;fbPaint();h.down.focus()}}}
  h.open=fbBtn(k==='page'?'Tell Assistant about this page':k==='draft'?'Tell Assistant about this draft':'Tell Assistant','open',()=>fbTell(s));h.open.classList.add('fb-open');
- s.append(h.open);if(k!=='page'&&k!=='draft'){h.why=fbBtn('Why is this here?','why',()=>whyToggle(s));h.why.classList.remove('ghost');h.why.classList.add('why-link');h.why.setAttribute('aria-expanded','false');
-  h.why.onkeydown=ev=>{if(ev.key==='Escape'&&WHY[s.dataset.fp])whyClose(s)};s.append(h.why)}
+ s.append(h.open);if(k!=='page'&&k!=='draft'){h.why=fbBtn('Why?','why',()=>whyToggle(s));h.why.classList.remove('ghost');h.why.classList.add('why-link');h.why.setAttribute('aria-expanded','false');
+  h.why.setAttribute('aria-label','Why is this here?');h.why.title='Why is this here?';s.append(h.why)}
  if(h.pop)s.append(h.pop);x.className='fb-extra';x.dataset.fp=s.dataset.fp;line.className='fb-line';x.append(line);h.x=x;FBX.set(s,h);const at=s.closest('.ap-row');if(at)at.querySelector('.ap-text').append(x);else s.parentElement.after(x)}
 function fbPlace(s){const h=FBX.get(s),p=h.pop,w=p.offsetWidth,t=p.offsetHeight,r=h.down.getBoundingClientRect(),
  own=s.closest('.sf-row,.ap-row,li')||s.parentElement,reach=Math.max(60,own.getBoundingClientRect().height),
@@ -913,28 +914,34 @@ function fbThumb(s){const v=ST.feedback[s.dataset.fp]||{};
  return v.down?fbUndo(s,v.down):fbSend(s,{key:s.dataset.fkey,kind:s.dataset.fk,signal:'thumbs_down'},()=>({pop:false}))}
 document.addEventListener('click',ev=>{if(!ev.target.closest('.fb-pop')&&Object.values(FBUI).some(u=>u.pop)){Object.values(FBUI).forEach(u=>u.pop=false);fbPaint()}},true);
 for(const e of ['scroll','resize'])window.addEventListener(e,()=>FBX.forEach((h,s)=>{if(h.pop&&!h.pop.hidden)fbPlace(s)}),true);
-let WHY={};
-function whyTime(sec){const d=new Date(sec*1000),t=d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}).replace(/ ([AP])M$/,(m,x)=>' '+x.toLowerCase()+'m');
+let WHY={},whyN=0;
+function whyTime(sec){const d=new Date(sec*1000);if(isNaN(d))return '';
+ const t=d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}).replace(/ ([AP])M$/,(m,x)=>' '+x.toLowerCase()+'m');
  return (d.toDateString()===new Date().toDateString()?'Today':d.toLocaleDateString([],{month:'short',day:'numeric'})+',')+' '+t}
 function whyToggle(s){const p=s.dataset.fp,u=WHY[p];if(u&&u.where===fbWhere(s))return whyClose(s);
- const mine=WHY[p]={where:fbWhere(s),status:'loading'};whyPaint();
+ const mine=WHY[p]={where:fbWhere(s),status:'loading',n:++whyN};whyPaint();FBX.get(s).x.nextElementSibling.querySelector('.why-head').focus();
  api('/api/why?key='+encodeURIComponent(s.dataset.fkey)).then(o=>{if(WHY[p]===mine)Object.assign(mine,{status:'done',data:o})},()=>{if(WHY[p]===mine)mine.status='failed'}).then(whyPaint)}
 function whyClose(s){delete WHY[s.dataset.fp];whyPaint();FBX.get(s).why.focus()}
-function whyFill(box,s,u){box.textContent='';const add=(tag,text,cls)=>{const e=document.createElement(tag);if(cls)e.className=cls;e.textContent=text;box.append(e);return e};
+function whyCloseAll(){if(Object.keys(WHY).length){WHY={};whyPaint()}}
+function whyFill(body,u){body.textContent='';const add=(tag,text,cls)=>{const e=document.createElement(tag);if(cls)e.className=cls;e.textContent=text;body.append(e);return e};
  if(u.status==='loading')add('p','Loading');
  else if(u.status==='failed')add('p','Assistant couldn’t load this. Close it and try again.');
  else{const o=u.data;if(o.message)add('p',o.message);
-  if(o.steps.length){const ol=add('ol','','why-steps');o.steps.forEach(st=>{const li=document.createElement('li'),t=document.createElement('time');
-   t.dateTime=new Date(st.at*1000).toISOString();t.textContent=whyTime(st.at);li.append(t,st.text);ol.append(li)})}
-  if(o.left_out)add('p',o.left_out);if(o.note)add('p',o.note);add('p',o.footer,'why-foot')}
- const c=button('Close','btn ghost why-close',()=>whyClose(s));c.type='button';box.append(c)}
+  if(o.steps.length){const ol=add('ol','','why-steps');o.steps.forEach(st=>{const li=document.createElement('li'),t=document.createElement('time'),at=whyTime(st.at),last=st.count>1?whyTime(st.last):'';
+   if(at){t.dateTime=new Date(st.at*1000).toISOString();t.textContent=at}
+   li.append(t,st.text+(last?' Last time: '+last+'.':''));ol.append(li)})}
+  if(o.left_out)add('p',o.left_out);if(o.note)add('p',o.note);add('p',o.footer,'why-foot')}}
 function whyPaint(){document.querySelectorAll('.fb').forEach(s=>{const h=FBX.get(s);if(!h||!h.why)return;
- const host=s.closest('.em-row,.sf-row,li,.ap-row'),u=WHY[s.dataset.fp],open=!!u&&u.where===fbWhere(s);
- let box=host.querySelector(':scope > .why-box');h.why.setAttribute('aria-expanded',open);
+ const u=WHY[s.dataset.fp],open=!!u&&u.where===fbWhere(s);let box=h.x.nextElementSibling;box=box&&box.classList.contains('why-box')?box:null;h.why.setAttribute('aria-expanded',open);
  if(!open){if(box)box.remove();return}
  if(!box){box=document.createElement('div');box.className='why-box';box.setAttribute('role','region');box.setAttribute('aria-label','Why is this here?');
-  box.onkeydown=ev=>{if(ev.key==='Escape')whyClose(s)};host.append(box)}
- const sig=JSON.stringify([u.status,u.data]);if(box.dataset.sig!==sig){box.dataset.sig=sig;whyFill(box,s,u)}})}
+  const head=document.createElement('h4'),body=document.createElement('div'),c=button('Close','btn ghost why-close',()=>whyClose(s));
+  head.className='why-head';head.tabIndex=-1;head.textContent='Why is this here?';c.type='button';box.append(head,body,c);h.x.after(box)}
+ const sig=JSON.stringify([u.status,u.data]);if(box.dataset.sig!==sig){box.dataset.sig=sig;whyFill(box.children[1],u)}})}
+document.addEventListener('keydown',ev=>{if(ev.key!=='Escape'||!Object.keys(WHY).length)return;
+ if(document.querySelector('.compose,.fb-tell')||Object.values(FBUI).some(u=>u.pop||u.tell))return;  // a note box or the reasons close first
+ const s=[...document.querySelectorAll('.fb')].filter(f=>{const u=WHY[f.dataset.fp];return u&&u.where===fbWhere(f)}).sort((a,b)=>WHY[b.dataset.fp].n-WHY[a.dataset.fp].n)[0];
+ if(s)whyClose(s)},true);
 function fbPost(body){return api('/api/feedback',{method:'POST',body:JSON.stringify(body)})}
 async function fbSend(s,body,after){const u=FBUI[s.dataset.fp];if(u.busy)return;u.busy=true;
  let ok=false;try{const o=await fbPost(body);ST.feedback=Object.assign({},ST.feedback,{[s.dataset.fp]:o.view});Object.assign(u,after(o.view));fbPaint();ok=true}
@@ -954,7 +961,7 @@ const TAB_IDS=[...document.querySelectorAll('#tabs .tab')].map(a=>a.dataset.t).f
 function tabOf(id){if(TAB_IDS.includes(id)||id==='all')return id;const el=id?$(id):null,sec=el&&TAB_IDS.find(s=>$(s).contains(el));
  if(!sec)return TAB_IDS[0];for(let d=el;d;d=d.parentElement)if(d.tagName==='DETAILS')d.open=true;
  setTimeout(()=>el.scrollIntoView({block:'start'}));return sec}
-function showTab(id){const t=tabOf(id);TAB_IDS.forEach(s=>$(s).classList.toggle('tab-hidden',t!=='all'&&s!==t));
+function showTab(id){const t=tabOf(id);whyCloseAll();TAB_IDS.forEach(s=>$(s).classList.toggle('tab-hidden',t!=='all'&&s!==t));
  document.querySelectorAll('#tabs .tab').forEach(a=>a.classList.toggle('on',a.dataset.t===t));try{localStorage.setItem('wq-tab',t)}catch(_){}}
 window.addEventListener('hashchange',()=>showTab(decodeURIComponent(location.hash.slice(1))));
 if(TAB_IDS.length){let saved=null;try{saved=localStorage.getItem('wq-tab')}catch(_){}showTab(decodeURIComponent(location.hash.slice(1))||saved||TAB_IDS[0])}

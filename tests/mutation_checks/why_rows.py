@@ -1,6 +1,6 @@
 """Checks for "Why is this here?": the sentences (src/assistant/why.py), the route (work_queue/server.py), the time a row
-was first seen (work_queue/traces.py), the telemetry read that tells "nothing" from "can't read", and the page's link and
-block (work_queue/page.py).
+was first seen (work_queue/traces.py), the telemetry, ledger and feedback reads that tell "nothing" from "can't read", and
+the page's link and block (work_queue/page.py).
 
 Every mutant runs for real, and none can reach outside a test's temporary folder: the tests they name keep HOME in a
 folder under `tmp_path` (the `home` and `wq` fixtures) and serve the page from stand-ins."""
@@ -9,12 +9,16 @@ W = "src/assistant/why.py"
 S = "work_queue/server.py"
 TR = "work_queue/traces.py"
 TE = "src/assistant/telemetry.py"
+EF = "src/assistant/effects.py"
+FB = "src/assistant/feedback.py"
 P = "work_queue/page.py"
 T = "tests/test_why.py::"
 TS = "tests/test_why_server.py::"
 TB = "tests/test_work_queue_browser.py::"
+TRI = "tests/test_why_restart.py::"
 
 CHECKS = (
+    # --- the sentences ---
     (
         "an unsorted row says its reason",
         W,
@@ -27,21 +31,28 @@ CHECKS = (
         W,
         "SHOWN = 50 ",
         "SHOWN = 500 ",
-        T + "test_only_the_newest_fifty_steps_are_shown_and_the_rest_are_counted",
+        T + "test_only_the_newest_fifty_steps_are_shown_and_the_earlier_ones_are_counted",
     ),
     (
         "the newest steps are the ones kept",
         W,
         "    shown = steps[-SHOWN:]",
         "    shown = steps[:SHOWN]",
-        T + "test_only_the_newest_fifty_steps_are_shown_and_the_rest_are_counted",
+        T + "test_only_the_newest_fifty_steps_are_shown_and_the_earlier_ones_are_counted",
     ),
     (
-        "the telemetry copy of a change isn't shown beside the ledger's",
+        "each record is read with its own limit",
         W,
-        'COPIES = ("effect", "feedback")',
-        'COPIES = ("feedback",)',
-        T + "test_a_full_read_gathers_the_three_records_and_leaves_the_telemetry_copies_out",
+        "EVENTS_READ = 400",
+        "EVENTS_READ = 10000",
+        T + "test_every_record_is_read_with_a_limit_in_one_connection_and_reading_writes_nothing",
+    ),
+    (
+        "a read that stopped at its limit says at least",
+        W,
+        '    left = (("At least " if floor else "")',
+        '    left = (("")',
+        T + "test_a_read_that_stopped_at_its_limit_says_at_least_and_the_limits_are_the_ones_written_here",
     ),
     (
         "a store that can't be read is not called empty",
@@ -51,25 +62,109 @@ CHECKS = (
         T + "test_a_store_that_is_there_but_cant_be_read_is_unreadable_and_never_nothing_recorded",
     ),
     (
-        "a record that can't be loaded makes the answer unreadable",
+        "a ledger that can't be read is not called empty",
         W,
-        "        effects = list(ledger.history(trace=trace, limit=EFFECTS_READ))\n    except Exception:  # noqa: BLE001\n        unreadable = True",
-        "        effects = list(ledger.history(trace=trace, limit=EFFECTS_READ))\n    except Exception:  # noqa: BLE001\n        unreadable = False",
+        "        if ledger.readable():\n            effects = list(ledger.history(trace=trace, limit=EFFECTS_READ))\n        else:\n            unreadable = True",
+        "        if True:\n            effects = list(ledger.history(trace=trace, limit=EFFECTS_READ))\n        else:\n            unreadable = True",
+        T + "test_a_ledger_that_cant_be_read_makes_the_answer_unreadable_and_a_ledger_not_made_yet_does_not",
+    ),
+    (
+        "a feedback file that can't be read is not called empty",
+        W,
+        "        if said.readable():\n            feedback = list(reversed(said.recent(trace=trace, limit=FEEDBACK_READ)))\n        else:\n            unreadable = True",
+        "        if True:\n            feedback = list(reversed(said.recent(trace=trace, limit=FEEDBACK_READ)))\n        else:\n            unreadable = True",
+        T + "test_a_feedback_file_that_cant_be_read_makes_the_answer_unreadable_and_one_not_made_yet_does_not",
+    ),
+    (
+        "a ledger that can't be loaded makes the answer unreadable",
+        W,
+        "    except Exception:  # noqa: BLE001\n        unreadable = True\n    try:\n        from assistant import feedback as said",
+        "    except Exception:  # noqa: BLE001\n        unreadable = False\n    try:\n        from assistant import feedback as said",
         T + "test_a_record_that_cannot_be_loaded_makes_the_answer_unreadable_and_not_an_error",
     ),
     (
-        "a name from a record is shown only when it is a name",
+        "a name from a record is shown only when telemetry takes it as a name",
         W,
-        'NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,63}")',
-        'NAME = re.compile(r".*")',
-        T + "test_a_sorted_row_names_the_model_and_the_rules_only_when_they_are_names",
+        '        return records.name_of(value) or ""',
+        '        return value if isinstance(value, str) else ""',
+        T + "test_a_sorted_row_names_the_model_and_the_sorting_rules_only_when_telemetry_takes_them_as_names",
+    ),
+    (
+        "a task is shown by its id only when it is one",
+        W,
+        'record["subject"] if TASK_ID.fullmatch(record["subject"] or "") else ""',
+        'record["subject"] or ""',
+        T + "test_a_task_made_from_the_row_says_how_it_was_sent_and_which_task_it_became",
+    ),
+    (
+        "a task made by someone else says who",
+        W,
+        '            with_id, without = MADE_BY.get(origin, MADE_BY["manual"])',
+        '            with_id, without = MADE_BY["goal"]',
+        T + "test_a_task_made_by_someone_else_says_who_without_claiming_it_was_assistant_when_it_may_have_been_you",
+    ),
+    (
+        "a task marked as started after something else says so",
+        W,
+        '        return "The task was marked as started."',
+        "        return None",
+        T + "test_a_task_coming_back_to_open_is_queued_again_and_one_marked_as_started_says_so_unless_a_start_just_said_it",
+    ),
+    (
+        "a start that just said it explains the task being marked as started",
+        W,
+        '0 <= record["ts"] - t <= JUST_AFTER for t in started',
+        "True for t in started",
+        T + "test_a_task_coming_back_to_open_is_queued_again_and_one_marked_as_started_says_so_unless_a_start_just_said_it",
+    ),
+    (
+        "a task parked after the session wasn't ready says it won't be started again",
+        W,
+        '        return f"{STARTING}: the agent session wasn\'t ready for it. " + (PARKED_HOW if parked else RETRY)',
+        '        return f"{STARTING}: the agent session wasn\'t ready for it. " + RETRY',
+        T + "test_a_start_that_stopped_because_the_session_was_not_ready_says_whether_the_task_was_parked",
+    ),
+    (
+        "a retry is promised only where there is one",
+        W,
+        '"todo_not_marked": ("Assistant started an agent on it, but couldn\'t mark the task as started, so "\n                                    "the next round may start a second one."),',
+        '"todo_not_marked": f"{STARTING}: it couldn\'t mark the task as started. {RETRY}",',
+        T + "test_a_failed_start_says_only_what_is_true_for_each_reason_and_promises_a_retry_only_where_there_is_one",
+    ),
+    (
+        "a check says what ran",
+        W,
+        'return f"Assistant ran a check on the result ({shown})." if shown else None',
+        'return f"Assistant ran a check on the result ({name})."',
+        T + "test_a_check_names_what_it_found_and_an_unknown_check_is_shown_by_its_name_when_telemetry_takes_it_as_one",
     ),
     (
         "a send is said once",
         W,
-        'if (sent and signal in ("send", "send_handsoff"))',
-        'if (False and signal in ("send", "send_handsoff"))',
-        T + "test_a_send_is_said_once_by_the_task_and_a_change_is_said_once_by_the_ledger",
+        '    pools = {"send": list(made), "send_handsoff": list(made)}',
+        '    pools = {"send": [], "send_handsoff": []}',
+        T + "test_a_send_is_said_once_by_the_task_and_a_change_once_by_the_ledger",
+    ),
+    (
+        "a tap is dropped only when it pairs with a change",
+        W,
+        "        if abs(t - at) <= PAIR_SEC:",
+        "        if True:",
+        T + "test_two_taps_for_one_change_show_the_second_and_a_tap_far_from_the_change_is_not_paired_with_it",
+    ),
+    (
+        "a tap is dropped for one change only once",
+        W,
+        "            pool.remove(t)\n            return True",
+        "            return True",
+        T + "test_two_taps_for_one_change_show_the_second_and_a_tap_far_from_the_change_is_not_paired_with_it",
+    ),
+    (
+        "a take-back says what was taken back",
+        W,
+        '        return TOOK_BACK.get((by_id.get(record.get("amends")) or {}).get("signal"), "You took something back.")',
+        '        return "You took something back."',
+        T + "test_a_take_back_says_what_was_taken_back",
     ),
     (
         "a change that undoes another says which",
@@ -81,9 +176,16 @@ CHECKS = (
     (
         "a change with no answer for ten minutes is no longer in progress",
         W,
-        'now - float(e.get("t") or 0) >= IN_FLIGHT_SEC',
-        'now - float(e.get("t") or 0) >= IN_FLIGHT_SEC * 100',
+        'abs(now - float(e.get("t") or 0)) >= IN_FLIGHT_SEC',
+        'abs(now - float(e.get("t") or 0)) >= IN_FLIGHT_SEC * 100',
         T + "test_a_change_with_no_answer_may_or_may_not_have_happened_and_one_still_going_is_in_progress",
+    ),
+    (
+        "a change begun in the future is not in progress",
+        W,
+        'abs(now - float(e.get("t") or 0)) >= IN_FLIGHT_SEC',
+        '(now - float(e.get("t") or 0)) >= IN_FLIGHT_SEC',
+        T + "test_a_change_begun_in_the_future_after_the_clock_went_back_is_not_known_to_be_in_progress",
     ),
     (
         "an error text nobody listed is never repeated",
@@ -93,33 +195,98 @@ CHECKS = (
         T + "test_a_failed_change_says_how_and_never_repeats_an_error_text_it_doesnt_know",
     ),
     (
+        "a step with a time that can't be one is left out",
+        W,
+        "0 < s[\"at\"] <= now + FUTURE_SEC",
+        "True",
+        T + "test_a_step_with_a_time_that_cant_be_one_is_left_out",
+    ),
+    (
         "a row from before the record says so",
         W,
-        '"note": "" if first_known else BEFORE_RECORDS',
+        '"note": BEFORE_RECORDS if before else ""',
         '"note": ""',
         T + "test_a_row_with_an_id_and_nothing_recorded_says_so_in_its_own_words_and_a_row_from_before_says_that",
     ),
     (
+        "a result with no row doesn't say the row was here before",
+        W,
+        "    before = first is None and row",
+        "    before = first is None",
+        T + "test_a_result_with_no_row_does_not_say_the_row_was_here_before_the_record",
+    ),
+    (
+        "steps that repeat are one step",
+        W,
+        "            out.append(run[0] if len(run) == 1 else _repeat(run[0], len(run), run[-1][\"at\"]))",
+        "            out.extend(run)",
+        T + "test_sixty_failed_starts_in_a_row_are_one_step_with_the_first_time_the_count_and_the_last_time",
+    ),
+    (
+        "only a run of the same thing is one step",
+        W,
+        'if run and (step is None or (step["kind"], step["text"]) != (run[0]["kind"], run[0]["text"])):',
+        'if run and (step is None or step["kind"] != run[0]["kind"]):',
+        T + "test_a_different_step_in_between_ends_the_run_and_any_identical_steps_collapse_not_only_starts",
+    ),
+    (
+        "a partial read doesn't say it is everything",
+        W,
+        '"footer": FOOTER if complete else PARTIAL_FOOTER',
+        '"footer": FOOTER',
+        T + "test_a_store_that_is_there_but_cant_be_read_is_unreadable_and_never_nothing_recorded",
+    ),
+    (
+        "the first sighting says where",
+        W,
+        '"Assistant first saw this" + (f", in {source}." if source else ".")',
+        '"Assistant first saw this."',
+        T + "test_a_first_sighting_is_the_oldest_step_says_where_when_a_record_does_and_comes_only_when_the_time_is_known",
+    ),
+    # --- the reads ---
+    (
         "the telemetry read says a newer store is newer",
         TE,
-        '    except _NewerSchema:\n        return "newer"',
-        '    except _NewerSchema:\n        return "ok"',
-        T + "test_the_store_state_tells_each_case_apart_and_events_still_gives_an_empty_list_for_all_of_them",
+        '    except _NewerSchema:\n        return "newer", []',
+        '    except _NewerSchema:\n        return "ok", []',
+        T + "test_read_trace_tells_each_case_apart_and_events_still_gives_an_empty_list_for_all_of_them",
     ),
     (
         "the telemetry read says a missing store is missing",
         TE,
-        '        if not os.path.isfile(_path(_DB)):\n            return "missing"\n        conn = _connect(create=False)\n        try:\n            conn.execute("PRAGMA query_only=ON")\n            conn.execute("SELECT 1',
-        '        if not os.path.isfile(_path(_DB)):\n            return "ok"\n        conn = _connect(create=False)\n        try:\n            conn.execute("PRAGMA query_only=ON")\n            conn.execute("SELECT 1',
-        T + "test_the_store_state_tells_each_case_apart_and_events_still_gives_an_empty_list_for_all_of_them",
+        '        if not os.path.isfile(_path(_DB)):\n            return "missing", []',
+        '        if not os.path.isfile(_path(_DB)):\n            return "ok", []',
+        T + "test_read_trace_tells_each_case_apart_and_events_still_gives_an_empty_list_for_all_of_them",
     ),
     (
         "a busy store is unreadable, not empty",
         TE,
-        '        return "missing" if "no such table" in str(exc) else "unreadable"',
-        '        return "missing" if "no such table" in str(exc) else "ok"',
+        '        return ("missing" if "no such table" in str(exc) else "unreadable"), []',
+        '        return ("missing" if "no such table" in str(exc) else "ok"), []',
         T + "test_a_store_that_stays_busy_is_unreadable_not_empty",
     ),
+    (
+        "the telemetry read can't write",
+        TE,
+        '            conn.execute("PRAGMA query_only=ON")\n            rows = conn.execute("SELECT id, ts, kind, trace, subject, component, fields FROM events WHERE trace=?"',
+        '            rows = conn.execute("SELECT id, ts, kind, trace, subject, component, fields FROM events WHERE trace=?"',
+        T + "test_read_trace_cannot_write_and_never_raises",
+    ),
+    (
+        "an unreadable ledger is not readable",
+        EF,
+        "            _sync()\n        return True\n    except Exception:  # noqa: BLE001 - a read that can't tell is \"no\"\n        return False",
+        "            _sync()\n        return True\n    except Exception:  # noqa: BLE001 - a read that can't tell is \"no\"\n        return True",
+        T + "test_readable_is_true_for_a_missing_file_and_false_for_one_that_is_there_and_cant_be_read",
+    ),
+    (
+        "an unreadable feedback file is not readable",
+        FB,
+        "            _sync()\n        return True\n    except Exception:  # noqa: BLE001 - a read that can't tell is \"no\"\n        return False",
+        "            _sync()\n        return True\n    except Exception:  # noqa: BLE001 - a read that can't tell is \"no\"\n        return True",
+        T + "test_readable_is_true_for_a_missing_file_and_false_for_one_that_is_there_and_cant_be_read",
+    ),
+    # --- first seen ---
     (
         "only an id made now starts the first-seen time",
         TR,
@@ -142,6 +309,14 @@ CHECKS = (
         T + "test_a_first_time_survives_every_later_write_and_pruning_and_a_new_key_in_the_group_takes_it",
     ),
     (
+        "a key joining an id takes the earliest first-seen time",
+        TR,
+        "    first = min(firsts) if firsts else",
+        "    first = max(firsts) if firsts else",
+        T + "test_a_key_joining_an_id_takes_the_earliest_first_time_its_group_holds",
+    ),
+    # --- the route ---
+    (
         "the route answers",
         S,
         '        if route == "/api/why":',
@@ -151,9 +326,16 @@ CHECKS = (
     (
         "the answer starts with when the row was first seen",
         S,
-        "        return why.read(trace, traces.first_seen(row))",
-        "        return why.read(trace, None)",
+        "        return why.read(trace, traces.first_seen(row), row=bool(row))",
+        "        return why.read(trace, None, row=bool(row))",
         TS + "test_a_row_with_a_full_trail_answers_every_step_in_order_in_plain_sentences",
+    ),
+    (
+        "a result with no row has no note about before",
+        S,
+        "        return why.read(trace, traces.first_seen(row), row=bool(row))",
+        "        return why.read(trace, traces.first_seen(row), row=True)",
+        TS + "test_a_result_with_no_row_does_not_say_the_row_was_here_before_the_record",
     ),
     (
         "a result answers with the row's trail",
@@ -176,12 +358,21 @@ CHECKS = (
         '    if not key:\n        return why.empty("none")',
         TS + "test_a_key_that_is_too_long_or_not_printable_is_refused_even_when_the_registry_holds_it",
     ),
+    # --- what restarts a parked task ---
+    (
+        "the block's advice for a parked task is true",
+        W,
+        "remove \"\n              \"the task on the Tasks tab of the Assistant dashboard and send the row to an agent again.\")",
+        "queue \"\n              \"the task on the Tasks tab of the Assistant dashboard and send the row to an agent again.\")",
+        T + "test_a_start_that_stopped_because_the_session_was_not_ready_says_whether_the_task_was_parked",
+    ),
+    # --- the page ---
     (
         "the block shows text, never markup",
         P,
         "const e=document.createElement(tag);if(cls)e.className=cls;e.textContent=text;",
         "const e=document.createElement(tag);if(cls)e.className=cls;e.innerHTML=text;",
-        TB + "test_the_why_block_says_loading_while_it_waits_and_shows_everything_as_text",
+        TB + "test_the_why_block_says_loading_while_it_waits_and_shows_everything_the_server_sends_as_text",
     ),
     (
         "the link isn't on a draft",
@@ -191,6 +382,13 @@ CHECKS = (
         TB + "test_the_why_link_is_on_every_kind_of_item_that_has_tell_assistant_and_nowhere_else",
     ),
     (
+        "the link says its full question to a screen reader",
+        P,
+        "h.why.setAttribute('aria-label','Why is this here?');",
+        "",
+        TB + "test_the_why_link_opens_only_on_a_click_and_shows_the_steps_in_order_with_their_times",
+    ),
+    (
         "the link says whether the block is open",
         P,
         "h.why.setAttribute('aria-expanded',open)",
@@ -198,25 +396,53 @@ CHECKS = (
         TB + "test_the_why_link_opens_only_on_a_click_and_shows_the_steps_in_order_with_their_times",
     ),
     (
-        "Escape closes the block",
+        "the block opens under the row's own line of buttons",
         P,
-        "box.onkeydown=ev=>{if(ev.key==='Escape')whyClose(s)}",
-        "box.onkeydown=ev=>{if(ev.key==='Never')whyClose(s)}",
-        TB + "test_the_why_block_closes_by_a_second_click_by_escape_and_by_close_and_focus_goes_back_to_the_link",
+        "box.append(head,body,c);h.x.after(box)}",
+        "box.append(head,body,c);h.x.parentElement.append(box)}",
+        TB + "test_the_why_link_opens_only_on_a_click_and_shows_the_steps_in_order_with_their_times",
+    ),
+    (
+        "focus moves into the block on open",
+        P,
+        "FBX.get(s).x.nextElementSibling.querySelector('.why-head').focus();",
+        "",
+        TB + "test_the_why_block_takes_focus_reaches_close_with_one_tab_and_closes_every_way_with_focus_back_on_the_link",
+    ),
+    (
+        "Escape closes a block from anywhere",
+        P,
+        "if(ev.key!=='Escape'||!Object.keys(WHY).length)return;",
+        "if(ev.key!=='Never'||!Object.keys(WHY).length)return;",
+        TB + "test_the_why_block_takes_focus_reaches_close_with_one_tab_and_closes_every_way_with_focus_back_on_the_link",
+    ),
+    (
+        "a note box or the reasons close before a block",
+        P,
+        "if(document.querySelector('.compose,.fb-tell')||Object.values(FBUI).some(u=>u.pop||u.tell))return;",
+        "",
+        TB + "test_escape_closes_the_note_box_the_reasons_or_the_newest_block_in_that_order",
+    ),
+    (
+        "Escape closes the block opened last",
+        P,
+        ".sort((a,b)=>WHY[b.dataset.fp].n-WHY[a.dataset.fp].n)[0]",
+        ".sort((a,b)=>WHY[a.dataset.fp].n-WHY[b.dataset.fp].n)[0]",
+        TB + "test_escape_closes_the_note_box_the_reasons_or_the_newest_block_in_that_order",
     ),
     (
         "focus goes back to the link",
         P,
         "function whyClose(s){delete WHY[s.dataset.fp];whyPaint();FBX.get(s).why.focus()}",
         "function whyClose(s){delete WHY[s.dataset.fp];whyPaint()}",
-        TB + "test_the_why_block_closes_by_a_second_click_by_escape_and_by_close_and_focus_goes_back_to_the_link",
+        TB + "test_the_why_block_takes_focus_reaches_close_with_one_tab_and_closes_every_way_with_focus_back_on_the_link",
     ),
     (
         "a second click closes the block",
         P,
         "if(u&&u.where===fbWhere(s))return whyClose(s);",
         "if(false)return whyClose(s);",
-        TB + "test_the_why_block_closes_by_a_second_click_by_escape_and_by_close_and_focus_goes_back_to_the_link",
+        TB + "test_the_why_block_takes_focus_reaches_close_with_one_tab_and_closes_every_way_with_focus_back_on_the_link",
     ),
     (
         "an open block holds off the reload",
@@ -226,11 +452,18 @@ CHECKS = (
         TB + "test_an_open_why_block_holds_off_the_automatic_reload_and_a_closed_one_does_not",
     ),
     (
+        "changing tabs closes open blocks",
+        P,
+        "function showTab(id){const t=tabOf(id);whyCloseAll();",
+        "function showTab(id){const t=tabOf(id);",
+        TB + "test_changing_tabs_closes_open_blocks_so_a_hidden_one_never_holds_the_reload",
+    ),
+    (
         "the block shows what the route answered",
         P,
         "const sig=JSON.stringify([u.status,u.data]);if(box.dataset.sig!==sig)",
         "const sig=JSON.stringify([u.status,u.data]);if(false)",
-        TB + "test_the_why_block_says_loading_while_it_waits_and_shows_everything_as_text",
+        TB + "test_the_why_block_says_loading_while_it_waits_and_shows_everything_the_server_sends_as_text",
     ),
     (
         "a request that fails says so in the block",
@@ -240,6 +473,20 @@ CHECKS = (
         TB + "test_the_why_block_says_each_empty_state_and_a_failed_request_in_the_block",
     ),
     (
+        "a time that can't be formatted doesn't stop the block",
+        P,
+        "function whyTime(sec){const d=new Date(sec*1000);if(isNaN(d))return '';",
+        "function whyTime(sec){const d=new Date(sec*1000);",
+        TB + "test_a_step_with_a_time_that_cannot_be_formatted_still_draws_the_block_with_its_close_button",
+    ),
+    (
+        "a step that repeated says when the last was",
+        P,
+        "last=st.count>1?whyTime(st.last):''",
+        "last=''",
+        TB + "test_a_step_that_happened_several_times_shows_its_first_time_and_says_when_the_last_was",
+    ),
+    (
         "the Close button is as readable as the rest",
         P,
         ".btn.why-close{margin-top:4px;color:var(--text-2)}",
@@ -247,10 +494,31 @@ CHECKS = (
         TB + "test_the_why_link_and_block_reach_4_5_to_1_on_the_pages_own_backgrounds",
     ),
     (
-        "on a phone the link keeps the Tell Assistant line",
+        "the link is a link of its own, a short one",
         P,
-        ".sf-main .fb-open,.sf-main .why-link{position:relative;padding:0;margin-top:-4px}",
-        ".sf-main .fb-open{position:relative;padding:0;margin-top:-4px}",
-        TB + "test_the_closed_why_link_sits_on_the_tell_assistant_line_and_adds_no_height_unless_that_line_is_full",
+        ".btn.why-link{position:relative;padding:6px 0}",
+        ".btn.why-link{position:relative;padding:6px 40px}",
+        TB + "test_no_kind_of_row_gains_a_line_from_the_closed_why_link",
+    ),
+    (
+        "rows stack before a title is squeezed",
+        P,
+        "@media (max-width:860px){.sf-main{flex-wrap:wrap}",
+        "@media (max-width:620px){.sf-main{flex-wrap:wrap}",
+        TB + "test_a_title_keeps_at_least_200_pixels_and_rows_stack_before_it_is_squeezed",
+    ),
+    (
+        "the link costs a title little room at 1280",
+        P,
+        ".btn.why-link{position:relative;padding:6px 0}",
+        ".btn.why-link{position:relative;padding:6px 40px}",
+        TB + "test_at_1280_the_link_moves_the_buttons_and_narrows_the_title_by_at_most_60_pixels",
+    ),
+    (
+        "the link keeps its place beside Tell Assistant",
+        P,
+        "}.btn.why-link{position:relative;padding:6px 0}",
+        "}.btn.why-link{position:absolute;padding:6px 0}",
+        TB + "test_why_is_a_link_of_its_own_and_does_not_read_as_part_of_tell_assistant",
     ),
 )
