@@ -327,16 +327,19 @@ def ensure_warm_session(paths: comms_lib.Paths, *, respawn_on_stale: bool = Fals
 
 
 USER_ID = re.compile(r"[UW][A-Z0-9]{2,}")  # a member id; W... is an Enterprise Grid one
-IGNORED_REPLY_SEC = 86400  # at most one "I didn't act on this" reply a day, for each conversation or author
+IGNORED_REPLY_SEC = 86400  # at most one "I didn't act on this" reply a day, for each author in each conversation
 
 
 def owner_id(paths: comms_lib.Paths, env: dict | None = None) -> str:
-    """The owner's Slack member id, in the order the Slack reactor works it out: SLACK_USER_ID, else `slack.owner` in
-    ~/.assistant/config.json, else `slack.target` when that is a member id (a direct message); each only when it has
-    the shape of an id. Empty when it can't be worked out, and when SLACK_USER_ID is set to something that isn't an id."""
+    """The owner's Slack member id: SLACK_USER_ID, else `slack.owner` in ~/.assistant/config.json, else `slack.target`
+    when that is a member id (a direct message); each only when it has the shape of an id. A SLACK_USER_ID of any
+    other shape is skipped, not taken to mean "nobody" (the Slack reactor does take it so, because there an unknown
+    owner starts nothing): here an unknown owner means every message in a channel is typed, so a typo must not throw
+    away an owner the config names. Empty when none of the three names one, which includes a config that can't be
+    read while SLACK_USER_ID names nobody."""
     found = ((env or {}).get("SLACK_USER_ID") or os.environ.get("SLACK_USER_ID") or "").strip()
-    if found:
-        return found if USER_ID.fullmatch(found) else ""
+    if USER_ID.fullmatch(found):
+        return found
     try:
         configured = str(json.loads(paths.config.read_text()).get("slack", {}).get("owner") or "").strip()
     except (OSError, ValueError, AttributeError):
@@ -355,42 +358,38 @@ def notice_channel(paths: comms_lib.Paths, conversation: str) -> str:
     return target if conversation.startswith("D") and USER_ID.fullmatch(target) else conversation
 
 
+TYPED = ("owner", "dm", "unknown-owner")  # whose messages are typed into the warm session
+
+
 def classify_author(paths: comms_lib.Paths, rec: dict, env: dict | None = None) -> tuple[str, str]:
     """(who wrote this message, the owner's id): `owner`, `dm` (a direct-message conversation holds only the owner),
-    `other`, `no-author`, or `unknown-owner` (a channel, and no way to tell which member is the owner). Only the
-    first two may be typed into the session."""
+    `unknown-owner` (a channel, and no way to tell which member is the owner), `other` or `no-author`. The first
+    three are typed into the session (TYPED). The owner rule needs an owner to compare against: where there is none,
+    every message in the channel is typed, as all of them were before the rule existed. Refusing them all stopped the
+    owner's own, in a setup that had worked until then."""
     owner, author = owner_id(paths, env), str(rec.get("author") or "")
+    if not owner and not _safe_target(paths).startswith("D"):
+        return "unknown-owner", ""
     if not author:
         return "no-author", owner
-    if owner:
-        return ("owner" if author == owner else "other"), owner
-    return ("dm" if _safe_target(paths).startswith("D") else "unknown-owner"), ""
+    return (("owner" if author == owner else "other") if owner else "dm"), owner
 
 
 def typed_for(paths: comms_lib.Paths, rec: dict, env: dict | None = None) -> bool:
-    """Whether this message may be typed into the warm session: only its owner's. Logs one plain sentence when the
-    answer is no."""
+    """Whether this message may be typed into the warm session: its owner's, or any message where Assistant can't
+    tell who the owner is. Logs one plain sentence when the answer is no."""
     who, owner = classify_author(paths, rec, env)
-    if who in ("owner", "dm"):
+    if who in TYPED:
         return True
     where = f"Slack message {rec.get('msg_ts')} in {rec.get('channel')}"
     if who == "other":
         log(f"{where} was written by {rec.get('author')}, not by you ({owner}), so Assistant kept it as received and "
             f"did not type it into the session.")
-    elif who == "no-author":
-        log(f"{where} has no author, so Assistant did not type it into the session.")
     else:
-        log(f"{where} was not typed into the session: the conversation is a channel and Assistant can't tell which "
-            f"Slack member is you. Set SLACK_USER_ID to your member ID in ~/.zprofile and run "
-            f"`launchctl kickstart -k gui/$UID/com.assistant.assistant-comms`.")
+        log(f"{where} has no author, so Assistant did not type it into the session.")
     return False
 
 
-UNKNOWN_OWNER_REPLY = (
-    "I didn't act on your message. I can't tell which Slack account is yours, and this is a channel, so I don't "
-    "type anything from it into a session. To fix it: add `export SLACK_USER_ID=U…` (your member ID: your Slack "
-    "profile, the three dots, Copy member ID) to `~/.zprofile`, then run "
-    "`launchctl kickstart -k gui/$UID/com.assistant.assistant-comms`. Then send your message again.")
 OTHER_MEMBER_REPLY = (
     "I only take instructions from <@{owner}>, so I haven't acted on this message. If that isn't you, SLACK_USER_ID "
     "is set to the wrong member ID: put your own in ~/.zprofile and run "
@@ -416,16 +415,13 @@ def _once_a_day(paths: comms_lib.Paths, name: str) -> bool:
 
 
 def tell_ignored(paths: comms_lib.Paths, rec: dict, env: dict | None = None) -> None:
-    """Say so, in the thread of the message, when a message of the owner's wasn't acted on because Assistant can't
-    tell it is theirs, and when someone else's wasn't. At most once a day for each conversation or author."""
+    """Say so, in the thread of the message, when someone other than the owner wrote a message and it wasn't acted
+    on. At most once a day for each author in each conversation."""
     who, owner = classify_author(paths, rec, env)
     channel, ts = str(rec.get("channel") or ""), rec.get("msg_ts")
-    if who == "unknown-owner" and _once_a_day(paths, f"unknown-owner-{channel}"):
-        text = UNKNOWN_OWNER_REPLY
-    elif who == "other" and _once_a_day(paths, f"author-{channel}-{rec.get('author')}"):
-        text = OTHER_MEMBER_REPLY.format(owner=owner)
-    else:
+    if who != "other" or not _once_a_day(paths, f"author-{channel}-{rec.get('author')}"):
         return
+    text = OTHER_MEMBER_REPLY.format(owner=owner)
     rc, _out, err = cli(_send_args(text, "reply", notice_channel(paths, channel), None,
                                    reply_to=str(ts) if ts else None),
                         timeout=30, env=env)
@@ -654,7 +650,7 @@ def _deliver_pending(paths: comms_lib.Paths, channel: str, env: dict | None) -> 
             _tell_dropped(paths, r, env, DROPPED_EXPIRED)
     # The owner rule applies again here (Pro mode): a message queued before this was checked, or by another version,
     # may not be the owner's.
-    foreign = [r for r in fresh if classify_author(paths, r, env)[0] not in ("owner", "dm")] if pro else []
+    foreign = [r for r in fresh if classify_author(paths, r, env)[0] not in TYPED] if pro else []
     if foreign:
         remove_pending(paths, [r.get("msg_ts") for r in foreign])
         for r in foreign:
