@@ -102,3 +102,16 @@ def test_the_doctors_owner_check_runs_in_pro_and_not_in_the_default_mode(current
     assert [c.name for c in doctor.run_checks(only="slack")] == ["slack owner"]
     current["mode"] = "default"
     assert doctor.run_checks(only="slack") == []
+
+
+def test_a_time_out_after_the_mode_changed_to_default_is_a_refusal_not_an_unknown(current, tmp_path, monkeypatch):
+    def rpc(p, method, params, timeout=15):
+        cl._last.result = (-1, "timeout after 15s")
+        return None
+
+    monkeypatch.setattr(cs, "_cmux_rpc", rpc)
+    paths = cl.Paths.from_env({"HOME": str(tmp_path), "COMMS_HOME": str(tmp_path)})
+    with cs.typing_scope(paths, WS, "surface:3", "clear", kind="standing", ref="slack-comms") as keys:
+        current["mode"] = "default"
+        keys.text("/clear")
+    assert [r.get("outcome") for r in ledger(tmp_path)] == [None, "failed"]

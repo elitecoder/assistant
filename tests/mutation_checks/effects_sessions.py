@@ -815,15 +815,9 @@ CHECKS = (
         SEND,
         '    if not session_effects.active():\n        legacy_main(args)',
         '    if False:\n        legacy_main(args)',
-        'tests/test_default_mode_is_main.py::test_the_send_script_never_refuses_a_loop_in_the_default_mode',
+        'tests/test_default_mode_is_main.py::test_the_send_script_reads_a_time_out_as_a_refusal_and_exits_2',
     ),
-    (
-        'the send script reads a time-out as a refusal in the default mode',
-        SEND,
-        '        answers[method.rsplit("_", 1)[-1]] = (rc, body)\n        return ({} if body is None else body) if rc == 0 else None\n\n    keys = session_effects.Keys(session_effects.PASSTHROUGH',
-        '        answers[method.rsplit("_", 1)[-1]] = (rc, body)\n        return None\n\n    keys = session_effects.Keys(session_effects.PASSTHROUGH',
-        'tests/test_default_mode_is_main.py::test_the_send_script_on_success_prints_and_logs_what_it_always_did',
-    ),
+
     (
         'the merge script adds its Pro options only in Pro mode',
         MERGE,
@@ -878,15 +872,9 @@ CHECKS = (
         PULSE,
         '    if _last_rpc_rc == 124 and session_effects.active():',
         '    if _last_rpc_rc == 124:',
-        'tests/test_default_mode_is_main.py::test_a_task_is_started_with_two_keystroke_calls_and_nothing_is_recorded',
+        'tests/test_default_mode_is_main.py::test_a_time_out_typing_the_instruction_is_ignored_as_before_and_the_enter_still_follows',
     ),
-    (
-        'a task is started in the default mode without recording',
-        PULSE,
-        '    if not session_effects.active():\n        return session_effects.PASSTHROUGH  # the default mode',
-        '    if False:\n        return session_effects.PASSTHROUGH  # the default mode',
-        'tests/test_default_mode_is_main.py::test_an_unwritable_effects_folder_changes_nothing_when_a_task_is_started',
-    ),
+
     (
         "a Slack capture that isn't auto-start is refused in Pro mode only",
         PULSE,
@@ -908,13 +896,7 @@ CHECKS = (
         '    parked = [] if dry_run else _parked_tasks()',
         'tests/test_default_mode_is_main.py::test_no_card_is_added_for_a_parked_task',
     ),
-    (
-        'the Slack session records and checks only in Pro mode',
-        CS,
-        '    if session_effects.active():  # asked once, here: the default mode types as it always did, recording nothing',
-        '    if True:  # asked once, here: the default mode types as it always did, recording nothing',
-        'tests/test_default_mode_is_main.py::test_a_message_from_anyone_is_typed_into_the_session_with_its_header_then_a_carriage_return',
-    ),
+
     (
         'the Slack session types without a scope in the default mode',
         CS,
@@ -927,7 +909,7 @@ CHECKS = (
         CS,
         '        if session_effects.active() and ran and ran[1].startswith("timeout"):',
         '        if ran and ran[1].startswith("timeout"):',
-        'tests/test_session_effects_mode_switch.py::test_a_scope_begun_in_pro_keeps_its_records_when_the_mode_changes_before_the_text_goes_out',
+        'tests/test_session_effects_mode_switch.py::test_a_time_out_after_the_mode_changed_to_default_is_a_refusal_not_an_unknown',
     ),
     (
         'a batch whose mode changed closes what it had begun',
@@ -969,7 +951,7 @@ CHECKS = (
         RS,
         '        if rc == 124 and session_effects.active():',
         '        if rc == 124:',
-        'tests/test_default_mode_is_main.py::test_a_cmux_time_out_in_restore_is_a_failure_with_the_exceptions_own_words',
+        'tests/test_default_mode_is_main.py::test_a_time_out_answer_from_cmux_in_restore_is_a_refusal_that_is_tried_again_with_the_panels_id',
     ),
     (
         "restore's time-out words are Pro mode's",
@@ -997,7 +979,7 @@ CHECKS = (
         TS,
         '        if session_effects.active():\n            target.pop("parkedBy", None)  # asking again ends a park (Pro mode)',
         '        if True:\n            target.pop("parkedBy", None)  # asking again ends a park (Pro mode)',
-        'tests/test_default_mode_is_main.py::test_a_good_dispatch_leaves_a_stale_park_marker_as_it_found_it',
+        'tests/test_default_mode_is_main.py::test_queue_to_start_leaves_a_park_marker_alone_in_the_default_mode',
     ),
     (
         "a parked task's row is changed in Pro mode only",

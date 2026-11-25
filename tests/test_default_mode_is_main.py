@@ -56,8 +56,9 @@ def load(name: str, filename: str):
 class Dispatch:
     """cmux, faked: records every keystroke call the pulse makes and answers the rest."""
 
-    def __init__(self, home, screens=(READY,), workspace=WS, refuse_text=False, **item):
+    def __init__(self, home, screens=(READY,), workspace=WS, refuse_text=False, timeout_text=False, **item):
         self.home, self.calls, self.refuse_text, self.workspace = home, [], refuse_text, workspace
+        self.timeout_text = timeout_text
         self.screens = iter(screens)
         self.mod = load("pulse_default_mode", "pulse.py")
         self.mod.SPAWN_PROMPT_DIR = home / "spawn-prompts"
@@ -77,6 +78,9 @@ class Dispatch:
 
     def rpc(self, method, params, timeout=15):
         self.calls.append((method, params))
+        if self.timeout_text and method == "surface.send_text":
+            self.mod._last_rpc_rc = 124  # what the real `_cmux_rpc` leaves behind when cmux times out (a no-op on main)
+            return None
         return None if self.refuse_text and method == "surface.send_text" else {}
 
     def go(self):
@@ -124,6 +128,13 @@ def test_when_cmux_refuses_the_text_the_enter_is_still_pressed_and_the_task_is_s
     assert run.go() is True
     assert [c[0] for c in run.calls] == ["surface.send_text", "surface.send_key"]
     assert run.task()["status"] == "in-progress" and "parkedBy" not in run.task()
+    effects_untouched(default_mode)
+
+
+def test_a_time_out_typing_the_instruction_is_ignored_as_before_and_the_enter_still_follows(default_mode):
+    run = Dispatch(default_mode, timeout_text=True)
+    assert run.go() is True and [c[0] for c in run.calls] == ["surface.send_text", "surface.send_key"]
+    assert run.task()["status"] == "in-progress"
     effects_untouched(default_mode)
 
 
@@ -407,8 +418,8 @@ def test_every_message_from_the_conversation_is_queued_to_be_typed_whoever_wrote
 
 
 class Session:
-    def __init__(self, listen, monkeypatch, landed=True):
-        self.cs, self.calls = listen.comms_session, []
+    def __init__(self, listen, monkeypatch, landed=True, timed_out=False):
+        self.cs, self.calls, self.listen, self.timed_out = listen.comms_session, [], listen, timed_out
         cs = self.cs
         monkeypatch.setattr(cs, "_cmux_rpc", self.rpc)
         monkeypatch.setattr(cs.time, "sleep", lambda *_a: None)
@@ -425,6 +436,10 @@ class Session:
     def rpc(self, paths, method, params, timeout=15):
         if method.startswith("surface.send"):
             self.calls.append((method, params))
+            if self.timed_out:  # what the real call leaves behind when cmux times out (nothing to leave on main)
+                if hasattr(self.listen.comms_lib, "clear_last_run"):
+                    self.listen.comms_lib._last.result = (-1, "timeout after 15s")
+                return None
         return {}
 
 
@@ -442,6 +457,15 @@ def test_a_message_from_anyone_is_typed_into_the_session_with_its_header_then_a_
     assert text[1]["text"].startswith("[slack channel=C0 msg_ts=1793613610.000100 send_cli=")
     assert text[1]["text"].endswith("] hello")
     assert session.calls[1] == ("surface.send_text", {"surface_id": "surface:3", "text": "\r"})
+    effects_untouched(default_mode)
+
+
+def test_a_time_out_typing_a_message_is_ignored_as_before_and_the_carriage_return_still_follows(
+        listen, default_mode, monkeypatch):
+    session = Session(listen, monkeypatch, landed=False, timed_out=True)
+    delivered, _ = listen.reply_to_message(listen.comms_lib.Paths.from_env(), dict(SESS), OTHER_MESSAGE)
+    assert delivered is False and session.calls[0][1]["text"].endswith("] hello")
+    assert {c[1]["text"] for c in session.calls[1:]} == {"\r"}
     effects_untouched(default_mode)
 
 
@@ -578,6 +602,15 @@ def test_run_now_reports_a_script_that_cant_run_as_before(env, default_mode):
         assert server.proposal_action("prop-1", "run-now", {}) == (False, "cmux send failed: cmux down")
 
 
+def test_queue_to_start_leaves_a_park_marker_alone_in_the_default_mode(env, default_mode):
+    server = _server()
+    server.save_json({"items": [{"id": "td-1", "status": "blocked", "parkedBy": "typing_refused",
+                                 "dispatchedAt": "x", "dispatchedWs": WS}]})
+    assert server.dispatch_now("td-1") == (True, "td-1: queued for next-pulse Bucket B dispatch")
+    task = server.load_json()["items"][0]
+    assert (task["status"], task["dispatchedWs"], task.get("parkedBy")) == ("open", None, "typing_refused")
+
+
 # --- restore -------------------------------------------------------------------------------------------------------
 
 def restore_module():
@@ -615,6 +648,14 @@ def test_restore_tries_the_panels_id_when_the_first_try_fails_and_says_what_cmux
     assert out.splitlines()[-1] == "  ERROR: send_text failed: still no"
     result, calls, _out = respawn(restore_module(), [(1, "", "x"), (0, "{}", ""), (0, "{}", "")])
     assert result is True and [c[1].get("surface_id") for c in calls] == ["surface-1", "panel-1", "surface-1"]
+
+
+def test_a_time_out_answer_from_cmux_in_restore_is_a_refusal_that_is_tried_again_with_the_panels_id(default_mode):
+    result, calls, _out = respawn(restore_module(), [(124, "", "t"), (0, "{}", ""), (0, "{}", "")])
+    assert result is True and [c[1].get("surface_id") for c in calls] == ["surface-1", "panel-1", "surface-1"]
+    result, calls, out = respawn(restore_module(), [(124, "", "t"), (124, "", "t")], verbose=True)
+    assert result is False and out.splitlines()[-1] == "  ERROR: send_text failed: t"
+    effects_untouched(default_mode)
 
 
 def test_a_cmux_time_out_in_restore_is_a_failure_with_the_exceptions_own_words(default_mode):
