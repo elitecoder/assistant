@@ -42,6 +42,9 @@ def _layout(tmp: Path, pulse_body: str, model_tiers: str = "TIERS = {}\n") -> Pa
     (tmp / "src/assistant/logcap.py").write_text("")
     (tmp / "src/assistant/redact.py").write_text("")
     (tmp / "src/assistant/mode.py").write_text("")
+    (tmp / "src/assistant/session_effects.py").write_text("")
+    for name in ("effects", "pointers", "session_gate"):
+        (tmp / f"src/assistant/{name}.py").write_text("")
     return tmp / "bin/run-pulse.py"
 
 
@@ -153,19 +156,33 @@ def _module_level_imports(nodes):
             yield from _module_level_imports(getattr(node, field, []))
 
 
-def test_startup_files_match_pulse_module_level_imports():
-    tree = ast.parse((REPO / "bin/pulse.py").read_text())
-    imported = {"bin/pulse.py"}
-    for node in _module_level_imports(tree.body):
-        modules = ([alias.name for alias in node.names] if isinstance(node, ast.Import)
-                   else [node.module])
+PRO_LAZY = ("session_effects",)  # loaded by assistant.session_gate when Pro mode first types, not at module level
+
+
+def _assistant_imports(path):
+    """The `assistant` modules a file imports at module level (anything else must be the standard library)."""
+    found = set()
+    for node in _module_level_imports(ast.parse(path.read_text()).body):
+        modules = ([alias.name for alias in node.names] if isinstance(node, ast.Import) else [node.module])
         for module in modules:
             top = module.split(".")[0]
             if top in sys.stdlib_module_names or top == "__future__":
                 continue
-            assert module == "assistant", f"add {module} to run-pulse.py STARTUP_FILES"
-            imported.add("src/assistant/__init__.py")
-            imported.update(f"src/assistant/{alias.name}.py" for alias in node.names)
+            assert top == "assistant", f"add {module} to run-pulse.py STARTUP_FILES"
+            if module == "assistant":
+                found.update(alias.name for alias in node.names)
+            else:
+                found.add(module.split(".")[1])
+    return found
+
+
+def test_startup_files_match_pulse_module_level_imports_and_what_they_import():
+    todo, seen = _assistant_imports(REPO / "bin/pulse.py") | set(PRO_LAZY), set()
+    while todo:
+        name = todo.pop()
+        seen.add(name)
+        todo |= _assistant_imports(REPO / f"src/assistant/{name}.py") - seen
+    imported = {"bin/pulse.py", "src/assistant/__init__.py"} | {f"src/assistant/{name}.py" for name in seen}
     listed = {str(path.relative_to(REPO)) for path in _load().STARTUP_FILES}
     assert imported == listed
 
@@ -206,3 +223,47 @@ def test_pulse_launch_agent_runs_the_preflight():
     plist = plistlib.loads((REPO / "launchagents/com.assistant.assistant-pulse.plist")
                            .read_bytes())
     assert plist["ProgramArguments"] == ["__PYTHON__", "__REPO__/bin/run-pulse.py"]
+
+
+def _run_in_layout(tmp_path, monkeypatch, broken, mode_body):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    wrapper = _layout(tmp_path, 'print("RAN")\n')
+    (tmp_path / "src/assistant/mode.py").write_text(mode_body)
+    (tmp_path / f"src/assistant/{broken}.py").write_text("def broken(:\n")
+    return subprocess.run([sys.executable, str(wrapper)], capture_output=True, text=True, timeout=60,
+                          env=dict(os.environ, HOME=str(tmp_path / "home")))
+
+
+@pytest.mark.parametrize("name", ["effects", "pointers", "session_effects"])
+def test_a_broken_ledger_file_stops_the_pulse_in_pro_mode_only(tmp_path, monkeypatch, name):
+    ran = _run_in_layout(tmp_path / "pro", monkeypatch, name, "def is_pro():\n    return True\n") \
+        if (tmp_path / "pro").mkdir() is None else None
+    assert ran.stdout == "" and f"{name}.py: SyntaxError" in ran.stderr
+    (tmp_path / "default").mkdir()
+    ran = _run_in_layout(tmp_path / "default", monkeypatch, name, "def is_pro():\n    return False\n")
+    assert ran.stdout.strip() == "RAN" and ran.stderr == ""
+
+
+@pytest.mark.parametrize("mode_body", ["", "def is_pro():\n    raise OSError('unreadable')\n"])
+def test_a_mode_that_cant_be_asked_is_the_default_mode_for_the_start_up_check(tmp_path, monkeypatch, mode_body):
+    ran = _run_in_layout(tmp_path, monkeypatch, "effects", mode_body)
+    assert ran.stdout.strip() == "RAN"
+
+
+@pytest.mark.parametrize("mode_body", ["def is_pro():\n    return True\n", "def is_pro():\n    return False\n"])
+def test_a_broken_gate_stops_the_pulse_in_either_mode(tmp_path, monkeypatch, mode_body):
+    ran = _run_in_layout(tmp_path, monkeypatch, "session_gate", mode_body)
+    assert ran.stdout == "" and "session_gate.py: SyntaxError" in ran.stderr
+
+
+def test_the_start_up_check_asks_the_real_mode_and_takes_any_failure_for_the_default_mode(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".assistant").mkdir()
+    mod = _load()
+    (tmp_path / ".assistant/config.json").write_text('{"mode": "pro"}')
+    assert mod._pro() is True
+    (tmp_path / ".assistant/config.json").write_text('{"mode": "default"}')
+    assert mod._pro() is False
+    monkeypatch.setattr(mod, "BIN", tmp_path / "nowhere/bin")  # no mode.py to load
+    (tmp_path / ".assistant/config.json").write_text('{"mode": "pro"}')
+    assert mod._pro() is False

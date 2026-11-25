@@ -895,8 +895,8 @@ CHECKS = (
     (
         'Send to Agent shows on every open row',
         'work_queue/page.py',
-        '            \'<button class="btn sf-send" onclick="compose(this,queueTodo)" title="An agent takes a first pass and leaves drafts \'\n            f\'for you">Send to Agent</button></div>{draft}{extra}</div>\')\n',
-        "            f'</div>{draft}{extra}</div>')\n",
+        '            \'<button class="btn sf-send" onclick="compose(this,queueTodo)" title="An agent takes a first pass and leaves drafts \'\n            f\'for you">Send to Agent</button>{fb_span(feedback, "email" if mk else "row", mk or link)}</div>{draft}{extra}</div>\')\n',
+        "            f'{fb_span(feedback, \"email\" if mk else \"row\", mk or link)}</div>{draft}{extra}</div>')\n",
         'tests/test_work_queue_triage.py::test_send_to_agent_shows_on_every_open_row_whatever_the_model_said',
     ),
     (
@@ -1427,8 +1427,8 @@ CHECKS = (
     (
         'every Start here item has Send to Agent',
         'work_queue/page.py',
-        '+ ("" if s["blocked"] else START_SEND) + \'</div>\'',
-        "+ '</div>'",
+        '+ ("" if s["blocked"] else START_SEND) + fb_span(True, "start_here", s["key"]) + \'</div>\'',
+        '+ fb_span(True, "start_here", s["key"]) + \'</div>\'',
         'tests/test_work_queue_browser.py::test_start_here_sends_an_item_for_a_first_pass_and_it_leaves_with_its_row',
     ),
     (
@@ -5753,8 +5753,8 @@ CHECKS = (
     (
         'the Tasks tab shows the paused-dispatch card',
         'bin/render-assistant-page.py',
-        'in ("dispatch-cap-hit", "dispatch-held-no-fleet-view")), None)',
-        'in ("dispatch-cap-hit",)), None)',
+        'DISPATCH_NOTICE_KEYS = ("dispatch-cap-hit", "dispatch-held-no-fleet-view", "dispatch-held-no-record")',
+        'DISPATCH_NOTICE_KEYS = ("dispatch-cap-hit", "dispatch-held-no-record")',
         'tests/test_pro_mode.py::test_tasks_tab_shows_the_paused_dispatch_warning',
     ),
     (

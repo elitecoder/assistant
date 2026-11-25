@@ -29,6 +29,46 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   stay that way until you press On. To make sure your own reactions start work,
   set `SLACK_USER_ID` to your Slack user id in `~/.zprofile` and restart the
   reactor. `TODO_AUTODISPATCH=0` still turns self-starting off for everyone.
+- In Pro mode, if you use a Slack channel and don't have `SLACK_USER_ID` set, Assistant
+  stops typing your messages into the warm session after this update and tells
+  you so in Slack: add `export SLACK_USER_ID=U…` (your member ID: your Slack
+  profile, the three dots, Copy member ID) to `~/.zprofile` and restart the
+  service (`launchctl kickstart -k gui/$UID/com.assistant.assistant-comms`).
+  The reason: before, every non-bot message in the channel you set up was typed
+  into a session that runs with its permission prompts off, so any member of
+  the channel could make it run commands on your Mac. Now only your own
+  messages are typed. Your Slack id comes from `SLACK_USER_ID`, then
+  `slack.owner` in `~/.assistant/config.json`, then the target when it is a
+  person. A message from someone else is kept as received,
+  never typed, and Assistant says once a day, in its thread, that it only takes
+  instructions from you. The Slack check in `assistant-doctor.py` warns when
+  the target is a channel and the id isn't set. This is closed in Pro mode
+  only: in the default mode any member of a configured Slack channel can still
+  have a message typed into the warm session, as before, and nothing here
+  changes that for now.
+- In Pro mode, "run now" on a proposal is checked before it types. Before, it typed
+  whatever a proposal file said, of any length, with any control characters,
+  into whatever session the file named, with no check. Now the session must be
+  a real `workspace:N`, the text one line of at most 500 characters with no
+  control characters, and the typing is recorded first. It also types into the
+  session's terminal, not whichever pane is on top, and says what happened when
+  it couldn't. This is closed in Pro mode only: in the default mode "run now"
+  still types whatever a proposal file says, as before, and nothing here changes
+  that for now.
+- **Pro mode only.** The default mode types exactly as before, with no limit and no hold. In Pro mode: Stop the same text being typed into the same session in a loop. Before,
+  nothing stopped a nudge or `/cleanup` going into one session every pulse,
+  forever. Now the same thing typed into the same session more than three
+  times in thirty minutes is waited on, and a typing that may have landed is
+  not repeated by Assistant on its own: a nudge, `/cleanup` or merge request
+  waits 30 minutes before it may be tried again. A message you send in Slack is
+  typed once, whatever was typed before it. Everything else Assistant types,
+  including a script that you or an agent runs, is limited to three of the same
+  thing into one session in thirty minutes and is not retyped for thirty minutes
+  after a typing whose outcome isn't known; you can always type into the
+  session yourself. If you script `bin/cmux-send.py`: its sends into one
+  session count together unless each kind names its own `--source`, so a fourth
+  inside thirty minutes is refused (exit status 4) even when the text differs.
+  The page tells you when something may already have been typed.
 - Check every request that changes something on the dashboard server the same
   way, with no exceptions. Before, a web page open in your browser could make
   your machine start a TODO's agent session (`/dispatch-now`), type a
@@ -69,6 +109,40 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
     stops the page from being built.
 
 ### Added
+- Find out why a row is on your Work queue, and what Assistant has done with
+  it. Every Open list row, Start here item, email, row waiting for your
+  approval and Ready for you result now has a short **Why?** link next to
+  **Tell Assistant** (its full name, "Why is this here?", is what a screen
+  reader says and what shows when you point at it). Nothing opens until you
+  select it. Then a box under the row's line of buttons lists, oldest first and
+  with the time of each step, when Assistant first saw it and from where, how
+  the model sorted it (and which model and sorting rules), that you sent it to
+  an agent, that an agent was started or couldn't be (and why, and whether
+  Assistant will try again by itself), that the agent finished or was blocked, what the
+  check afterwards found, every change Assistant made because of it (such as
+  archiving the email, and whether you pressed the button or approved it) and
+  what you said about it. So "the model didn't sort this because today's spend
+  limit was reached" and "Assistant tried to start an agent 14 times and cmux
+  didn't answer" are now on the page instead of hidden. It is built from the
+  record Assistant keeps on your Mac and holds no message text: no title,
+  sender, link, or reason the model gave. It says "Assistant has no record for
+  this yet" when nothing is kept, and when it can't read part of its record it
+  says so, and says the list may be missing steps, instead of calling it
+  complete. For a row that was here before Assistant started keeping the record
+  it says that earlier steps aren't shown. Repeated steps are one line, and it
+  shows the newest 50 steps and says how many earlier ones aren't shown. An open
+  box stops the page reloading on its own after a refresh, the way an open note
+  does; changing tabs closes it. The link adds no line to any row on a phone, and
+  below 860 px wide the buttons sit under the title so a title is never squeezed
+  to nothing: between 621 and 860 px wide a plain row is about 98 px tall where
+  it was 61, and its title has the full width. At 320 wide a row can gain a line.
+- In the **Why?** list, starting an agent is one step that says what was typed
+  into the new session ("Assistant started an agent on it and typed the task's
+  instruction into the new session", or "…but couldn't tell if the session received it. Look at the
+  session to check."), instead of a line for each thing typed. A start that opened a
+  session and then couldn't type into it says the task is marked blocked and how to run
+  it again. A typing that belongs to no start, such as a
+  nudge or `/cleanup`, says what it was.
 - Every Work queue row and every TODO now carries a short id that later
   features will use to show where a piece of work came from. Nothing you see
   changes yet.
@@ -124,6 +198,31 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   that save was sent, and what to do ("Mark it done in Slack yourself", or sign
   in again). A sign-in problem shows at once, because trying again can't fix it. The
   line goes away when Slack no longer has the save or a retry marks it.
+- Tell Assistant when something on the Work queue is wrong, with one tap. Every
+  Open list row, Start here item, email, model draft, Ready for you result and
+  row waiting for your approval has a small thumbs-down and a **Tell Assistant**
+  link. One tap records the thumbs-down and nothing else opens, so you can go
+  down a list tapping; tapping again takes it back. A note under the buttons
+  says what you said, with **Add a reason** and **Undo**. **Add a reason** opens
+  a small list over the page that never covers another row's thumbs-down or
+  **Tell Assistant** link (Not
+  important, Wrong order, Not mine, Already done; Wrong tone, Wrong facts, Not
+  how I'd say it for a draft; Not what I asked, Didn't finish, Should not have
+  been started for a result), and **Change** opens it again. The note is still
+  there after a reload or a refresh.
+  **Tell Assistant** opens a box for your own words about an item, and one at
+  the top of the page is for the page as a whole. A refresh that finishes while
+  you are choosing a reason or typing no longer reloads the page away.
+- Keep a local record of what you do on the Work queue:
+  Done, Snooze, Drop, Send to Agent (and hands-off), Approve, Keep, Archive,
+  Mark read, clearing a Ready for you result, copying a draft, and each Undo
+  are now written down, one line each, with a trace id and a pointer to the
+  item, never its title, sender, text or link. It goes to
+  `~/.assistant/feedback/feedback.jsonl`, only you can read it, and nothing is
+  sent anywhere. Assistant only records this now and doesn't use it yet; using
+  it (to reorder rows, learn what you drop, and show what changed) is planned
+  for the next update. If a note can't be saved, the page says so and the action still
+  happens. See [Feedback](docs/feedback.md).
 - Keep a local record of what Assistant does, as ids, counts, timings, states
   and money, so later features can follow one piece of work from the moment it
   arrives to your decision on it. It never holds message text, titles,
@@ -135,6 +234,31 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   `{"telemetry": {"enabled": false}}` in `~/.assistant/config.json` to turn it
   off (anything but `true` is off, and so is a settings file that can't be read); delete the folder to remove what is there. See
   [Telemetry](docs/telemetry.md).
+- **Pro mode only.** The default mode types exactly as before and writes no record, shows no new card and sends no new Slack message. In Pro mode: Record everything Assistant's own code types into an agent session before it
+  types it. Agents run with their permission prompts off and can't take typing
+  back, and before this only two of twelve ways of typing left any record, and
+  one typed text from a file with no check. Now the start of a task, the
+  folder-trust answer, the "stalled" nudge, `/cleanup`, merge requests, Slack
+  messages and the Slack session's start-up, "run now" and
+  `cmux-restore-sessions` each write a line to `~/.assistant/effects` first,
+  saying which session, which task, where the text came from and what allowed
+  it (never the text), and a second line saying how it went. When the line
+  can't be written, nothing is typed: Assistant checks it can write before it
+  starts a session for a task, and if it can't, the Tasks tab shows "Dispatch
+  paused — can't record what it types" with the disk and folder to check, and
+  the tasks still waiting. If it had already started a session when it
+  refused, the task is parked and the card names it and the workspace left open:
+  close the workspace and press "Queue to start" on the task. A nudge is
+  skipped, and a Slack message stays queued and you still get a note saying
+  why. A Slack message that can't be confirmed is never typed twice, and when
+  Assistant stops trying it tells you in the message's thread (also when your
+  Slack target is a person): if its text is still in the prompt box only Enter
+  is pressed again, and only while the box still shows that message, so text
+  you are typing there isn't submitted (apart from the split second between
+  that check and the key press). A test fails the
+  build if any other code types into a session. Typing by the
+  `spawn-claude-workspace` skill, by the Slack session's own model and by crash
+  resume isn't recorded yet; see `docs/effects.md`.
 - Show a failure that keeps repeating as one red line at the top of the
   dashboard, with how many times in a row it has happened, since when, a short
   error, and what happens next, all in one box that shows two lines and keeps

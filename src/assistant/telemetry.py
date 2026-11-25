@@ -78,12 +78,14 @@ GUARD_OUTCOME = ("allowed", "held", "blocked", "unknown")
 # verdict (work_queue/triage.py), and why a dispatch didn't end well (bin/pulse.py `dispatch_todo`).
 SOURCE_REASON = ("not_signed_in", "tool_missing", "timeout", "bad_answer", "busy", "other")
 UNSORTED_REASON = ("call_failed", "bad_answer", "not_answered", "out_of_time", "spend_limit", "no_model")
-DISPATCH_REASON = ("session_tool_down", "no_workspace", "no_surface", "session_not_ready", "todo_not_marked", "other")
+DISPATCH_REASON = ("session_tool_down", "no_workspace", "no_surface", "session_not_ready", "todo_not_marked",
+                   "typing_refused", "session_refused_text", "other")
 # What the owner did (feedback.signal), why (reason_code), where, and on what kind of thing.
 SIGNAL = ("done", "drop", "snooze", "undo", "send", "send_handsoff", "approve", "keep", "archive", "mark_read",
           "used_draft", "kept_result", "thumbs_down", "tell", "retract")
 FEEDBACK_REASON = ("none", "not_important", "wrong_order", "not_mine", "already_done", "bad_draft",
-                   "not_what_i_asked", "should_not_have_started", "should_not_have_pinged")
+                   "not_what_i_asked", "should_not_have_started", "should_not_have_pinged",
+                   "wrong_tone", "wrong_facts", "not_how_id_say", "didnt_finish")
 SURFACE = ("work-queue", "dashboard", "slack", "voice", "cli")
 SUBJECT_KIND = ("row", "start_here", "email", "candidate", "result", "draft", "page", "task")
 REASON = ("none", "policy", "user", "limit", "budget", "duplicate", "stale", "unsafe", "not_signed_in", "unknown")
@@ -836,6 +838,39 @@ def events(trace=None, kind=None, subject=None, since=None, limit=200, *, until=
                  "fields": json.loads(r[6])} for r in rows]
     except Exception:  # noqa: BLE001 - reading never breaks work
         return []
+
+
+def read_trace(trace: str, limit: int = 200) -> tuple:
+    """(state, records) for one piece of work, from ONE connection: the newest `limit` records filed under `trace`,
+    newest first, as `events()` gives them, and whether the store could be read. `events()` gives `[]` for a store that
+    is missing, damaged, busy, foreign or written by a newer Assistant, and for one with nothing recorded; this tells
+    them apart, and a store that goes busy between a check and a read can't read as "nothing recorded". The state is
+    "ok", "missing" (there is no store yet, or it has no records table yet, so nothing is recorded), "newer" (a newer
+    Assistant wrote it and this one leaves it alone), "foreign" (another program's file) or "unreadable" (damaged, or
+    busy for longer than the short wait). Never raises and writes no record; like `events()`, opening the store may
+    tighten the database file's permissions to owner-only."""
+    try:
+        if not os.path.isfile(_path(_DB)):
+            return "missing", []
+        conn = _connect(create=False)
+        try:
+            conn.execute("PRAGMA query_only=ON")
+            rows = conn.execute("SELECT id, ts, kind, trace, subject, component, fields FROM events WHERE trace=?"
+                                " ORDER BY ts DESC, seq DESC LIMIT ?",
+                                (trace if isinstance(trace, str) else None, max(1, min(int(limit), QUERY_LIMIT_MAX)))
+                                ).fetchall()
+        finally:
+            conn.close()
+        return "ok", [{"id": r[0], "ts": r[1], "kind": r[2], "trace": r[3], "subject": r[4], "component": r[5],
+                       "fields": json.loads(r[6])} for r in rows]
+    except _NewerSchema:
+        return "newer", []
+    except _ForeignDatabase:
+        return "foreign", []
+    except sqlite3.OperationalError as exc:
+        return ("missing" if "no such table" in str(exc) else "unreadable"), []
+    except Exception:  # noqa: BLE001 - a read that can't tell is "unreadable", never an error
+        return "unreadable", []
 
 
 # ---------------------------------------------------------------- upkeep

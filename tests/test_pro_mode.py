@@ -479,6 +479,30 @@ def test_tasks_tab_shows_the_paused_dispatch_warning(home):
     assert "Dispatch paused — 2 TODO(s) waiting" in todos and "Holding: td-1, td-2." in todos
 
 
+def test_tasks_tab_shows_the_card_for_dispatch_that_cant_record_what_it_types(home):
+    set_mode(home, "pro")  # the card for a refused typing, and the parked row, are Pro mode's
+    title = "Dispatch paused — can't record what it types (2 TODO(s) waiting)"
+    detail = ("Assistant can't write its record of what it types into your sessions, so it won't start tasks. Check "
+              "that your disk isn't full (`df -h ~`) and that `~/.assistant/effects` can be written to "
+              "(`ls -ld ~/.assistant/effects`). Waiting: td-0 First, td-1 Second. Nothing is lost; the next round "
+              "starts them once the record can be written.")
+    page = render_page(home, {"awaiting_input": [{"key": "dispatch-held-no-record", "title": title, "detail": detail}]})
+    todos = page[page.index('data-panel="todos"'):]
+    import html
+    assert html.escape(title) in todos and "Waiting: td-0 First, td-1 Second." in todos
+    assert "<code>df -h ~</code>" in todos and "<code>~/.assistant/effects</code>" in todos
+    assert "`" not in todos[:todos.index("</p>", todos.index("dispatch-cap"))]  # no literal backticks left in the card
+
+
+def test_a_command_in_backticks_on_the_card_is_code_and_markup_inside_it_is_still_escaped(home):
+    set_mode(home, "pro")  # the card for a refused typing, and the parked row, are Pro mode's
+    detail = "Run `echo <b>x</b> & done` then `ls -ld ~`. A lone ` stays."
+    page = render_page(home, {"awaiting_input": [{"key": "dispatch-held-no-record", "title": "t", "detail": detail}]})
+    todos = page[page.index('data-panel="todos"'):]
+    assert "<code>echo &lt;b&gt;x&lt;/b&gt; &amp; done</code>" in todos and "<code>ls -ld ~</code>" in todos
+    assert "<b>x</b>" not in todos and "A lone ` stays." in todos
+
+
 def test_unpause_hint_points_to_a_command_that_exists_in_each_mode(home):
     spec = importlib.util.spec_from_file_location("render_hint", REPO / "bin/render-assistant-page.py")
     module = importlib.util.module_from_spec(spec)
@@ -830,3 +854,21 @@ def test_every_list_the_installer_declares_starts_empty():
     """bash 5 under set -u stops on a list that was declared and never given a value; macOS's bash 3.2 doesn't."""
     declared = re.findall(r"^\s*(?:declare|local) -a (\w+)(.*)$", (REPO / "install.sh").read_text(), re.M)
     assert declared and all(rest.startswith("=(") for _, rest in declared), declared
+
+
+def test_a_parked_task_row_has_no_dispatched_pill_and_its_reason_is_the_blocked_pills_tooltip(home):
+    set_mode(home, "pro")  # the card for a refused typing, and the parked row, are Pro mode's
+    parked = {"id": "td-1", "title": "Fix it", "priority": "P1", "status": "blocked", "autoDispatch": True,
+              "dispatchedAt": "2026-11-24T10:00:00Z", "dispatchedWs": "workspace:1000010007", "parkedBy": "typing_refused",
+              "statusReason": 'Parked: Assistant started workspace:1000010007 but nothing could be typed into it.'}
+    plain = {"id": "td-2", "title": "Other", "priority": "P1", "status": "in-progress", "autoDispatch": True,
+             "dispatchedAt": "2026-11-24T10:00:00Z", "dispatchedWs": "workspace:1000010008"}
+    (home / ".claude").mkdir(exist_ok=True)
+    (home / ".claude/assistant-todo.json").write_text(json.dumps({"items": [parked, plain]}))
+    page = render_page(home, {})
+    first, second = page.index('data-task-id="td-1"'), page.index('data-task-id="td-2"')
+    row = page[first:second] if first < second else page[first:]  # in-progress rows are listed before blocked ones
+    other = page[second:first] if second < first else page[second:]
+    assert ">dispatched</span>" not in row and ">blocked</span>" in row
+    assert 'title="Parked: Assistant started workspace:1000010007 but nothing could be typed into it."' in row
+    assert ">dispatched</span>" in other  # an ordinary dispatched task still shows it

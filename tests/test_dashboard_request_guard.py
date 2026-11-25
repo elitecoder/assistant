@@ -343,7 +343,9 @@ def test_a_token_carrier_or_the_served_page_gets_what_each_route_always_answered
 def test_the_requests_that_send_text_or_start_sessions_really_ran_for_the_token_carrier(server):
     assert send(server, "POST", "/proposal/prop-2/run-now", [("X-Assistant-Token", token())])[0] == 200
     assert send(server, "POST", "/focus/workspace:1", [("X-Assistant-Token", token())])[0] == 200
-    assert [call[1][-1] for call in server.calls if isinstance(call, tuple)].count("Enter") == 1
+    # "Run now" types through bin/cmux-send.py (which records it), once; it used to call `cmux send-key` itself.
+    assert [call[1][1].rsplit("/", 1)[-1] for call in server.calls
+            if isinstance(call, tuple) and call[0] == "run" and len(call[1]) > 2].count("cmux-send.py") == 1
     assert any(call[0] == "run" and call[1][-1] == "workspace:1" for call in server.calls if isinstance(call, tuple))
 
 

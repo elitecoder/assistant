@@ -1751,17 +1751,23 @@ def render_todos_tab(world):
         bucket.sort(key=lambda i: order.get(i.get("status", "open"), 99))
         rows = []
         for it in bucket:
+            pro = mode.is_pro()  # Pro mode: a blocked task's reason is a tooltip, a parked task has no dispatched pill
             src = it.get("source", "")
             url = it.get("url", "")
             url_html = f' <a href="{e(url)}" class="alt-link">[link]</a>' if url else ""
             status = it.get("status", "open")
-            status_pill = f'<span class="pill status-{status}">{e(status)}</span>'
+            # A blocked task's reason is its status pill's tooltip, so a parked task says why it is blocked.
+            reason_tip = (f' title="{e(it.get("statusReason") or "")}"'
+                          if pro and status == "blocked" and it.get("statusReason") else "")
+            status_pill = f'<span class="pill status-{status}"{reason_tip}>{e(status)}</span>'
             td_id = it.get("id", "") or ""
             ad_flag = it.get("autoDispatch")
             # AUTO pill = "this should be auto-dispatched"; once dispatchedAt is set
             # the TODO has already been picked up by a workspace. Show DISPATCHED instead.
             if ad_flag:
-                if it.get("dispatchedAt"):
+                if pro and it.get("parkedBy"):
+                    ad = ""  # parked: a session was started but nothing was typed into it, so it wasn't dispatched
+                elif it.get("dispatchedAt"):
                     ad = ' <span class="pill status-in-progress" title="dispatched at ' + e(it.get("dispatchedAt", "")) + ' to ' + e(it.get("dispatchedWs", "?")) + '">dispatched</span>'
                 else:
                     ad = ' <span class="pill auto-dispatch">auto</span>'
@@ -1839,16 +1845,32 @@ def render_todos_tab(world):
     return _dispatch_cap_notice() + "".join(sections), p0_p1
 
 
+# Held at the cap; paused because the pulse couldn't see which sessions are busy; paused because it couldn't write
+# its record of what it types into sessions.
+DISPATCH_NOTICE_KEYS = ("dispatch-cap-hit", "dispatch-held-no-fleet-view", "dispatch-held-no-record")
+
+
+def _with_code(escaped: str, key: str = "") -> str:
+    """Text between backticks, in a sentence already escaped, shown as code: a command to copy. Escaping comes
+    first, so nothing inside the backticks can be markup. Only the card for a refused typing (Pro mode) has any."""
+    if key != "dispatch-held-no-record":
+        return escaped
+    return re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
+
+
 def _dispatch_cap_notice() -> str:
     """The pulse's "tasks held back" card, shown on the Tasks tab: held at the
-    cap, or paused because it couldn't see which sessions are busy."""
+    cap, or paused because it couldn't see which sessions are busy or couldn't
+    record what it would type."""
     cards = load_assistant_state().get("awaiting_input") or []
+    # The card for a refused typing exists in Pro mode only; the default mode shows the two it always did.
+    keys = DISPATCH_NOTICE_KEYS if mode.is_pro() else DISPATCH_NOTICE_KEYS[:2]
     card = next((c for c in cards if isinstance(c, dict)
-                 and c.get("key") in ("dispatch-cap-hit", "dispatch-held-no-fleet-view")), None)
+                 and c.get("key") in keys), None)
     if not card:
         return ""
     return (f'<div class="section dispatch-cap"><h2>{e(card.get("title") or "Tasks held back")}</h2>'
-            f'<p class="meta">{e(card.get("detail") or "")}</p></div>')
+            f'<p class="meta">{_with_code(e(card.get("detail") or ""), card.get("key"))}</p></div>')
 
 
 def _cmux_workspaces() -> dict[str, dict]:

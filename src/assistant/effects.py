@@ -15,7 +15,8 @@ The ledger is authoritative, not telemetry, so its rules are checks, not hopes:
     A result is a second row, never an edit of the intent.
   * Pointers, not content. A row holds ids. What a target may hold is the allow-list `TARGET_KEYS` (and `msgs`), and
     each value must match its pattern: the person's own Gmail address (needed to undo), a thread or message id, a row
-    pointer, a link's host name, a cmux workspace, a task id, a Slack channel and message time. Nothing else is
+    pointer, a link's host name, a cmux workspace, a task id, a Slack channel and message time, where typed text came from (a fixed name) and a
+    terminal's id. Nothing else is
     accepted, so a subject, a sender's name, message text or an unsubscribe link (which is itself a credential)
     can't be written. Every string also passes through `assistant.redact` on its way to the file.
   * `error` is a class of error, never a server's message: one of `ERRORS`, or `http NNN`. Anything else is
@@ -83,6 +84,10 @@ TARGET_KEYS = {
     "task": re.compile(r"td-[0-9]{1,9}"),
     "channel": re.compile(r"[CDG][A-Z0-9]{8,11}"),
     "ts": re.compile(r"[0-9]{10}\.[0-9]{6}"),
+    # Where typed text came from, as a short fixed name (`task`, `nudge:stranded`, `slack-message`), never the text.
+    "source": re.compile(r"[a-z][a-z-]{0,23}(?::[a-z][a-z-]{0,23})?"),
+    # A terminal's id, for a session the saved cmux state knows only by that id.
+    "surface": re.compile(r"[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}"),
 }
 _MSG_ID = re.compile(_ID)
 MSGS_MAX = 100
@@ -397,11 +402,30 @@ def history(effect_class=None, target=None, trace=None, limit=100) -> list:
     return _publish(found)
 
 
+def readable() -> bool:
+    """Whether the ledger can be read: True for one that doesn't exist yet (nothing is recorded), False for one that is
+    there and can't be read. `history()` gives `[]` for both, so a caller that must not call an unreadable ledger empty
+    asks here too. Never raises."""
+    try:
+        with _STATE_LOCK:
+            _sync()
+        return True
+    except Exception:  # noqa: BLE001 - a read that can't tell is "no"
+        return False
+
+
 @_never_raises(lambda: None)
 def last(effect_class, target):
     """The newest effect of this class on this target, or None."""
     found = history(effect_class, target, limit=1)
     return found[0] if found else None
+
+
+@_never_raises(lambda: None)
+def get(effect_id):
+    """One effect by its id, as `history` gives it (its intent merged with its result), or None."""
+    found = _sync().effects.get(effect_id) if isinstance(effect_id, str) else None
+    return _publish([found])[0] if found else None
 
 
 @_never_raises(list)

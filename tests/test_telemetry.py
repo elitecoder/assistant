@@ -1606,7 +1606,8 @@ def test_the_pulse_does_not_load_telemetry_when_it_starts_and_the_start_up_check
                          env={**os.environ, "HOME": str(home)})
     assert out.stdout.strip().endswith("False")
     wrapper = (REPO / "bin/run-pulse.py").read_text()
-    assert "telemetry" not in wrapper and "pointers" not in wrapper
+    # `pointers` is listed because the typing ledger (Pro mode) needs it, not because the pulse loads telemetry.
+    assert "telemetry" not in wrapper
 
 
 def _run_main(home, argv):

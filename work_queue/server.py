@@ -3,6 +3,7 @@
     GET  /                   the page from the last refresh
     GET  /api/state          decisions, applied results, marks, the rows sent to agents, what the refresh found
                              about each Ready for you item, apply and refresh status
+    GET  /api/why?key=       the steps one row went through, in plain sentences (assistant/why.py)
     POST /api/decide         {"keys": [...], "decision": "approve" | "keep" | "undo" | "clear"}
     POST /api/mark           {"key", "state": "done" | "snoozed" | "dropped" | "clear", "until"} or {"marks": {...}}
     GET  /files/<path>       a file inside ~/dev/generated-docs, read-only, so an agent's file:// links open
@@ -14,6 +15,10 @@
     POST /api/focus          {"id": "td-NNN"}: bring the cmux workspace an agent works in to the front
     POST /api/apply          apply approvals: Slack Later saves, Gmail Trash, and one-click unsubscribes
     POST /api/refresh        re-read the linked sources and rebuild the page
+    POST /api/feedback       {"key", "kind", "signal": "thumbs_down" | "tell" | "used_draft" | "retract", "reason",
+                             "words", "amends"}: record what you said about an item or the page (assistant/feedback.py).
+                             Every other action also records what it means, after it has succeeded, and its answer
+                             gains "feedback": {"recorded": true | false}. A failed record never fails the action.
 
 Every request must name 127.0.0.1 or localhost with the server's port as its
 Host, and POSTs must come from the page's own origin. Outlook approvals only
@@ -59,7 +64,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
-from assistant import effects, mode, pointers, records, todostore
+from assistant import effects, feedback, mode, pointers, records, todostore, why
 
 from work_queue import config, held_saves, page, refresh, tools, traces
 from work_queue.inputs import slack
@@ -890,16 +895,177 @@ def start_apply():
     return 202, {"started": True}
 
 
+READY_KEY = re.compile(r"https://work-queue\.local/ready/(td-\d+)")
+MARK_SIGNALS = {"done": "done", "snoozed": "snooze", "dropped": "drop", "clear": "undo"}
+DECIDE_SIGNALS = {"approve": "approve", "keep": "keep", "undo": "undo", "clear": "undo"}
+# What the page may claim, and about which kinds of item. Everything else is written by the actions themselves.
+GAVE = {"thumbs_down": ("row", "start_here", "email", "draft", "result", "candidate"),
+        "retract": ("row", "start_here", "email", "draft", "result", "candidate"),
+        "tell": ("row", "start_here", "email", "draft", "result", "candidate", "page"),
+        "used_draft": ("draft",)}
+
+
+def kind_of_mark(key: str) -> str:
+    return "result" if READY_KEY.fullmatch(key) else "email" if key.startswith(EMAIL_MARK) else "row"
+
+
+def about(kind: str, key: str) -> dict:
+    """What a feedback record about the item with this key holds, all from the server's own files and never from a
+    request: its subject, its trace id, and the source and sender pointer the last refresh saved for it. A task (a
+    Ready for you result) is named by its id in the key."""
+    if kind == "result":
+        td = READY_KEY.fullmatch(key).group(1)
+        doc = read_store()
+        task = next((i for i in [*doc.get("items", []), *doc.get("completed", [])] if i.get("id") == td), None)
+        queued = next((k for k, q in read_map("queued.json").items() if isinstance(q, dict) and q.get("id") == td), "")
+        found = {"subject": td, "trace": todostore.trace_of(task) if task else "", "ctx": queued}
+    else:
+        found = {"subject": pointers.row_pointer(key), "trace": traces.lookup(key), "ctx": key}
+    ctx = entry(read_map("rowctx.json"), found.pop("ctx"))
+    return {**found, "source": text(ctx.get("source")), "who": text(ctx.get("who"))}
+
+
+def note_feedback(notes) -> dict:
+    """Record one line for each (signal, kind, key). Whether it was recorded, never an error: the action the person
+    took has already happened and stays done. Anything that goes wrong is logged and reported as not recorded."""
+    ids, missed = [], 0
+    deadline = feedback.lock_deadline()  # one wait for the whole batch, not one per record
+    for signal, kind, key in notes:
+        try:
+            ids.append(feedback.record(signal, surface="work-queue", kind=kind, deadline=deadline, defer=True,
+                                       **about(kind, key)))
+        except Exception:  # noqa: BLE001 — feedback never fails the action; the traceback goes to the log
+            traceback.print_exc()
+            missed += 1
+    return {"recorded": not missed, "ids": ids, **({"missed": missed} if missed else {})}
+
+
+def noting(route, notes):
+    """`route`, then, when it succeeded, one feedback record per (signal, kind, key) `notes(body, out)` lists. The
+    answer is the route's own plus `feedback`. A route that fails records nothing."""
+    def run(body: dict):
+        code, out = route(body)
+        if code != 200:
+            return code, out
+        try:
+            listed = list(notes(body, out))
+        except Exception:  # noqa: BLE001
+            traceback.print_exc()
+            return code, {**out, "feedback": {"recorded": False}}
+        return code, {**out, "feedback": note_feedback(listed)}
+    return run
+
+
+def mark_notes(body: dict, out: dict):
+    entries = body.get("marks") if isinstance(body.get("marks"), dict) else {body.get("key"): body}
+    keys = sorted(entries, key=lambda k: not k.startswith(EMAIL_MARK))  # an email's own key stands for its link too
+    trace, seen = traces.lookup_many(keys), set()
+    for key in keys:
+        signal = MARK_SIGNALS[entries[key]["state"]]
+        kind = kind_of_mark(key)
+        if (trace[key], signal) in seen and trace[key]:
+            continue
+        seen.add((trace[key], signal))
+        yield ("kept_result" if signal == "done" and kind == "result" else signal), kind, key
+
+
+def todo_notes(body: dict, out: dict):
+    key = body["key"]
+    if out.get("existing"):
+        return  # nothing was sent: the row had been sent already
+    yield ("send_handsoff" if body.get("mode") == "handsoff" else "send"), kind_of_mark(key), key
+
+
+def gmail_notes(body: dict, out: dict):
+    yield {"archive": "archive", "read": "mark_read", "unarchive": "undo"}[body["action"]], "email", EMAIL_MARK + body["key"]
+
+
+def decide_notes(body: dict, out: dict):
+    return [(DECIDE_SIGNALS[body["decision"]], "candidate", k) for k in body["keys"]]
+
+
+def known_item(kind: str, key) -> bool:
+    """Whether `key` names an item of this kind that the page could have: a row, email or draft the last refresh saw, an
+    approval candidate, or a task that exists. A key sent as the wrong kind is not one."""
+    if not isinstance(key, str):
+        return False
+    if kind == "result":
+        found = READY_KEY.fullmatch(key)
+        doc = read_store()
+        return bool(found) and any(i.get("id") == found.group(1) for i in [*doc.get("items", []), *doc.get("completed", [])])
+    if kind == "candidate":
+        return key in config.read_json(refresh.candidates_path(), {})
+    return key.startswith(EMAIL_MARK) == (kind == "email") and key in read_map("rowctx.json")
+
+
+def give_feedback(body: dict):
+    """A thumbs-down, a few words, a used draft, or a take-back from the page: the only signals the page may claim
+    itself. The item is named by its key, which must be one the page could have; its subject, trace and context come
+    from here. A reason is a second thumbs-down that amends the first, and the page may take back only what the page
+    gave (a thumbs-down, a tell, a used draft)."""
+    signal, kind, key = body.get("signal"), body.get("kind"), body.get("key")
+    words, reason, amends = body.get("words") or "", body.get("reason") or "", body.get("amends") or ""
+    if not all(isinstance(v, str) for v in (signal, kind, words, reason, amends)) or kind not in GAVE.get(signal, ()):
+        return 400, {"error": "unknown signal or kind"}
+    if signal == "tell" and not words.strip():
+        return 400, {"error": "Write something to tell Assistant first"}
+    if reason and reason not in feedback.REASONS_FOR.get(kind, ()):
+        return 400, {"error": "that reason doesn't fit this kind of item"}
+    if kind != "page" and not known_item(kind, key):
+        return 400, {"error": "unknown item"}
+    target = feedback.standing(amends) or {}
+    if signal == "retract" and (target.get("signal") not in feedback.TAKE_BACK or target.get("amends")):
+        return 400, {"error": "only something you told Assistant can be taken back here, and only once"}
+    found = about(kind, key) if kind != "page" else {"subject": "", "trace": "", "source": "", "who": ""}
+    try:
+        made = feedback.record(signal, surface="work-queue", kind=kind, words=words, reason=reason, amends=amends,
+                               defer=True, **found)
+    except feedback.Unrecorded:
+        return 500, {"error": "Assistant couldn’t save that. What you were doing isn’t affected"}
+    except ValueError as exc:
+        return 400, {"error": str(exc)}
+    return 200, {"id": made, "view": feedback.views().get(feedback.view_key(found["subject"], kind), {})}
+
+
+KEY_MAX = 2000
+
+
+def why_of(query: str) -> dict:
+    """The answer to "Why is this here?" for the row with this `key` (the one the page uses: see `traces.lookup_many`).
+    A key with no id, an unknown key and a malformed one all get the same "none" answer, so it never says whether a
+    key exists. A Ready for you result answers with the steps of the row it came from. Takes no lock: it only reads."""
+    keys = urllib.parse.parse_qs(query).get("key") or [""]
+    key = keys[0]
+    if not key or len(key) > KEY_MAX or not key.isprintable():
+        return why.empty("none")
+    try:
+        found = READY_KEY.fullmatch(key)
+        if found:
+            doc = read_store()
+            task = next((i for i in [*doc.get("items", []), *doc.get("completed", [])]
+                         if i.get("id") == found.group(1)), None)
+            row = next((k for k, q in read_map("queued.json").items() if isinstance(q, dict) and q.get("id") == found.group(1)), "")
+            trace = (traces.lookup(row) if row else "") or (todostore.trace_of(task) if task else "")  # the row's id wins
+        else:
+            trace, row = traces.lookup(key), key
+        return why.read(trace, traces.first_seen(row), row=bool(row))  # a result with no row has no "before" to speak of
+    except Exception:  # noqa: BLE001 — a record that can't be read answers in words, never with an error page
+        traceback.print_exc()
+        return why.empty("unreadable")
+
+
 def state() -> dict:
     queued = queued_view()
     return {"decisions": config.read_json(path("decisions.json"), {}), "applied": config.read_json(path("applied.json"), {}),
             "status": config.read_json(path("apply-status.json"), {}), "sent": sorted(queued), "queued": queued,
             "marks": config.read_json(path("marks.json"), {}), "mail": read_map("mail-actions.json"),
-            "checks": read_map("ready-checks.json"), "refresh": refresh_state(), "slack_held": held_saves.line()}
+            "checks": read_map("ready-checks.json"), "refresh": refresh_state(), "feedback": feedback.views(),
+            "slack_held": held_saves.line()}
 
 
-ROUTES = {"/api/decide": decide, "/api/mark": set_marks, "/api/todo": queue_todo, "/api/gmail": gmail_action,
-          "/api/focus": focus_workspace, "/api/apply": lambda body: start_apply(),
+ROUTES = {"/api/decide": noting(decide, decide_notes), "/api/mark": noting(set_marks, mark_notes),
+          "/api/todo": noting(queue_todo, todo_notes), "/api/gmail": noting(gmail_action, gmail_notes),
+          "/api/feedback": give_feedback, "/api/focus": focus_workspace, "/api/apply": lambda body: start_apply(),
           "/api/refresh": lambda body: start_refresh()}
 
 
@@ -952,6 +1118,8 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:  # noqa: BLE001 — a broken saved file answers with an error, never a dropped request
                 return self.failed(exc)
             return self.send_json(200, found)
+        if route == "/api/why":
+            return self.send_json(200, why_of(urllib.parse.urlsplit(self.path).query))
         if route in ("/", "/index.html"):
             site = refresh.site_path()
             body = site.read_text() if site.exists() else page.placeholder(
@@ -960,6 +1128,14 @@ class Handler(BaseHTTPRequestHandler):
         return self.send_json(404, {"error": "not found"})
 
     def do_POST(self):
+        try:
+            return self.handle_post()
+        finally:
+            with contextlib.suppress(OSError):  # the person has gone away: telemetry is still owed
+                self.wfile.flush()
+            feedback.emit_pending()  # telemetry for what was just recorded, after the answer has gone
+
+    def handle_post(self):
         if self.refused():
             return None
         port = self.server.server_address[1]

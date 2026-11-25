@@ -395,8 +395,8 @@ CHECKS = (
     (
         "reading events can't write",
         M,
-        '            conn.execute("PRAGMA query_only=ON")\n',
-        "            pass\n",
+        '            conn.execute("PRAGMA query_only=ON")\n            sql = "SELECT id',
+        '            pass\n            sql = "SELECT id',
         T + "test_events_is_read_only_and_capped",
     ),
     (

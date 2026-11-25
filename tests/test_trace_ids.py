@@ -27,6 +27,7 @@ PR = {"number": 7, "title": "Fix it", "url": "https://github.com/o/r/pull/7", "r
       "author": {"login": "ana"}, "createdAt": "2026-11-02T10:00:00Z", "isDraft": False}
 PR_LINK = PR["url"]
 DAY = "2026-11-18"
+MADE = 1795000000.0  # the clock when an id is made
 OWN = "tr-" + "ab" * 8
 LEGACY = "tl-" + "cd" * 8
 
@@ -44,6 +45,7 @@ def day(offset: int) -> str:
 def today(monkeypatch):
     """The refresh's clock, fixed, so no test depends on the date."""
     monkeypatch.setattr(traces, "today", lambda: DAY)
+    monkeypatch.setattr(traces, "now", lambda: MADE)
 
 
 def load_pulse():
@@ -79,7 +81,7 @@ def test_a_refresh_notes_the_day_a_row_was_seen_and_writes_nothing_when_that_has
     traces.stamp([[ROW]], day(-3))
     assert traces.path().read_text() == first and traces.path().stat().st_mtime == 1
     traces.stamp([[ROW]], DAY)
-    assert registry()[ROW] == {"trace": json.loads(first)[ROW]["trace"], "seen": DAY}
+    assert registry()[ROW] == {"trace": json.loads(first)[ROW]["trace"], "seen": DAY, "first": MADE}
 
 
 def test_an_id_once_stored_is_never_replaced(wq):
@@ -147,7 +149,7 @@ def test_a_bare_id_is_adopted_and_an_odd_entry_or_a_future_day_is_mended(wq):
     config.write_json(wq.data / "queued.json", ["not", "an", "object"])
     traces.stamp([[ROW], [7, None, ""]], DAY)
     assert registry() == {"https://a": {"trace": OWN, "seen": DAY}, "https://d": {"trace": LEGACY, "seen": DAY},
-                          "https://e": {"trace": OWN, "seen": DAY}, ROW: {"trace": registry()[ROW]["trace"], "seen": DAY}}
+                          "https://e": {"trace": OWN, "seen": DAY}, ROW: {"trace": registry()[ROW]["trace"], "seen": DAY, "first": MADE}}
     assert traces.lookup("https://a") == OWN and traces.lookup("https://nowhere") == ""
 
 
@@ -386,7 +388,7 @@ def test_a_send_mints_and_saves_an_id_for_a_row_that_has_none(wq, today):
     server.queue_todo({"key": ROW, "title": "A"})
     task_id = wq.items()[-1]["trace"]
     assert pointers.is_trace_id(task_id) and task_id.startswith("tr-")
-    assert registry()[ROW] == {"trace": task_id, "seen": DAY}
+    assert registry()[ROW] == {"trace": task_id, "seen": DAY, "first": MADE}
 
 
 def test_an_id_in_the_request_is_ignored(wq):

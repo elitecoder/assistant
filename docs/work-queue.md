@@ -189,6 +189,135 @@ its error at the top of the page, and the other sources still render.
 - **Slack saves**: Later saves that look finished, with the last message as
   evidence.
 
+### Tell Assistant what's wrong
+
+These rows have a small thumbs-down and a **Tell Assistant** link, after their
+other buttons: every Open list row, Start here item, email in the Email tab,
+model draft and Ready for you result, and every row waiting for your approval
+(**Ready to delete**, **Ready to close**, and the unsubscribe rows). A draft is
+marked **Draft** and its link reads **Tell Assistant about this draft**. Nothing
+about the other buttons changes.
+
+- **Thumbs-down**: one tap says it's wrong, and nothing else opens, so you can
+  go down a list tapping. A small note under the buttons says "You said: this
+  is wrong. Add a reason · Undo". Tapping the thumbs-down again takes it back,
+  the same as **Undo**. A reason is optional: **Add a reason** opens a small
+  list over the page, close to the note and never over another row's thumbs-down
+  or **Tell Assistant**: **Not important**, **Wrong order**, **Not mine**,
+  **Already done** (rows, Start here items and email), **Wrong tone**, **Wrong
+  facts**, **Not how I'd say it** (a draft), or **Not what I asked**, **Didn't
+  finish**, **Should not have been started** (a Ready for you result). **Skip**,
+  Esc, or a click anywhere else closes the list, and a click on another row's
+  thumbs-down still counts for that row. Rows waiting for approval have no
+  reasons.
+- **Change or take it back**: once you have given a reason the note reads, for
+  example, "You said: not important. Change · Undo". **Change** opens the list
+  again and the new reason replaces the old. The note is still there after a
+  reload or the next refresh.
+- **Tell Assistant**: opens a box for your own words. **Send** (or Cmd+Enter)
+  records them, **Cancel** (or Esc) closes the box. The one at the top of the
+  page, **Tell Assistant about this page**, is about the page as a whole, and
+  says beside it: "Assistant keeps what you tell it. It doesn't use it yet;
+  that's planned for the next update."
+- If a note can't be saved, the page says "Assistant couldn't save that. Try
+  again." and keeps your words. For Done, the page says "Done. Assistant
+  couldn't record that for later." For Send to Agent and the other buttons it
+  says "That worked. Assistant couldn't record it for later." The work still
+  happens as before. See [Feedback](feedback.md) for what is kept.
+- A refresh that finishes while you are choosing a reason or typing doesn't
+  reload the page. It tells you and waits for you.
+
+### Why is this here?
+
+Every item with a **Tell Assistant** link also has a short **Why?** link just
+after it (not a draft, and not the link about the whole page). Its full name
+is "Why is this here?": that is what a screen reader says and what shows when
+you point at it. Nothing opens until you select it. Then a box opens under the
+item's own line of buttons, above any draft, and starts with the heading **Why
+is this here?** Focus moves into it, so one Tab reaches **Close**. It lists what
+Assistant recorded about the item, oldest first, each step with its time.
+A second click on **Why?**, **Close** or Esc closes it. Esc closes a note box or
+the list of reasons first if one is open, and otherwise the box you opened last.
+Changing tabs closes any open box. A Ready for you result shows the steps of the
+row it came from.
+
+Here is a row that was sorted, sent to an agent, finished, and checked:
+
+```
+Nov 18, 11:06 am   Assistant first saw this, in GitHub.
+Nov 18, 11:07 am   The model sorted it into Do first and suggested you do it yourself. Model: claude-sonnet-5-5. Sorting rules: version 1a2b3c4d.
+Nov 18, 2:30 pm    You sent it to an agent for a first pass. It became task td-41.
+Nov 18, 2:31 pm    Assistant tried to start an agent 3 times and couldn't: cmux didn't answer. It will try again by itself. Last time: Nov 18, 2:41 pm.
+Nov 18, 2:46 pm    Assistant started an agent on it and typed the task's instruction into the new session.
+Nov 18, 3:10 pm    The agent reported it finished.
+Nov 18, 3:20 pm    Assistant checked the result: the pull request is merged.
+Nov 18, 3:21 pm    Archived in Gmail, because you pressed the button.
+```
+
+Steps that say the same thing one after another (an hour of failed starts) are
+one step: it keeps the first time, says how many, and ends "Last time:" with the
+last one. When the read stopped before the oldest record, a run that reaches the
+oldest one says "at least" and the footer says only the newest records were
+read. A failed start says only what is true of it. When cmux didn't answer,
+couldn't open a workspace or had no window to type in, the task stays queued and
+Assistant "will try again by itself". When the agent session wasn't ready, the
+task is marked as started and Assistant does not start it again by itself;
+**Queue to start** on the dashboard doesn't either. To run it again, remove the
+task (it names it, for example "remove task td-41") on the Tasks tab and send the
+row to an agent again; it keeps the same trail. When Assistant started an agent
+but couldn't mark the task as started, it may start a second one by itself. Other
+failures promise nothing.
+
+A start is one step. When the record of what Assistant types into sessions shows it
+typed the task's instruction, the start says so ("…and typed the task's instruction
+into the new session", or "…but couldn't tell if the session received it. Look at
+the session to check." when it couldn't tell). The folder-trust answer is part of
+the start: it isn't mentioned there, and shows as a step of its own only when it
+stands alone (for example when the start then failed). A typing that belongs to no
+start is a step of its own and says what it was ("Assistant nudged the session
+because it looked stalled.", "Assistant typed /cleanup into the session."); one that
+failed says "…but it didn't go through", and one that never got an answer says it
+may or may not have gone through. It says "because you pressed the button" only for
+a typing you started.
+
+When a session was opened and then nothing could be typed into it (cmux refused the
+text, or Assistant couldn't record the typing), the step says the task is marked
+blocked and what to do: close the workspace it opened and press **Queue to start**
+on the task on the Tasks tab of the Assistant dashboard. When Assistant couldn't
+record what it types before any session was opened, the task stays queued and the
+step says it will try again by itself. (Removing the task and sending the row again
+is the way out only of a start that stopped because the session wasn't ready.)
+
+Under the steps it says "This is everything Assistant has recorded about this
+item. The record stays on this Mac." when it read all of it, and "Some of it
+couldn't be read, so this may be missing steps. The record stays on this Mac."
+when it couldn't read part (the telemetry store, the changes record or what you
+said). The box is built from the record Assistant keeps on your Mac (see
+[Telemetry](telemetry.md), [Effects](effects.md) and [Feedback](feedback.md)). It
+holds fixed words, ids, states and times, and never a title, a sender, message
+text, a link, a path, the reason the model gave or the words you typed. It shows
+the newest 50 steps and says how many earlier ones aren't shown ("At least" when
+Assistant stopped reading before the end).
+
+When there is nothing to show it says why: "Assistant has no record for this
+yet. It starts one at the next refresh." (the row has no id yet), "Nothing has
+been recorded about this since Assistant started keeping this record." or, when
+it can't read part of its record, "Assistant can't read its record right now.
+Nothing is lost; try again in a minute." plus whatever it could read. A row that
+was already on the page before Assistant began keeping the record ends with
+"This row was already here when Assistant started keeping this record, so
+earlier steps aren't shown."
+
+A refresh that finishes while the box is open doesn't reload the page; it
+tells you and waits. **Why?** is short on purpose and costs a title little room:
+on a laptop it takes about 34 px from it. Between 621 and 860 px wide (a tablet,
+or a laptop zoomed to 200%) the buttons now sit under the title, as they do on a
+phone, so a title is never squeezed narrower than 200 px. What that costs: a
+plain Open list row there is about 98 px tall where it was 61, and its title has
+the full width. On a phone (390 wide) the link adds no line to an Open list row,
+an agent row, a row with a draft, an email, a row waiting for approval, a Start
+here item or a Ready for you result. At 320 wide a row can gain a line.
+
 ### Ready for you
 
 **Ready for you** lists each TODO you sent from the page that's done or
@@ -507,7 +636,9 @@ refresh after this update matches rows you had already sent with their TODOs.
 The first refresh or pulse after the update adds the id to each TODO it
 touches. For a file written by hand or by a skill, it may also change the
 file's spacing and how accented characters are written, never what it says.
-Nothing shows any id yet, and nothing changes for you. If the id file is ever
+The id file also keeps when each row was first seen, which is where **Why is
+this here?** starts; a row that was on the page before that was kept has no such
+time. Nothing else shows an id. If the id file is ever
 damaged, the refresh keeps a copy next to it as `traces.json.damaged` and
 starts a new one.
 
@@ -646,8 +777,9 @@ gives each reason once, and the next **Apply approvals** tries again.
 |---|---|
 | `~/.assistant/work-queue/sources.json` | Your linked sources |
 | `~/.assistant/work-queue/browser-profile/` | The Slack browser session |
-| `~/.claude/work-queue/` (or `$WQ_DATA`) | Decisions, applied results, marks, the TODOs rows were sent to and in which mode, the triage cache and budget reservations, what the last refresh found about each Ready for you item in `ready-checks.json`, the built page in `site/`, each row's id in `traces.json`, which unsorted rows were already noted today in `unsorted-noted.json`, the Gmail conversation behind each Gmail row in `emails.json`, the emails you archived or marked read in `mail-actions.json`, and the refresh snapshots in `work/`, including the row snapshots for **Since last night** |
+| `~/.claude/work-queue/` (or `$WQ_DATA`) | Decisions, applied results, marks, the TODOs rows were sent to and in which mode, the triage cache and budget reservations, what the last refresh found about each Ready for you item in `ready-checks.json`, the built page in `site/`, each row's id in `traces.json`, which unsorted rows were already noted today in `unsorted-noted.json`, the Gmail conversation behind each Gmail row in `emails.json`, the emails you archived or marked read in `mail-actions.json`, and the refresh snapshots in `work/`, including the row snapshots for **Since last night**, each row's source and a hash of its sender (never the name) in `rowctx.json` |
 | `~/.assistant/effects/effects.jsonl` | The record of each Gmail change and unsubscribe, written before it runs; see [the effects record](effects.md) |
+| `~/.assistant/feedback/feedback.jsonl` | What you told Assistant on the page, one line each; see [Feedback](feedback.md) |
 | `~/.assistant/logs/work-queue.launchd.*` | The server's output |
 
 Tests point `HOME` and `WQ_DATA` at temporary folders, so they never touch

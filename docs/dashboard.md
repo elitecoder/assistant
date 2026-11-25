@@ -87,6 +87,24 @@ page, so they can do whatever the dashboard can.
   connected**, or **Needs attention**, with a how-to-connect hint inline.
 - **Awaiting input**, **Session details**, **Background work**, and **Tasks**
   show open cards, per-workspace detail, background work, and your TODO list.
+  The Tasks tab also shows a **Dispatch paused** card when Assistant started
+  no task this round because it couldn't count your busy sessions. In Pro mode
+  a card whose title reads "can't record what it types" can also appear: it
+  means Assistant couldn't write its record of what it types into your
+  sessions. For that one, check that your disk
+  isn't full (`df -h ~`) and that `~/.assistant/effects` can be written to
+  (`ls -ld ~/.assistant/effects`). The card lists the tasks still waiting.
+  When Assistant had already started a session for a task and then wouldn't
+  type into it, it parks that task (it shows as blocked) and the card names it
+  and the workspace left open for it: close that workspace, then press
+  "Queue to start" on the task, which turns it back into an open task for the next
+  round. The card stays as long as a parked task does, even on rounds where
+  nothing is blocked. A name cmux gives a session that Assistant doesn't
+  recognise has its own card, which says the tasks waiting will park the same
+  way until you update Assistant. If you turn Pro mode off, a task parked in
+  Pro mode stays blocked: close its workspace and press "Queue to start" on it.
+  See
+  [Typing into agent sessions](effects.md#typing-into-agent-sessions).
 
 ## Decisions and goals
 
