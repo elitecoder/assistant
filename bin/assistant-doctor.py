@@ -298,8 +298,9 @@ def check_slack_owner() -> Check:
                  detail="the target is a channel and neither SLACK_USER_ID nor slack.owner in ~/.assistant/config.json "
                         "is set to a member ID" + (MISTYPED_OWNER if env_id else "") +
                         ", so Assistant can't tell which messages are yours and types every "
-                        "member's messages into the session, as it always has. Fine if you are the only person in "
-                        "that channel",
+                        "member's messages into the session, as it always has. The Slack reactor can't tell either, so "
+                        "a reaction with your task emoji from any member starts a task, as it always has. Fine if you "
+                        "are the only person in that channel",
                  remedy="to have only your own messages typed, add `export SLACK_USER_ID=U…` (your member ID: your "
                         "Slack profile, the three dots, Copy member ID) to ~/.zprofile (the service reads that file, "
                         "not ~/.zshrc), then run `launchctl kickstart -k gui/$UID/com.assistant.assistant-comms`")

@@ -9,6 +9,21 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ## [Unreleased]
 
+### Fixed
+- In Pro mode, a Slack reaction with your task emoji starts a task by itself
+  again when Assistant doesn't know your Slack member ID. Since 2026-11-24 such
+  a reaction was saved as an "Ask me" task that never started, so none of your
+  reactions started work if you had never set `SLACK_USER_ID` or `slack.owner`.
+  In Pro mode it is now captured as it was before: a plain title, the normal
+  priority, started by itself (unless `TODO_AUTODISPATCH=0`), with no limit on
+  how many wait. Until you set `SLACK_USER_ID`, anyone in a channel Assistant is
+  in can start a task the same way; the start-up line and `assistant-doctor.py`
+  say so, and setting `SLACK_USER_ID` restricts it to your reactions. A
+  mistyped `SLACK_USER_ID` no longer hides an owner named in
+  `~/.assistant/config.json` (it is still reported in the log). The default
+  mode is unchanged: an unknown owner is still saved as "Ask me". Tasks already
+  saved as "Ask me" stay as they are; they start with Queue to start.
+
 ### Security
 - Stop a Slack reaction from anyone else starting an agent on your Mac. Until
   now, when `SLACK_USER_ID` wasn't set, a reaction with your task emoji from

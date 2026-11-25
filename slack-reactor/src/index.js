@@ -25,6 +25,7 @@ import path from 'path'
 import crypto from 'crypto'
 import { addTodo, MACHINE, TODO_PATH } from './todo-store.js'
 import { describeOwner, handleReaction, resolveOwner } from './capture.js'
+import { makeModeReader } from './mode.js'
 
 const { App } = boltPkg
 
@@ -33,6 +34,9 @@ const BOT_TOKEN = process.env.SLACK_BOT_TOKEN // xoxb- — authorizes the app, r
 const APP_TOKEN = process.env.SLACK_APP_TOKEN // xapp- — Socket Mode websocket (scope connections:write)
 // The owner: only their reactions start work. SLACK_USER_ID, else the Slack user id the channel setup saved.
 const OWNER = resolveOwner(process.env, os.homedir())
+// The same, as Pro mode works it out (a mistyped SLACK_USER_ID is skipped); said once, by the line above.
+const OWNER_PRO = resolveOwner(process.env, os.homedir(), () => {}, true)
+const currentMode = makeModeReader({ home: os.homedir() })
 const EMOJIS = new Set(
   (process.env.TODO_EMOJI ?? 'mukuls2')
     .split(',')
@@ -204,7 +208,7 @@ app.event('message', async ({ event }) => {
 // --- event handler ---------------------------------------------------------
 app.event('reaction_added', ({ event }) =>
   handleReaction(event, {
-    bot, userName, addTodo, owner: OWNER, emojis: EMOJIS, machine: MACHINE, priority: TODO_PRIORITY,
+    bot, userName, addTodo, owner: OWNER, ownerPro: OWNER_PRO, mode: currentMode, emojis: EMOJIS, machine: MACHINE, priority: TODO_PRIORITY,
     autoDispatchOn: TODO_AUTODISPATCH,
   }),
 )
@@ -214,13 +218,14 @@ app.event('reaction_added', ({ event }) =>
   try {
     const auth = await bot.auth.test()
     BOT_USER_ID = auth.user_id ?? null
+    const pro = (await currentMode()) === 'pro'
     console.error(
       `slack-reactor up (Socket Mode)\n` +
         `  machine:  ${MACHINE}\n` +
         `  team:     ${auth.team}\n` +
         `  bot:      ${auth.user} (${auth.user_id})\n` +
         `  emoji(s): ${[...EMOJIS].join(', ')}\n` +
-        `  ${describeOwner(OWNER)}\n` +
+        `  ${describeOwner(pro ? OWNER_PRO : OWNER, pro)}\n` +
         `  priority: ${TODO_PRIORITY}  autoDispatch=${TODO_AUTODISPATCH}\n` +
         `  todo:     ${TODO_PATH}\n` +
         `  NOTE: bot only sees reactions in channels it has been /invite-d to.`,

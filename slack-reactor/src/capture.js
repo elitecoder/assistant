@@ -33,12 +33,14 @@ export const rulesFor = (code) =>
 // Who the owner is: SLACK_USER_ID, else slack.owner, else slack.target (where notifications go, so it must be
 // your own id) from ~/.assistant/config.json, each only when it has the shape of a user id; else nobody.
 // A SLACK_USER_ID that isn't a user id is reported (never echoed: it may be a pasted token) and the owner is unknown.
-export function resolveOwner(env, home, warn = console.error) {
+// In Pro mode (`pro`) it is skipped instead, as the Slack listener does (bin/comms-listen.py owner_id): a typo must not
+// throw away an owner the config names, and an unknown owner there means reactions start work as they did before.
+export function resolveOwner(env, home, warn = console.error, pro = false) {
   const fromEnv = (env.SLACK_USER_ID ?? '').trim()
   if (fromEnv) {
     if (isUserId(fromEnv)) return { id: fromEnv, how: 'SLACK_USER_ID' }
     warn('[reactor] SLACK_USER_ID is set but is not a Slack user id (a U or W followed by capital letters and digits), so the owner is unknown')
-    return { id: null, how: 'invalid' }
+    if (!pro) return { id: null, how: 'invalid' }
   }
   try {
     const slack = JSON.parse(fs.readFileSync(join(home, '.assistant', 'config.json'), 'utf8'))?.slack
@@ -50,20 +52,26 @@ export function resolveOwner(env, home, warn = console.error) {
   return { id: null, how: 'unknown' }
 }
 
-export function describeOwner(owner) {
+export function describeOwner(owner, pro = false) {
   const only = 'only your reactions are captured and start work'
   if (owner.how === 'SLACK_USER_ID') return `owner: ${owner.id}, from SLACK_USER_ID; ${only}`
   if (owner.how === 'config-owner') return `owner: ${owner.id}, from slack.owner in ~/.assistant/config.json; ${only}`
   if (owner.how === 'config-target') return `owner: ${owner.id}, from slack.target in ~/.assistant/config.json; ${only}`
+  if (pro) {
+    return 'owner: unknown (SLACK_USER_ID is not set to a Slack user id and ~/.assistant/config.json has none), so every member\'s reaction is captured and starts work, as it did before; ' +
+      'set SLACK_USER_ID to your Slack user id to capture only yours'
+  }
   return 'owner: unknown (SLACK_USER_ID is not set to a Slack user id and ~/.assistant/config.json has none), so every reaction is captured as Ask me and none starts by itself; set SLACK_USER_ID to fix this'
 }
 
 // Whose reaction does what. autoDispatch: true starts by itself, false is manual only, null is "Ask me".
-export function decide(owner, reactor, autoDispatchOn) {
+// In Pro mode (`pro`) an unknown owner is not "Ask me": every reaction is captured as it was before the owner rule.
+export function decide(owner, reactor, autoDispatchOn, pro = false) {
   if (owner.id) {
     if (reactor !== owner.id) return { capture: false }
     return { capture: true, autoDispatch: autoDispatchOn }
   }
+  if (pro) return { capture: true, autoDispatch: autoDispatchOn }
   return { capture: true, autoDispatch: autoDispatchOn ? null : false }
 }
 
@@ -185,13 +193,16 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /**
  * Handle one reaction_added event. `ctx`: bot (Slack client), userName, owner, emojis, priority,
- * autoDispatchOn, machine, addTodo.
+ * autoDispatchOn, machine, addTodo. `mode` (async, gives 'pro' or 'default'; absent means the default mode) and
+ * `ownerPro` (the owner as Pro mode works it out; falls back to `owner`) are for Pro mode.
  */
 export async function handleReaction(event, ctx) {
-  const { bot, owner, emojis, machine } = ctx
+  const { bot, emojis, machine } = ctx
   const reaction = (event.reaction ?? '').split('::')[0] // strip skin tone
   if (!emojis.has(reaction)) return // routed to a different machine/emoji
-  const verdict = decide(owner, event.user, ctx.autoDispatchOn)
+  const pro = ctx.mode ? (await ctx.mode()) === 'pro' : false
+  const owner = (pro && ctx.ownerPro) || ctx.owner
+  const verdict = decide(owner, event.user, ctx.autoDispatchOn, pro)
   if (!verdict.capture) return // someone else reacted
   if (event.item?.type !== 'message') return
 
@@ -225,7 +236,7 @@ export async function handleReaction(event, ctx) {
     /* permalink optional */
   }
 
-  const unknownOwner = !owner.id
+  const unknownOwner = !owner.id && !pro // only the default mode asks; Pro starts work as it did before the owner rule
   const built = await buildTodo({ messages, link, machine, userName: ctx.userName, unknownOwner, ownerInvalid: owner.how === 'invalid', reactor: event.user, reactedTs: ts, partial })
   const title = unknownOwner ? UNCONFIRMED_TITLE + built.title : built.title
   const source = `slack-react:${channel}:${threadTs}`

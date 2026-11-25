@@ -44,6 +44,10 @@ def test_reactor_capture_node_tests_pass():
     node_tests("capture.test.js")
 
 
+def test_reactor_mode_node_tests_pass():
+    node_tests("mode.test.js")
+
+
 def test_reactor_todo_store_node_tests_pass():
     node_tests("todo-store.test.js")
 

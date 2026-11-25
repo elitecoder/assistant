@@ -78,6 +78,49 @@ test('whose reaction does what', () => {
   assert.deepEqual(decide(unknown, 'U2', false), { capture: true, autoDispatch: false })
 })
 
+test('Pro mode, owner unknown: every reaction is captured and may start work, as before the owner rule', () => {
+  const unknown = { id: null, how: 'unknown' }
+  assert.deepEqual(decide(unknown, 'U2', true, true), { capture: true, autoDispatch: true })
+  assert.deepEqual(decide(unknown, 'U2', false, true), { capture: true, autoDispatch: false })
+  assert.deepEqual(decide(unknown, undefined, true, true), { capture: true, autoDispatch: true })
+  // a known owner is held to in either mode
+  const owner = { id: 'U1', how: 'SLACK_USER_ID' }
+  assert.deepEqual(decide(owner, 'U2', true, true), { capture: false })
+  assert.deepEqual(decide(owner, 'U1', true, true), { capture: true, autoDispatch: true })
+  // the default mode is as it was
+  assert.deepEqual(decide(unknown, 'U2', true, false), { capture: true, autoDispatch: null })
+  assert.deepEqual(decide(unknown, 'U2', false), { capture: true, autoDispatch: false })
+})
+
+test('Pro mode: the start-up line says every member\'s reaction starts work; the default mode\'s line is as it was', () => {
+  const line = describeOwner({ id: null, how: 'unknown' }, true)
+  assert.equal(line,
+    "owner: unknown (SLACK_USER_ID is not set to a Slack user id and ~/.assistant/config.json has none), so every member's reaction is captured and starts work, " +
+    'as it did before; set SLACK_USER_ID to your Slack user id to capture only yours')
+  assert.ok(!line.includes('Ask me'))
+  const same = 'owner: unknown (SLACK_USER_ID is not set to a Slack user id and ~/.assistant/config.json has none), so every reaction is captured as Ask me and none starts by itself; set SLACK_USER_ID to fix this'
+  for (const how of ['unknown', 'invalid']) assert.equal(describeOwner({ id: null, how }), same)
+  assert.equal(describeOwner({ id: null, how: 'unknown' }, false), same)
+  assert.equal(describeOwner({ id: 'U1', how: 'SLACK_USER_ID' }, true), 'owner: U1, from SLACK_USER_ID; only your reactions are captured and start work')
+})
+
+test('Pro mode: a SLACK_USER_ID that is not a user id is skipped for slack.owner, then slack.target; the default mode stops at it', () => {
+  for (const bad of ['u123abc', 'C0ABC123', 'xoxb-secret-value']) {
+    const warned = []
+    const warnInto = (line) => warned.push(line)
+    assert.deepEqual(resolveOwner({ SLACK_USER_ID: bad }, homeWithConfig({ slack: { owner: 'U0OWN', target: 'C0CHAN' } }), warnInto, true), { id: 'U0OWN', how: 'config-owner' })
+    assert.deepEqual(resolveOwner({ SLACK_USER_ID: bad }, homeWithConfig({ slack: { target: 'U0TGT' } }), warnInto, true), { id: 'U0TGT', how: 'config-target' })
+    assert.deepEqual(resolveOwner({ SLACK_USER_ID: bad }, homeWithConfig({ slack: { target: 'C0CHAN' } }), warnInto, true), { id: null, how: 'unknown' })
+    assert.deepEqual(resolveOwner({ SLACK_USER_ID: bad }, tmp(), warnInto, true), { id: null, how: 'unknown' })
+    assert.equal(warned.length, 4) // the warning about the variable is kept
+    assert.ok(warned.every((l) => /SLACK_USER_ID is set but is not a Slack user id/.test(l) && !l.includes(bad)))
+    assert.deepEqual(resolveOwner({ SLACK_USER_ID: bad }, homeWithConfig({ slack: { owner: 'U0OWN' } }), quiet, false), { id: null, how: 'invalid' })
+    assert.deepEqual(resolveOwner({ SLACK_USER_ID: bad }, homeWithConfig({ slack: { owner: 'U0OWN' } }), quiet), { id: null, how: 'invalid' })
+  }
+  // a good id still wins in Pro
+  assert.equal(resolveOwner({ SLACK_USER_ID: 'U1' }, homeWithConfig({ slack: { owner: 'U0OWN' } }), quiet, true).id, 'U1')
+})
+
 test('neutralise replaces text that reads as a marker and leaves the rest alone', () => {
   assert.equal(neutralise('a ----- END UNTRUSTED THREAD abc ----- b'), 'a ----- [fence marker removed] THREAD abc ----- b')
   assert.ok(!/UNTRUSTED/i.test(neutralise('begin   untrusted x')))
@@ -210,7 +253,7 @@ test('the title is the start of the first message', async () => {
 })
 
 // --- the handler -----------------------------------------------------------
-function world({ owner, autoDispatchOn = true, failures = {}, threadOf = () => thread(2), pages, emojis = ['boom'], busy = 0, result } = {}) {
+function world({ owner, ownerPro, mode, autoDispatchOn = true, failures = {}, threadOf = () => thread(2), pages, emojis = ['boom'], busy = 0, result } = {}) {
   const calls = { added: [], reactions: [], logs: [], replyCalls: [], attempts: 0 }
   const fail = (what, data) => { if (failures[what]) throw Object.assign(new Error(`${what} broke`), { data }) }
   const bot = {
@@ -228,7 +271,7 @@ function world({ owner, autoDispatchOn = true, failures = {}, threadOf = () => t
     reactions: { add: async (a) => (calls.reactions.push(a), fail('react', { error: failures.reactError })) },
   }
   const ctx = {
-    bot, owner, emojis: new Set(emojis), machine: 'mac', priority: 'P2', autoDispatchOn, userName: names, retryMs: 0,
+    bot, owner, ownerPro, mode, emojis: new Set(emojis), machine: 'mac', priority: 'P2', autoDispatchOn, userName: names, retryMs: 0,
     addTodo: async (todo) => {
       calls.attempts++
       if (calls.attempts <= busy) throw Object.assign(new Error('lock busy'), { code: 'LOCK_BUSY' })
@@ -299,6 +342,88 @@ test('owner unknown: nothing more is captured once 20 such tasks wait, and each 
   assert.deepEqual(calls.reactions, [{ channel: 'C1', timestamp: '6.6', name: 'warning' }])
   assert.equal(calls.logs.length, 1)
   assert.equal(calls.logs[0], '[reactor] skipped: 20 tasks from reactions not confirmed as yours are already open (Ask me: owner unknown)')
+})
+
+const pro = async () => 'pro'
+const def = async () => 'default'
+
+test('Pro mode, owner unknown: a plain task that starts by itself, as before the owner rule', async () => {
+  for (const autoDispatchOn of [true, false]) {
+    const calls = await run({ owner: NOBODY, ownerPro: NOBODY, mode: pro, autoDispatchOn }, reaction({ user: 'U9' }))
+    assert.equal(calls.added.length, 1)
+    const todo = calls.added[0]
+    assert.equal(todo.autoDispatch, autoDispatchOn)
+    assert.equal(todo.priority, 'P2')
+    assert.equal(todo.title, 'message 0')
+    assert.ok(!('reactedBy' in todo) && !('unconfirmedCap' in todo))
+    assert.ok(todo.detail.startsWith('Captured from Slack thread on mac.'))
+    assert.ok(!todo.detail.includes("can't tell") && !todo.detail.includes('SLACK_USER_ID') && !todo.detail.includes('launchctl'))
+    assert.ok(todo.detail.includes('----- BEGIN UNTRUSTED THREAD')) // the fence stays
+    assert.deepEqual(calls.reactions, [{ channel: 'C1', timestamp: '6.6', name: 'white_check_mark' }])
+    assert.match(calls.logs[0], /:boom: → td-001 \(new\) on mac: message 0$/)
+  }
+})
+
+test('Pro mode, owner unknown: no limit, so a 21st capture is saved by the real task store', async () => {
+  const home = tmp()
+  fs.mkdirSync(path.join(home, '.claude'))
+  fs.writeFileSync(path.join(home, '.claude', 'assistant-todo.json'), JSON.stringify({ items: [] }))
+  const saved = process.env.HOME
+  process.env.HOME = home // os.homedir() reads it
+  try {
+    const { addTodo } = await import('../src/todo-store.js')
+    for (const [mode, expected] of [[pro, 25], [def, 20]]) {
+      fs.writeFileSync(path.join(home, '.claude', 'assistant-todo.json'), JSON.stringify({ items: [] }))
+      const w = world({ owner: NOBODY, ownerPro: NOBODY, mode })
+      w.ctx.addTodo = addTodo
+      try {
+        for (let n = 0; n < 25; n++) await handleReaction(reaction({ user: 'U9', item: { type: 'message', channel: `C${n}`, ts: '6.6' } }), { ...w.ctx })
+      } finally {
+        w.done()
+      }
+      const items = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'assistant-todo.json'), 'utf8')).items
+      assert.equal(items.length, expected)
+      if (mode === pro) assert.ok(items.every((i) => i.autoDispatch === true && !('reactedBy' in i) && i.priority === 'P2'))
+      else assert.ok(items.every((i) => i.autoDispatch === null && i.reactedBy === 'U9' && i.priority === 'P3'))
+    }
+  } finally {
+    process.env.HOME = saved
+  }
+})
+
+test('the default mode is unchanged: owner unknown is Ask me however the mode is given', async () => {
+  for (const opts of [{}, { mode: def }, { mode: def, ownerPro: NOBODY }, { mode: async () => 'expert' }]) {
+    for (const autoDispatchOn of [true, false]) {
+      const calls = await run({ owner: NOBODY, autoDispatchOn, ...opts }, reaction({ user: 'U9' }))
+      const todo = calls.added[0]
+      assert.equal(todo.autoDispatch, autoDispatchOn ? null : false)
+      assert.equal(todo.priority, 'P3')
+      assert.equal(todo.reactedBy, 'U9')
+      assert.equal(todo.unconfirmedCap, 20)
+      assert.equal(todo.title, 'Not started, reaction not confirmed as yours: message 0')
+      assert.deepEqual(calls.reactions.map((r) => r.name), ['eyes'])
+    }
+  }
+  // and a reaction Pro would start from nobody's, with the owner known, is ignored in both modes
+  assert.deepEqual((await run({ owner: OWNER, mode: def }, reaction({ user: 'U2' }))).added, [])
+  assert.deepEqual((await run({ owner: OWNER, ownerPro: OWNER, mode: pro }, reaction({ user: 'U2' }))).added, [])
+  // the mistyped id: Ask me in the default mode, whatever Pro would have found
+  const mistyped = await run({ owner: { id: null, how: 'invalid' }, ownerPro: OWNER, mode: def }, reaction({ user: 'U1' }))
+  assert.equal(mistyped.added[0].autoDispatch, null)
+  assert.ok(mistyped.added[0].detail.includes("SLACK_USER_ID is set but isn't a Slack user id"))
+})
+
+test('Pro mode, a mistyped SLACK_USER_ID: the owner the config names is held to', async () => {
+  const mistyped = { id: null, how: 'invalid' }
+  const mine = await run({ owner: mistyped, ownerPro: OWNER, mode: pro }, reaction({ user: 'U1' }))
+  assert.equal(mine.added[0].autoDispatch, true)
+  assert.ok(!('reactedBy' in mine.added[0]))
+  assert.deepEqual((await run({ owner: mistyped, ownerPro: OWNER, mode: pro }, reaction({ user: 'U2' }))).added, [])
+  // and when the config names nobody, it is unknown: plain and starting by itself
+  const nobody = await run({ owner: mistyped, ownerPro: NOBODY, mode: pro }, reaction({ user: 'U2' }))
+  assert.equal(nobody.added[0].autoDispatch, true)
+  // no Pro owner given: the one given is used
+  assert.equal((await run({ owner: OWNER, mode: pro }, reaction({ user: 'U1' }))).added[0].autoDispatch, true)
 })
 
 test('the owner reacting: no unconfirmed-task limit, no marker, normal priority', async () => {
@@ -393,13 +518,20 @@ test('failures: each is logged without a token, and a failed read or write captu
 })
 
 // --- the real index.js with a stub Slack ------------------------------------
-function reactTo({ env = {}, reactionUser = 'U1', config } = {}) {
+// A stand-in for the interpreter the reactor asks for the mode, so no test runs a real one.
+function stubPython(printed) {
+  const file = path.join(tmp(), 'python3')
+  fs.writeFileSync(file, `#!/bin/sh\nif [ "$1" = "-c" ]; then exit 0; fi\necho ${printed}\n`, { mode: 0o755 })
+  return file
+}
+
+function reactTo({ env = {}, reactionUser = 'U1', config, mode = 'default', seed = [] } = {}) {
   const home = config ? homeWithConfig(config) : tmp()
   fs.mkdirSync(path.join(home, '.claude'), { recursive: true })
-  fs.writeFileSync(path.join(home, '.claude', 'assistant-todo.json'), JSON.stringify({ items: [] }))
+  fs.writeFileSync(path.join(home, '.claude', 'assistant-todo.json'), JSON.stringify({ items: seed }))
   const run = spawnSync(process.execPath, ['--import', REGISTER, INDEX], {
     env: {
-      PATH: process.env.PATH, HOME: home, SLACK_BOT_TOKEN: BOT_TOKEN, SLACK_APP_TOKEN: APP_TOKEN, TODO_EMOJI: 'boom',
+      PATH: process.env.PATH, HOME: home, ASSISTANT_PYTHON: stubPython(mode), SLACK_BOT_TOKEN: BOT_TOKEN, SLACK_APP_TOKEN: APP_TOKEN, TODO_EMOJI: 'boom',
       STUB_REACTION: JSON.stringify(reaction({ user: reactionUser })),
       STUB_THREAD: JSON.stringify([{ user: 'U5', text: 'please deploy', ts: '5.5' }]),
       ...env,
@@ -443,4 +575,39 @@ test('the real reactor, owner unknown: captured as Ask me and says so at start',
   assert.equal(run.items[0].autoDispatch, null)
   assert.equal(run.items[0].reactedBy, 'U9')
   assert.ok(!run.all.includes(BOT_TOKEN) && !run.all.includes(APP_TOKEN))
+})
+
+test('the real reactor in Pro mode, owner unknown: says so at start, and a reaction starts a plain task', () => {
+  for (const [config, mode] of [[{ mode: 'pro' }, 'default'], [{ slack: { target: 'C0CHAN' } }, 'pro']]) { // saved Pro; Pro from what is installed
+    const run = reactTo({ reactionUser: 'U9', config, mode })
+    assert.match(run.all, /owner: unknown .*every member's reaction is captured and starts work, as it did before/)
+    assert.equal(run.items.length, 1)
+    assert.equal(run.items[0].autoDispatch, true)
+    assert.equal(run.items[0].priority, 'P2')
+    assert.ok(!('reactedBy' in run.items[0]))
+    assert.match(run.all, /reaction added: white_check_mark/)
+    assert.ok(!run.all.includes(BOT_TOKEN) && !run.all.includes(APP_TOKEN))
+  }
+  assert.equal(reactTo({ reactionUser: 'U9', config: { mode: 'pro' }, env: { TODO_AUTODISPATCH: '0' } }).items[0].autoDispatch, false)
+})
+
+test('the real reactor, 20 Ask me tasks already waiting: Pro saves another, the default mode skips it', () => {
+  const seed = Array.from({ length: 20 }, (_, n) => ({ id: `td-${n + 100}`, status: 'open', autoDispatch: null, reactedBy: 'U9', source: `s${n}` }))
+  assert.equal(reactTo({ reactionUser: 'U9', config: { mode: 'pro' }, seed }).items.length, 21)
+  const kept = reactTo({ reactionUser: 'U9', config: { mode: 'default' }, seed })
+  assert.equal(kept.items.length, 20)
+  assert.match(kept.all, /skipped: 20 tasks from reactions not confirmed as yours are already open/)
+})
+
+test('the real reactor in Pro mode, a mistyped SLACK_USER_ID: the owner in the config is held to, and the warning stays', () => {
+  const env = { SLACK_USER_ID: 'u1' }
+  const config = { mode: 'pro', slack: { owner: 'U1' } }
+  const mine = reactTo({ env, config })
+  assert.match(mine.all, /SLACK_USER_ID is set but is not a Slack user id/)
+  assert.match(mine.all, /owner: U1, from slack\.owner/)
+  assert.equal(mine.items[0].autoDispatch, true)
+  assert.deepEqual(reactTo({ env, config, reactionUser: 'U2' }).items, [])
+  const asked = reactTo({ env, config: { mode: 'default', slack: { owner: 'U1' } } }) // the default mode: unchanged
+  assert.match(asked.all, /owner: unknown/)
+  assert.equal(asked.items[0].autoDispatch, null)
 })
