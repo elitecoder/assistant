@@ -64,10 +64,20 @@ START_FAILED = {"session_tool_down": f"{STARTING}: cmux didn't answer. {RETRY}",
                 "no_surface": f"{STARTING}: the new workspace had no window to type in. {RETRY}",
                 "todo_not_marked": ("Assistant started an agent on it, but couldn't mark the task as started, so "
                                     "it may start a second one by itself."),
-                "other": f"{STARTING}: something went wrong.",
-                "typing_refused": ("Assistant opened a session but wouldn't type into it, because it couldn't "
-                                   "record what it types. The task is parked."),
-                "session_refused_text": "cmux refused the instruction, so nothing was typed. The task is parked."}
+                "other": f"{STARTING}: something went wrong."}
+# A start that opened a session and then wouldn't, or couldn't, type into it is stamped blocked by the pulse, which is
+# the one status "Queue to start" on the dashboard turns back into an open task (tests/test_session_effects_pulse.py).
+# `typing_refused` is also what the pulse records when it can't write what it types before any session is opened;
+# the task then stays open and the next round tries again. The record shows which: a workspace only when it was stamped.
+BLOCKED_HOW = ('The task is marked blocked. To run it again, close the workspace it opened and press "Queue to start" '
+               "on {task} on the Tasks tab of the Assistant dashboard.")
+REFUSED = {"typing_refused": ("Assistant opened a session but wouldn't type into it, because it couldn't record what it types.",
+                              "Assistant couldn't record what it types, so it didn't start an agent. " + "It will try again by itself."),
+           "session_refused_text": ("cmux refused the instruction, so nothing was typed.",
+                                    "cmux refused the instruction, so nothing was typed. It will try again by itself.")}
+# What a failed start says it did about what was typed, so its typings need not be shown again: only a typing that
+# failed, and only of these sources.
+ACCOUNTS_FOR = {"typing_refused": ("task", "trust"), "session_refused_text": ("task",)}
 TASK_SAYS = {"done": "The agent reported it finished.", "blocked": "The agent reported it is blocked.",
              "removed": "The task was removed.", "deferred": "The task was put off."}
 # Who made a task that wasn't made from the row. `manual` is a person, or an agent running the /todo skill.
@@ -184,12 +194,19 @@ def _dispatch(record: dict, typed=None) -> str | None:
         if instruction is not None:
             if instruction.get("outcome") == "done" and fields.get("confirmed") is not False:
                 return "Assistant started an agent on it and typed the task's instruction into the new session."
-            return "Assistant started an agent on it and typed the task's instruction, but couldn't tell if it arrived."
+            return ("Assistant started an agent on it and typed the task's instruction, but couldn't tell if the "
+                    "session received it. Look at the session to check.")
         return "Assistant started an agent on it." + (
-            " It couldn't confirm the session got the instruction." if fields.get("confirmed") is False else "")
+            " It couldn't confirm the session got the instruction. Look at the session to check."
+            if fields.get("confirmed") is False else "")
     if fields.get("outcome") != "failed":
         return None
     reason = fields.get("reason")
+    if reason in REFUSED:
+        parked = WORKSPACE.fullmatch(fields.get("workspace") or "") is not None
+        task = record["subject"] if TASK_ID.fullmatch(record["subject"] or "") else ""
+        said, retry = REFUSED[reason]
+        return said + " " + BLOCKED_HOW.format(task=f"task {task}" if task else "the task") if parked else retry
     if reason == "session_not_ready":  # parked only when the task was stamped, which the record shows as a workspace
         parked = WORKSPACE.fullmatch(fields.get("workspace") or "") is not None
         task = record["subject"] if TASK_ID.fullmatch(record["subject"] or "") else ""
@@ -276,16 +293,17 @@ def _typing_text(e: dict, now: float) -> str:
     if outcome == "done":
         return f"Assistant {done}{because}."
     if outcome == "failed":
-        return f"Assistant tried to {tried} and nothing was typed."
-    if outcome == "unknown" or abs(float(e.get("t") or 0) - now) >= IN_FLIGHT_SEC:
-        return f"Assistant {done}{because}, but couldn't tell if it arrived."
+        return f"Assistant tried to {tried}, but it didn't go through."
+    if outcome == "unknown":
+        return f"Assistant {done}{because}, but couldn't tell if the session received it."
+    if abs(float(e.get("t") or 0) - now) >= IN_FLIGHT_SEC:  # no result and not young: the intent may be all there is
+        return f"Assistant tried to {tried} but didn't hear back, so it may or may not have gone through."
     return f"Assistant is {doing}{because}."
 
 
 def _pair_typings(events: list, effects: list) -> tuple:
-    """Pair each typing in the ledger with the start it belongs to, one to one: a typing for a task goes with the first
-    start of that task (any outcome) that comes after it, within START_WINDOW, and a start takes one typing of each
-    source. Returns ({index of a dispatch record: {source: effect}}, the ids of the effects paired). A typing that
+    """Pair each typing in the ledger with the start it belongs to, one to one: a typing for a task goes with the next
+    start of that task (any outcome) after it, within START_WINDOW, and a start takes one typing of each source. Returns ({index of a dispatch record: {source: effect}}, the ids of the effects paired). A typing that
     pairs with no start is left for `_effect_steps` to show on its own."""
     starts = [(i, r["ts"], r.get("subject")) for i, r in enumerate(events) if r.get("kind") == "dispatch"]
     typed, claimed = {}, set()
@@ -296,11 +314,20 @@ def _pair_typings(events: list, effects: list) -> tuple:
         source, task = target.get("source"), target.get("task")
         if source not in START_SOURCES or not task:
             continue
-        for index, at, subject in starts:
-            if subject == task and -JUST_AFTER <= at - e["t"] <= START_WINDOW and source not in typed.get(index, {}):
-                typed.setdefault(index, {})[source] = e
-                claimed.add(e.get("id"))
-                break
+        near = [(at - e["t"], index) for index, at, subject in starts
+                if subject == task and -JUST_AFTER <= at - e["t"] <= START_WINDOW]
+        if not near:
+            continue
+        # The start that came next after the typing; failing that, the one that began just before it was recorded.
+        gap, index = min(near, key=lambda pair: (pair[0] < 0, abs(pair[0])))
+        if source in typed.get(index, {}):
+            continue
+        record = events[index]["fields"]
+        if record.get("outcome") == "done":
+            typed.setdefault(index, {})[source] = e
+            claimed.add(e.get("id"))
+        elif e.get("outcome") == "failed" and source in ACCOUNTS_FOR.get(record.get("reason"), ()):
+            claimed.add(e.get("id"))  # the failed start's own sentence says it
     return typed, claimed
 
 
