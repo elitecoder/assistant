@@ -756,7 +756,7 @@ feature_enabled() {
     esac
 }
 
-declare -a CHANGED_LABELS
+declare -a CHANGED_LABELS=()
 for plist in "$REPO_ROOT"/launchagents/*.plist; do
     base="$(basename "$plist")"
     label="$(basename "$plist" .plist)"

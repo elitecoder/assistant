@@ -3,6 +3,7 @@ and the quality workflow runs every shard and fails its required check unless al
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -221,11 +222,51 @@ def test_a_worker_count_that_isnt_one_to_eight_is_refused(spec):
         mutation_smoke.workers(spec)
 
 
-def test_the_workflow_runs_as_many_jobs_as_the_account_runs_at_once():
-    """Five macOS jobs run at a time here: the shards plus the coverage job must not exceed that, or jobs queue."""
-    shards = re.search(r"shard: \[([0-9, ]+)\]", WORKFLOW).group(1).split(", ")
-    assert len(shards) + 1 <= 5
-    assert '--workers 3 \\' in WORKFLOW
+def test_only_the_coverage_job_waits_for_a_mac():
+    """GitHub often has no Mac free, so only the coverage job runs on one. It also runs the Mac-only checks; the shards
+    run the rest on Linux, four at a time, one per core."""
+    jobs = re.split(r"\n  (?=[a-z-]+:\n)", WORKFLOW.split("\njobs:\n", 1)[1])
+    runners = {job.split(":", 1)[0].strip(): re.search(r"runs-on: (\S+)", job).group(1) for job in jobs}
+    assert runners == {"changed-code-coverage": "macos-latest", "mutations": "ubuntu-latest",
+                       "quality-gate": "ubuntu-latest"}
+    coverage_job, mutation_job = jobs[0], jobs[1]
+    assert "mutation_smoke.py --mac-only --workers 3 \\" in coverage_job
+    assert coverage_job.index("Require complete new-code coverage") < coverage_job.index("--mac-only"), \
+        "a surviving Mac-only mutant must not hide the coverage verdict"
+    assert '--shard "${{ matrix.shard }}/4" --workers 4 \\' in mutation_job
+    assert "sudo apt-get install -y -q zsh" in mutation_job, "the Slack setup tests run the setup script in zsh"
+
+
+def test_a_new_push_cancels_only_its_own_pull_requests_older_runs():
+    """A run on main has a group of its own: GitHub cancels a waiting run when a newer one joins its group, and the
+    coverage gate on main checks only the changes of the push it runs for."""
+    group = re.search(r"\nconcurrency:\n  group: (.+)\n  cancel-in-progress: (.+)\n", WORKFLOW)
+    assert group.groups() == ("quality-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}",
+                              "${{ github.event_name == 'pull_request' }}")
+
+
+def load_harness(monkeypatch, platform):
+    monkeypatch.setattr(sys, "platform", platform)
+    spec = importlib.util.spec_from_file_location(f"mutation_smoke_on_{platform}", Path(mutation_smoke.__file__))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_off_a_mac_the_shards_leave_out_the_mac_only_checks_and_the_mac_job_runs_them(monkeypatch):
+    mac, linux = load_harness(monkeypatch, "darwin"), load_harness(monkeypatch, "linux")
+    assert mac.MAC_ONLY_CHECKS and mac.MAC_ONLY_CHECKS == linux.MAC_ONLY_CHECKS
+    assert not set(linux.CHECKS) & set(linux.MAC_ONLY_CHECKS)
+    assert mac.CHECKS == mac.ALL_CHECKS == linux.ALL_CHECKS
+    assert Counter(linux.CHECKS + linux.MAC_ONLY_CHECKS) == Counter(linux.ALL_CHECKS), "every check runs once, somewhere"
+    assert {check[4] for check in mac.MAC_ONLY_CHECKS} == mac.MAC_ONLY_TESTS, "each Mac-only test backs a check"
+
+
+def test_mac_only_runs_just_the_checks_whose_tests_need_a_mac(tmp_path, monkeypatch):
+    monkeypatch.setattr(mutation_smoke, "run_check", lambda name, *rest: {"check": name, "mutant": "rejected"})
+    out = tmp_path / "mac.json"
+    mutation_smoke.main(["--mac-only", "--output", str(out)])
+    assert [c["check"] for c in json.loads(out.read_text())["checks"]] == [c[0] for c in mutation_smoke.MAC_ONLY_CHECKS]
 
 
 def test_the_mutation_job_installs_what_the_tests_it_runs_import():
@@ -295,7 +336,7 @@ def test_a_file_that_doesnt_define_a_tuple_of_checks_is_refused(tmp_path, body):
 def test_the_list_the_shards_run_includes_every_file_in_the_folder():
     kept = mutation_smoke.checks_in(mutation_smoke.CHECKS_DIR)
     assert kept, "the folder holds at least the checks for its own loading"
-    assert mutation_smoke.CHECKS[-len(kept):] == kept, "they follow the list in mutation_smoke.py, in order"
+    assert mutation_smoke.ALL_CHECKS[-len(kept):] == kept, "they follow the list in mutation_smoke.py, in order"
     assert mutation_smoke.CHECKS_DIR == REPO / "tests/mutation_checks"
 
 
@@ -349,7 +390,7 @@ def test_every_check_names_a_snippet_found_exactly_once_and_a_test_pytest_collec
     """A check whose snippet has gone stale, or whose test was renamed, would otherwise fail 13 minutes into a
     shard. This says so in seconds, with every stale check at once. The tests are the ones pytest itself collects,
     so a renamed class or parameter id is found too."""
-    files = sorted({selector.partition("::")[0] for *_rest, selector in mutation_smoke.CHECKS})
+    files = sorted({selector.partition("::")[0] for *_rest, selector in mutation_smoke.ALL_CHECKS})
     absent = [name for name in files if not (REPO / name).is_file()]
     assert not absent, f"no such test file: {absent}"
     # Options from the environment, such as a second -q, change what --collect-only prints.
@@ -361,7 +402,7 @@ def test_every_check_names_a_snippet_found_exactly_once_and_a_test_pytest_collec
     collected |= {found.split("[", 1)[0] for found in collected}  # a test id without brackets runs every case of it
     sources: dict = {}
     wrong = []
-    for name, filename, original, _broken, selector in mutation_smoke.CHECKS:
+    for name, filename, original, _broken, selector in mutation_smoke.ALL_CHECKS:
         if filename not in sources:
             sources[filename] = (REPO / filename).read_text() if (REPO / filename).is_file() else ""
         if (count := sources[filename].count(original)) != 1:
@@ -369,3 +410,24 @@ def test_every_check_names_a_snippet_found_exactly_once_and_a_test_pytest_collec
         if selector not in collected:
             wrong.append(f"{name}: pytest collects no test {selector}")
     assert not wrong, "\n".join(wrong)
+
+
+def test_a_baseline_that_runs_no_test_is_refused_and_names_the_mac_only_list(tmp_path, monkeypatch):
+    skipped = subprocess.CompletedProcess([], 0, "s                                [100%]\n1 skipped in 0.10s\n", "")
+    monkeypatch.setattr(mutation_smoke, "run_test", lambda *args: skipped)
+    with pytest.raises(RuntimeError, match="ran no test here.*add it to MAC_ONLY_TESTS"):
+        mutation_smoke.run_baseline("a check", tmp_path, tmp_path, "tests/test_x.py::test_y")
+    ran = subprocess.CompletedProcess([], 0, ".s                               [100%]\n1 passed, 1 skipped in 0.10s\n", "")
+    monkeypatch.setattr(mutation_smoke, "run_test", lambda *args: ran)
+    mutation_smoke.run_baseline("a check", tmp_path, tmp_path, "tests/test_x.py::test_y")
+
+
+def test_mac_only_is_refused_with_a_shard_or_off_a_mac(tmp_path, monkeypatch, capsys):
+    out = str(tmp_path / "x.json")
+    with pytest.raises(SystemExit):
+        mutation_smoke.main(["--mac-only", "--shard", "1/4", "--output", out])
+    assert "not allowed with argument" in capsys.readouterr().err
+    monkeypatch.setattr(sys, "platform", "linux")
+    with pytest.raises(SystemExit):
+        mutation_smoke.main(["--mac-only", "--output", out])
+    assert "this isn't one" in capsys.readouterr().err

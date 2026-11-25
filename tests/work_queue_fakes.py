@@ -10,14 +10,17 @@ or {"seq": [...]} to answer each call with the next response.
 """
 from __future__ import annotations
 
+import atexit
 import functools
 import json
 import os
 import pwd
 import re
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 from pathlib import Path
 
@@ -178,10 +181,26 @@ def calls(bin_dir: Path, name: str) -> list[str]:
     return log.read_text().splitlines() if log.exists() else []
 
 
+# The tools the Work queue runs. Linux keeps some of them, such as gh, in /usr/bin; macOS never does.
+REAL_TOOLS = frozenset(("gh", "npx", "uv"))
+
+
+@functools.cache
+def system_basics() -> str:
+    """A folder with everything in /usr/bin and /bin except REAL_TOOLS, made once per test run."""
+    folder = Path(tempfile.mkdtemp(prefix="wq-system-basics-"))
+    atexit.register(shutil.rmtree, folder, ignore_errors=True)
+    for system in (Path("/usr/bin"), Path("/bin")):
+        for tool in system.iterdir():
+            if tool.name not in REAL_TOOLS and not (folder / tool.name).is_symlink():
+                (folder / tool.name).symlink_to(tool)
+    return str(folder)
+
+
 def use_fakes(monkeypatch, bin_dir: Path) -> None:
     """Put only the fakes and the system basics on PATH, so a real tool can't run."""
     bin_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("PATH", os.pathsep.join([str(bin_dir), "/usr/bin", "/bin"]))
+    monkeypatch.setenv("PATH", os.pathsep.join([str(bin_dir), system_basics()]))
 
 
 def real_browsers(monkeypatch) -> None:

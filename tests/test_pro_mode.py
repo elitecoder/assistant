@@ -8,6 +8,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -847,6 +848,15 @@ def test_the_hourly_update_never_starts_workspace_numbers_you_stopped(tmp_path):
     log.write_text("")
     run_installer({**env, "ASSISTANT_SELF_UPDATE": "1"})
     assert any(line.startswith("bootstrap") and label in line for line in log.read_text().splitlines())
+
+
+def test_every_list_the_installer_declares_starts_empty():
+    """bash 5 under set -u stops on a list that was declared and never given a value; macOS's bash 3.2 doesn't. This
+    reads declare, local, and typeset lines; the Linux shards also run the installer itself under bash 5."""
+    lines = re.findall(r"^\s*(?:declare|local|typeset)\s+-[a-zA-Z]*[aA][a-zA-Z]*\s+(.+)$",
+                       (REPO / "install.sh").read_text(), re.M)
+    names = [name for line in lines for name in re.findall(r"(\w+)(=\(|\S*)", line.split("#")[0])]
+    assert names and all(start == "=(" for _, start in names), names
 
 
 def test_a_parked_task_row_has_no_dispatched_pill_and_its_reason_is_the_blocked_pills_tooltip(home):
