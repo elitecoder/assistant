@@ -2069,16 +2069,24 @@ TAP_AREAS = """(thumb) => { const num = v => parseFloat(v) || 0;
   const area = el => { const r = el.getBoundingClientRect(), a = getComputedStyle(el, '::after');
     return a.content !== 'none' && a.position === 'absolute' ? {left: r.left + num(a.left), top: r.top + num(a.top), right: r.right - num(a.right), bottom: r.bottom - num(a.bottom)}
       : {left: r.left, top: r.top, right: r.right, bottom: r.bottom}; };
-  const t = thumb.getBoundingClientRect(), cx = t.left + t.width / 2, cy = t.top + t.height / 2, xs = [], ys = [];
-  for (let x = cx - 30; x <= cx + 30; x += 0.25) for (let y = cy - 30; y <= cy + 30; y += 0.25) {  // quarter pixels: the edges are not whole numbers
-    const e = document.elementFromPoint(x, y); if (e && e.closest('.fb-down') === thumb) { xs.push(x); ys.push(y); } }
-  const mine = area(thumb), over = [];
+  const t = thumb.getBoundingClientRect(), cx = t.left + t.width / 2, cy = t.top + t.height / 2;
+  // The strict reading: walk out from each edge along the thumb's own middle lines, a whole pixel at a time, for as long as the thumb is what is there.
+  const mine = (x, y) => { const e = document.elementFromPoint(x, y); return !!e && e.closest('.fb-down') === thumb; };
+  let l = 0, r = 0, u = 0, d = 0;
+  while (mine(cx - t.width / 2 - l - 1, cy)) l++;
+  while (mine(cx + t.width / 2 + r + 1, cy)) r++;
+  while (mine(cx, cy - t.height / 2 - u - 1)) u++;
+  while (mine(cx, cy + t.height / 2 + d + 1)) d++;
+  // The generous reading: the extent of every point within 30 px that is the thumb, a quarter pixel at a time.
+  const xs = [], ys = [];
+  for (let x = cx - 30; x <= cx + 30; x += 0.25) for (let y = cy - 30; y <= cy + 30; y += 0.25) if (mine(x, y)) { xs.push(x); ys.push(y); }
+  const own = area(thumb), over = [];
   for (const el of document.querySelectorAll('button, a[href], textarea, input, summary')) {
     if (el === thumb || el.closest('.fb-pop') || el.contains(thumb)) continue;
-    const r = el.getBoundingClientRect(); if (!r.width || Math.abs(r.top - t.top) > 90) continue;
-    const o = area(el), w = Math.min(mine.right, o.right) - Math.max(mine.left, o.left), h = Math.min(mine.bottom, o.bottom) - Math.max(mine.top, o.top);
-    if (w > 0.5 && h > 0.5) over.push((el.className || el.tagName) + ' ' + el.textContent.slice(0, 14) + ' ' + Math.round(w) + 'x' + Math.round(h)); }
-  return {width: Math.max(...xs) - Math.min(...xs) + 0.25, height: Math.max(...ys) - Math.min(...ys) + 0.25, over}; }"""
+    const b = el.getBoundingClientRect(); if (!b.width || Math.abs(b.top - t.top) > 90) continue;
+    const o = area(el), w = Math.min(own.right, o.right) - Math.max(own.left, o.left), h = Math.min(own.bottom, o.bottom) - Math.max(own.top, o.top);
+    if (w > 0 && h > 0) over.push((el.className || el.tagName) + ' ' + el.textContent.slice(0, 14) + ' ' + w.toFixed(1) + 'x' + h.toFixed(1)); }
+  return {strict: [Math.round(t.width + l + r), Math.round(t.height + u + d)], generous: [Math.max(...xs) - Math.min(...xs) + 0.25, Math.max(...ys) - Math.min(...ys) + 0.25], over}; }"""
 
 
 def test_the_thumb_on_every_kind_of_row_has_a_44_pixel_tap_area_on_a_phone_that_no_other_tap_area_overlaps(site, wq):
@@ -2109,9 +2117,9 @@ def test_the_thumb_on_every_kind_of_row_has_a_44_pixel_tap_area_on_a_phone_that_
                     pressed(tab, selector)
                     thumb.evaluate("e => e.scrollIntoView({block: 'center'})")
                 found = tab.evaluate(f"(sel) => ({TAP_AREAS})(document.querySelector(sel))", selector)
-                measured[kind + (", pressed" if pressed_too else "")] = (found["width"], found["height"], found["over"])
-        print("TAP AREAS", measured)
-        bad = {k: v for k, v in measured.items() if v[0] < 43.75 or v[1] < 43.75 or v[2]}  # the scan steps by a quarter: 44 reads as 43.75
+                measured[kind + (", pressed" if pressed_too else "")] = (found["strict"], found["generous"], found["over"])
+        print("TAP AREAS (strict, generous, overlaps)", measured)
+        bad = {k: v for k, v in measured.items() if min(v[0]) < 44 or min(v[1]) < 43.75 or v[2]}  # the generous scan steps by a quarter: 44 reads as 43.75
         assert not bad, bad
         browser.close()
 
@@ -2268,10 +2276,11 @@ def test_the_thumb_has_a_44_pixel_touch_target_without_looking_bigger_and_fits_t
         assert hit[0] >= 44 and hit[1] >= 44, f"what a finger can hit (whatever sits beside it): {hit}"
         done = tab.locator(".sf-row").nth(4).locator(":scope > .sf-main .sf-mark").bounding_box()
         assert abs(done["y"] - box["y"]) < 12, "in the row of buttons, not on a line of its own"
-        with_controls = tab.evaluate("document.documentElement.scrollHeight")
+        rows = "() => { let sum = 0, n = 0; document.querySelectorAll('.sf-lane .sf-row, .sf-list > .sf-row').forEach(r => { if (n < 12 && r.offsetHeight) { sum += r.offsetHeight; n++; } }); return sum; }"
+        with_controls, rows_with = tab.evaluate("document.documentElement.scrollHeight"), tab.evaluate(rows)
         tab.evaluate("document.querySelectorAll('.fb').forEach(e => e.style.display = 'none')")
-        without = tab.evaluate("document.documentElement.scrollHeight")
-        print(f"page height at {width} wide, 12 rows: {without} without the controls, {with_controls} with them")
+        without, rows_without = tab.evaluate("document.documentElement.scrollHeight"), tab.evaluate(rows)
+        print(f"page height at {width} wide, 12 rows: {without} without the controls, {with_controls} with them; the rows alone: {rows_without} and {rows_with}")
         assert (with_controls - without) / 12 < (30 if width < 620 else 6)
         browser.close()
 
