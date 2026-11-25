@@ -376,3 +376,21 @@ def pro_mode(monkeypatch):
     """Everything this file tests is Pro mode's; the test says so, instead of leaning on the suite's default."""
     from assistant import mode
     monkeypatch.setattr(mode, "current", lambda: "pro")
+
+
+def test_the_pro_send_logs_a_send_with_no_terminal_and_a_good_send_to_the_send_log(send, home):
+    send.SENDS_LOG = str(home / "sends.jsonl")
+    sys.argv = ["cmux-send.py", "--ws", "workspace:1000010005", "--text", "hi", "--post-send-wait", "0"]
+    with mock.patch.object(send, "resolve_terminal_surface", return_value=(None,) * 4), \
+            mock.patch("sys.stdout", io.StringIO()), pytest.raises(SystemExit) as stop:
+        send.main()
+    assert stop.value.code == 1
+    sys.argv = ["cmux-send.py", "--ws", "workspace:1000010005", "--text", "hi", "--post-send-wait", "0",
+                "--source", "cleanup", "--auth-kind", "standing"]
+    with mock.patch.object(send, "resolve_terminal_surface", return_value=SURFACE), \
+            mock.patch.object(send, "rpc", Rpc(home)), mock.patch.object(send.time, "sleep"), \
+            mock.patch("sys.stdout", io.StringIO()), pytest.raises(SystemExit) as stop:
+        send.main()
+    assert stop.value.code == 0
+    rows = [json.loads(line)["outcome"] for line in (home / "sends.jsonl").read_text().splitlines()]
+    assert rows == ["no_terminal_surface", "sent"]

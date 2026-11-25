@@ -730,3 +730,18 @@ def test_the_typing_module_is_a_pass_through_in_the_default_mode(default_mode):
     assert keys.outcome() == "done"
     se.finish(ef, "failed")
     effects_untouched(default_mode)
+
+
+def test_a_mode_that_cant_be_read_by_the_merge_script_is_the_default_mode(default_mode, monkeypatch):
+    merge = load("merge_default_unreadable", "merge-pr-dispatch.py")
+    monkeypatch.setattr(mode, "is_pro", lambda: (_ for _ in ()).throw(OSError("unreadable")))
+    assert merge._pro_mode() is False
+
+
+def test_a_line_with_no_enter_types_only_the_text_in_the_default_mode(default_mode):
+    if not (REPO / "src/assistant/session_effects.py").exists():
+        pytest.skip("origin/main has no typing module")
+    from assistant import session_effects as se
+    calls = []
+    se.Keys(se.PASSTHROUGH, lambda method, params: calls.append(method), "s").line("hi", enter="")
+    assert calls == ["surface.send_text"]
