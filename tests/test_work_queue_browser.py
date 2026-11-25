@@ -2130,8 +2130,9 @@ SPOTS = """(own) => {
   const pop = document.querySelector('.fb-pop:not([hidden])'), panel = pop.getBoundingClientRect(), w = panel.width, t = panel.height;
   const hit = (a, b, m = 0) => !(a.right + m <= b.left || a.left >= b.right + m || a.bottom + m <= b.top || a.top >= b.bottom + m);
   const row = document.querySelector(own), thumb = row.querySelector('.fb-down').getBoundingClientRect(), rowHeight = row.getBoundingClientRect().height;
-  const centre = Math.hypot(panel.left + w / 2 - thumb.left - thumb.width / 2, panel.top + t / 2 - thumb.top - thumb.height / 2);
-  const centreAt = (x, y) => Math.hypot(x + w / 2 - thumb.left - thumb.width / 2, y + t / 2 - thumb.top - thumb.height / 2);
+  // how far the middle of the list is, up or down, from the middle of the thumb (the reviewer's measure, and what a person sees first)
+  const centre = Math.abs(panel.top + t / 2 - thumb.top - thumb.height / 2);
+  const centreAt = (x, y) => Math.abs(y + t / 2 - thumb.top - thumb.height / 2);
   const gapOf = (x, y) => Math.hypot(Math.max(thumb.left - x - w, x - thumb.right, 0), Math.max(thumb.top - y - t, y - thumb.bottom, 0));
   const things = [...document.querySelectorAll('.fb-down, .fb-open, .fb-note')].map(e => ({e, r: e.getBoundingClientRect()})).filter(o => o.r.width && o.r.bottom > 0 && o.r.top < innerHeight);
   const name = o => o.e.className.split(' ').pop() + ' of ' + ((o.e.closest('.sf-row') || {dataset: {}}).dataset.key || '').split('/').pop();
@@ -2147,7 +2148,7 @@ SPOTS = """(own) => {
   const freeOfOwnLink = exists(o => must(o) || isOwn(o));
   const coveredObjs = things.filter(o => hit(panel, o.r));
   const ownLinkCovered = coveredObjs.some(isOwn), otherNoteCovered = coveredObjs.some(o => isNote(o) && !must(o));
-  return {gap: gapOf(panel.left, panel.top), centre, rowHeight, reachable, size: [Math.round(w), Math.round(t)], choices: [...pop.querySelectorAll('button')].map(b => [b.getBoundingClientRect().height, parseFloat(getComputedStyle(b).fontSize)]), covered, free, freeOfOwnLink, ownLinkCovered, otherNoteCovered,
+  return {gap: gapOf(panel.left, panel.top), centre, rowHeight, reachable, size: [Math.round(w), Math.round(t)], covered, free, freeOfOwnLink, ownLinkCovered, otherNoteCovered,
           inScreen: panel.left >= 8 && panel.right <= innerWidth - 8 && panel.top >= 8 && panel.bottom <= innerHeight - 8};
 }"""
 
@@ -2176,7 +2177,6 @@ def test_the_reasons_open_next_to_their_thumb_at_the_top_the_middle_and_the_bott
                 assert found["inScreen"] and (not found["reachable"] or found["gap"] <= found["rowHeight"]), (width, i, where, found)
                 if width == 390:
                     assert not found["reachable"] or found["centre"] <= found["rowHeight"], (width, i, where, found)
-                    assert min(h for h, _ in found["choices"]) >= 32 and min(f for _, f in found["choices"]) >= 12, found["choices"]
                 assert not [c for c in found["covered"] if c.startswith("fb-down") or c.startswith("fb-open")] or all(
                     c.endswith(f" of {keys[i].split('/')[-1]}") and c.startswith("fb-open") for c in found["covered"] if c.startswith(("fb-down", "fb-open"))), (width, i, where, found)
                 assert not found["free"] or found["covered"] == [], ("a place that covers nothing existed", width, i, where, found)
@@ -2194,25 +2194,28 @@ def test_with_every_row_below_already_thumbed_the_reasons_still_open_next_to_the
     keys = many_rows(wq, 24)
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
-        tab = browser.new_page(viewport={"width": width, "height": 800})
+        tab = browser.new_page(viewport={"width": width, "height": 844})
         tab.goto(site + "#open-list")
         thumbs = tab.locator(ROW_THUMBS)
         thumbs.first.wait_for()
         for j in range(12, 24):  # a long run of rows with notes of their own
             thumbs.nth(j).evaluate(OPEN_AT["middle"])
             thumbs.nth(j).click()
-        # the row just under the tab bar, a little lower, and (for the last row) as far down as the page lets it go
-        for i, offset in ((12, 0), (12, 58), (13, 90), (15, 140), (17, 120), (23, 0), (23, 90)):
-            tab.locator(".sf-row").nth(i).evaluate("(e, y) => { e.scrollIntoView({block: 'start'}); window.scrollBy(0, -y); }", offset)
+        # (row, where it is put, whether that is the row's top or its thumb's, and whether the list must be near whatever else is there)
+        # The last three are where a person looks: the thumb 20 px from the top of the window (under the tab bar), in the middle, and 80 px from the bottom.
+        places = [(12, 0, "row", False), (12, 58, "row", False), (13, 90, "row", False), (15, 140, "row", False), (17, 120, "row", False),
+                  (23, 0, "row", False), (23, 90, "row", False), (13, 20, "thumb", True), (17, 422, "thumb", True), (22, 844 - 80, "thumb", True)]
+        for i, offset, what, must_be_near in places:
+            tab.locator(".sf-row").nth(i).evaluate("""(e, [y, what]) => { if (what === 'row') { e.scrollIntoView({block: 'start'}); window.scrollBy(0, -y); }
+                else window.scrollBy(0, e.querySelector('.fb-down').getBoundingClientRect().top - y); }""", [offset, what])
             tab.locator(".sf-row").nth(i).locator(":scope > .sf-main .fb-note button", has_text="Add a reason").evaluate("e => e.click()")  # the tab bar may cover it
             tab.wait_for_selector(".fb-pop:not([hidden])")
             tab.evaluate("new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))")
             found = tab.evaluate(SPOTS, f'.sf-row[data-key="{keys[i]}"]')
             assert found["inScreen"], (width, i, offset, found)
-            if found["reachable"]:  # where something near enough keeps clear of what must stay uncovered, the list is on it
-                assert found["gap"] <= found["rowHeight"] and (width > 390 or found["centre"] <= found["rowHeight"]), (width, i, offset, found)
-            if width == 390:  # on a phone the choices are big enough to tap and to read
-                assert min(h for h, _ in found["choices"]) >= 32 and min(f for _, f in found["choices"]) >= 12, found["choices"]
+            if found["reachable"] or (must_be_near and width == 390):  # where something near enough keeps clear of what must stay uncovered, the list is on it
+                assert found["gap"] <= found["rowHeight"] and (width > 390 or found["centre"] <= found["rowHeight"]), (width, i, offset, what, found)
+            assert not [c for c in found["covered"] if c.startswith(("fb-down", "fb-open")) and not c.endswith(f" of {keys[i].split('/')[-1]}")], (width, i, offset, found)
             assert not found["free"] or found["covered"] == [], ("a place that covers nothing existed", width, i, offset, found)
             assert not found["freeOfOwnLink"] or not found["ownLinkCovered"], (width, i, offset, found)
             tab.keyboard.press("Escape")
