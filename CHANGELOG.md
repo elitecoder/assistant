@@ -78,7 +78,7 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   with the time of each step, when Assistant first saw it and from where, how
   the model sorted it (and which model and sorting rules), that you sent it to
   an agent, that an agent was started or couldn't be (and why, and whether
-  Assistant will try again), that the agent finished or was blocked, what the
+  Assistant will try again by itself), that the agent finished or was blocked, what the
   check afterwards found, every change Assistant made because of it (such as
   archiving the email, and whether you pressed the button or approved it) and
   what you said about it. So "the model didn't sort this because today's spend
@@ -94,7 +94,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   box stops the page reloading on its own after a refresh, the way an open note
   does; changing tabs closes it. The link adds no line to any row on a phone, and
   below 860 px wide the buttons sit under the title so a title is never squeezed
-  to nothing.
+  to nothing: between 621 and 860 px wide a plain row is about 96 px tall where
+  it was 61, and its title has the full width. At 320 wide a row can gain a line,
+  and so can a Ready for you result with an Open workspace button when it sits
+  inside Start here at 390.
 - Every Work queue row and every TODO now carries a short id that later
   features will use to show where a piece of work came from. Nothing you see
   changes yet.
