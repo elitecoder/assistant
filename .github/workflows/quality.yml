@@ -11,7 +11,7 @@ permissions:
 jobs:
   changed-code-coverage:
     name: Tests and coverage
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -28,7 +28,7 @@ jobs:
           uv python install 3.11
           uv pip install pytest==9.1.1 pytest-cov==7.1.0 coverage==7.16.1 playwright==1.63.0
           npm --prefix tests ci --no-audit --no-fund
-          uv run --no-sync python -m playwright install chromium
+          uv run --no-sync python -m playwright install --with-deps chromium
       - name: Run tests with Python and Work queue page coverage
         run: |
           mkdir -p "$RUNNER_TEMP/assistant-coverage"
@@ -79,13 +79,11 @@ jobs:
 
   # The mutation checks run in four shards at once. Shard i of n runs every n-th
   # check from the i-th, so the shards together run every check exactly once.
-  # Four shards plus the coverage job is five macOS jobs, the most this account
-  # runs at a time, so no job waits in a queue. Each shard runs three checks at
-  # once: a macOS runner has three cores, and every check has its own copy of the
-  # sources and its own home.
+  # Each shard runs four checks at once: a Linux runner has four cores, and every
+  # check has its own copy of the sources and its own home.
   mutations:
     name: Mutation checks (shard ${{ matrix.shard }} of 4)
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -102,11 +100,11 @@ jobs:
           uv venv --python 3.13
           uv python install 3.11
           uv pip install pytest==9.1.1 coverage==7.16.1 playwright==1.63.0
-          uv run --no-sync python -m playwright install chromium
+          uv run --no-sync python -m playwright install --with-deps chromium
       - name: Prove critical regression tests catch broken behavior
         run: |
           mkdir -p "$RUNNER_TEMP/assistant-mutations"
-          uv run --no-sync python tests/mutation_smoke.py --shard "${{ matrix.shard }}/4" --workers 3 \
+          uv run --no-sync python tests/mutation_smoke.py --shard "${{ matrix.shard }}/4" --workers 4 \
             --output "$RUNNER_TEMP/assistant-mutations/mutations-${{ matrix.shard }}.json"
       - name: Keep validation evidence
         if: always()
