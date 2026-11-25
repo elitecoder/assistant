@@ -280,7 +280,7 @@ def env_reply(monkeypatch):
         return rec.get("_clear", True)
     monkeypatch.setattr(listen.comms_session, "should_clear", fake_should_clear)
 
-    refreshed = {"ws_ref": "workspace:new", "surface_ref": "surface:new",
+    refreshed = {"ws_ref": "workspace:12", "surface_ref": "surface:new",
                  "cwd": "/cwd", "transcript_path": "/refreshed.jsonl", "agent": "droid"}
 
     def fake_clear(paths, sess, boot_prompt, agent="claude", log=None):

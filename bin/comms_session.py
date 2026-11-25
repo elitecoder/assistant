@@ -27,8 +27,10 @@ import hashlib
 import json
 import os
 import re
+import contextlib
 import shlex
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -77,7 +79,7 @@ DISPATCH_CWD = REPO_ROOT
 SRC = REPO_ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
-from assistant import model_tiers  # noqa: E402
+from assistant import model_tiers, session_effects  # noqa: E402
 
 # Comms is a narrow conversational role — Sonnet, not the Opus the ~/.zprofile
 # `claude` alias bakes in. We bypass the alias by invoking the binary at its
@@ -505,7 +507,8 @@ def submit_until_confirmed(send_text, press_enter, read_box, confirmed, marker: 
                            attempts: int = SUBMIT_ATTEMPTS,
                            wait_sec: float = SUBMIT_WAIT_SEC,
                            sleep=time.sleep, clock=time.monotonic,
-                           busy=lambda: False, busy_wait_sec: float = BUSY_WAIT_SEC) -> bool:
+                           busy=lambda: False, busy_wait_sec: float = BUSY_WAIT_SEC,
+                           enter_only: bool = False) -> bool:
     """Type a prompt once, press Enter, and wait until `confirmed()` sees it in
     the transcript. Returns whether it did.
 
@@ -517,25 +520,34 @@ def submit_until_confirmed(send_text, press_enter, read_box, confirmed, marker: 
     got recorded isn't typed again, and one an earlier try left sitting in the
     box only gets its Enter. While `busy()` and the box no longer holds the
     marker, confirmation waits up to `busy_wait_sec` more. All I/O is
-    injected."""
+    injected.
+
+    `enter_only` is for a message already typed: nothing is typed, and Enter is
+    pressed only while a read of the box made right then shows this message's own
+    marker (a collapsed paste doesn't count), so the owner's own half-typed text
+    is never submitted. When the box doesn't show it, nothing is pressed and it
+    returns False."""
     if confirmed():
         return True
     # Only this prompt's own marker counts here: an old collapsed paste in the
     # box says nothing about whether this text was typed.
     if not box_has_marker(read_box(), marker):
+        if enter_only:
+            return False
         send_text()
         sleep(0.5)
     press_enter()
+    holds = box_has_marker if enter_only else box_holds
     for attempt in range(attempts):
         deadline = clock() + wait_sec
         while clock() < deadline:
             if confirmed():
                 return True
             sleep(1)
-        if attempt + 1 < attempts and box_holds(read_box(), marker):
+        if attempt + 1 < attempts and holds(read_box(), marker):
             press_enter()
     deadline = clock() + busy_wait_sec
-    while clock() < deadline and busy() and not box_holds(read_box(), marker):
+    while clock() < deadline and busy() and not holds(read_box(), marker):
         if confirmed():
             return True
         sleep(2)
@@ -693,24 +705,99 @@ def close_own_workspace(paths: comms_lib.Paths, ws_ref: str, log=lambda m: None)
         else f"close {ws_ref} rc={rc}: {err.strip()[:120]}")
 
 
+# --------------------------------------------------------------------------- recorded typing
+#
+# Every keystroke this daemon sends to a session happens inside `typing_scope`, which writes the intent to the
+# effects ledger first and the result after. The scope belongs to the thread that opened it, so the daemon's
+# threads (inbound workers, the watchdog) never share one.
+
+_scope = threading.local()
+
+
+@contextlib.contextmanager
+def typing_scope(paths: comms_lib.Paths, ws_ref: str, surface_ref: str, source: str, *, kind: str, ref: str,
+                 anchor: float | None = None, slack_ts: str = "", batch=()):
+    """Record the intent to type into `ws_ref`, yield the keys to type with, and record how it ended. Raises
+    `session_effects.Refused`, before anything is typed, when it can't be recorded or isn't allowed. `batch` is a
+    list of {ref, anchor, slack_ts} for older messages typed in the same turn: each has its own intent, all begun
+    before anything is typed, and each gets the same result. A refusal says which message it was for."""
+    begun: list[str] = []
+
+    def begin(**given):
+        try:
+            begun.append(session_effects.begin(ws_ref, source, kind=kind, component="comms",
+                                               once_tap=given.get("ref", "") if kind == "tap" else "", **given))
+        except session_effects.Refused as refusal:
+            refusal.slack_ts = given.get("slack_ts", "")
+            for effect_id in begun:  # nothing is typed, so the ones already begun say so
+                session_effects.finish(effect_id, "failed", error="not recorded")
+            raise
+
+    for older in batch:
+        begin(**older)
+    begin(ref=ref, anchor=anchor, slack_ts=slack_ts)
+    effect_id, others = begun[-1], begun[:-1]
+
+    def transport(method, params):
+        """An exit status of 0 is an answer whatever the body; a timeout raises, because the keystroke may have
+        landed and is then recorded as unknown, not failed."""
+        comms_lib.clear_last_run()
+        answer = _cmux_rpc(paths, method, params)
+        if answer is not None:
+            return answer
+        ran = comms_lib.last_run()  # how the command just run ended, if one was run
+        if ran and ran[1].startswith("timeout"):
+            raise TimeoutError(method)
+        return {} if ran and ran[0] == 0 else None
+
+    try:
+        keys = session_effects.Keys(effect_id, transport, surface_ref, ws_ref, also=others)
+    except session_effects.Refused:
+        for each in begun:
+            session_effects.finish(each, "failed", error="not recorded")
+        raise
+    outer = getattr(_scope, "keys", None)
+    _scope.keys = keys
+    try:
+        yield keys
+    except BaseException:
+        keys.raised = keys.raised or keys.sent > 0  # an error nobody expected after it started: the text may be there
+        raise
+    finally:
+        _scope.keys = outer
+        keys.finish()
+
+
+def _active_keys(surface_ref: str):
+    keys = getattr(_scope, "keys", None)
+    if keys is None or keys.surface_id != surface_ref:
+        raise session_effects.Refused("invalid", session_effects.INVALID)
+    return keys
+
+
 def send_enter(paths: comms_lib.Paths, surface_ref: str) -> None:
     """Submit whatever is in the prompt box by writing a carriage return to the
     terminal. `surface.send_key enter` reports success on a warm workspace that
     was never shown on screen, yet the prompt stays unsent (reproduced
     2026-09-28 on a --focus false workspace); a "\\r" through send_text submits
     it at once."""
-    _cmux_rpc(paths, "surface.send_text", {"surface_id": surface_ref, "text": "\r"})
+    _active_keys(surface_ref).carriage_return()
+
+
+def message_in_box(paths: comms_lib.Paths, surface_ref: str, marker: str, agent: str | None = None) -> bool:
+    """Whether this message's own marker is sitting in the session's prompt box: typed, not submitted."""
+    return box_has_marker(input_box_text(_surface_read_text(paths, surface_ref, lines=60), agent), marker)
 
 
 def submit(paths: comms_lib.Paths, surface_ref: str, text: str, marker: str,
-           confirmed, agent: str | None = None) -> bool:
+           confirmed, agent: str | None = None, retype: bool = True) -> bool:
     """Type text into the warm session and press Enter until `confirmed()` sees
     it in the transcript (see submit_until_confirmed). The trailing newline is
     stripped: send_text streams keystrokes, so a trailing \\n would submit
     mid-paste."""
-    return submit_until_confirmed(
-        send_text=lambda: _cmux_rpc(paths, "surface.send_text",
-                                    {"surface_id": surface_ref, "text": text.rstrip("\n")}),
+    delivered = submit_until_confirmed(
+        send_text=lambda: _active_keys(surface_ref).text(text.rstrip("\n")),
+        enter_only=not retype,  # a message already typed is never typed again; only its Enter is pressed
         press_enter=lambda: send_enter(paths, surface_ref),
         read_box=lambda: input_box_text(_surface_read_text(paths, surface_ref, lines=60), agent),
         confirmed=confirmed,
@@ -719,6 +806,10 @@ def submit(paths: comms_lib.Paths, surface_ref: str, text: str, marker: str,
             _surface_read_text(paths, surface_ref, lines=60)))
         if agent == agent_session.COPILOT else (lambda: False),
     )
+    keys = getattr(_scope, "keys", None)
+    if keys is not None:
+        keys.confirmed = delivered  # the transcript is the proof
+    return delivered
 
 
 def deliver_boot(paths: comms_lib.Paths, surface_ref: str, cwd: str, boot_prompt: Path,
@@ -744,6 +835,17 @@ def deliver_boot(paths: comms_lib.Paths, surface_ref: str, cwd: str, boot_prompt
                      agent=agent):
         return None
     return found[-1]
+
+
+def _boot_recorded(paths: comms_lib.Paths, ws_ref: str, surface_ref: str, cwd: str, boot_prompt: Path, agent: str,
+                   log) -> str | None:
+    """deliver_boot, with the typing recorded. None when the boot prompt was never submitted or was refused."""
+    try:
+        with typing_scope(paths, ws_ref, surface_ref, "boot", kind="standing", ref="slack-comms"):
+            return deliver_boot(paths, surface_ref, cwd, boot_prompt, agent)
+    except session_effects.Refused as refusal:
+        log(f"boot prompt not typed into {ws_ref}: {refusal}")
+        return None
 
 
 def clear_session(paths: comms_lib.Paths, sess: dict, boot_prompt: Path,
@@ -773,9 +875,14 @@ def clear_session(paths: comms_lib.Paths, sess: dict, boot_prompt: Path,
         return spawn_session(paths, boot_prompt, log=log, agent=agent) or sess
 
     surface_ref = sess["surface_ref"]
-    _cmux_rpc(paths, "surface.send_text", {"surface_id": surface_ref, "text": "/clear"})
-    time.sleep(0.5)
-    send_enter(paths, surface_ref)
+    try:
+        with typing_scope(paths, sess["ws_ref"], surface_ref, "clear", kind="standing", ref="slack-comms") as keys:
+            keys.text("/clear")
+            time.sleep(0.5)
+            send_enter(paths, surface_ref)
+    except session_effects.Refused as refusal:
+        log(f"not clearing {sess['ws_ref']}: {refusal}")
+        return sess
 
     for _ in range(15):
         time.sleep(1)
@@ -785,7 +892,7 @@ def clear_session(paths: comms_lib.Paths, sess: dict, boot_prompt: Path,
             break
 
     time.sleep(1)
-    transcript = deliver_boot(paths, surface_ref, sess["cwd"], boot_prompt, agent)
+    transcript = _boot_recorded(paths, sess["ws_ref"], surface_ref, sess["cwd"], boot_prompt, agent, log)
     if not transcript:
         log(f"boot prompt after /clear never submitted in {sess['ws_ref']} — respawning")
         close_own_workspace(paths, sess["ws_ref"], log=log)
@@ -1085,12 +1192,15 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
     # (banner or status bar), answering the first-launch trust prompt if/when it
     # shows. Both are delegated to await_ready so the ordering is unit-tested.
     def _answer_trust() -> None:
-        _cmux_rpc(paths, "surface.send_text",
-                  {"surface_id": surface_ref, "text": agent_session.trust_answer(agent)})
-        # send_text streams keystrokes; give "1" a beat to land before Enter so
-        # the selection isn't submitted empty (mirrors submit()'s pattern).
-        time.sleep(0.5)
-        send_enter(paths, surface_ref)
+        try:
+            with typing_scope(paths, ws_ref, surface_ref, "trust", kind="standing", ref="slack-comms") as keys:
+                keys.text(agent_session.trust_answer(agent))
+                # send_text streams keystrokes; give "1" a beat to land before Enter so
+                # the selection isn't submitted empty (mirrors submit()'s pattern).
+                time.sleep(0.5)
+                send_enter(paths, surface_ref)
+        except session_effects.Refused as refusal:
+            log(f"trust answer not typed into {ws_ref}: {refusal}")  # the session is then never ready, and is closed
 
     ready, trust_answered = await_ready(
         read_screen=lambda: _surface_read_text(paths, surface_ref),
@@ -1118,7 +1228,7 @@ def spawn_session(paths: comms_lib.Paths, boot_prompt: Path, log=lambda m: None,
 
     # Deliver the responder boot prompt by reference, and keep the session only
     # if its transcript shows the prompt was submitted.
-    transcript = deliver_boot(paths, surface_ref, cwd, boot_prompt, agent)
+    transcript = _boot_recorded(paths, ws_ref, surface_ref, cwd, boot_prompt, agent, log)
     if not transcript:
         log(f"{agent} boot prompt never submitted in {ws_ref}/{surface_ref}")
         _abandon_failed_spawn(paths, ws_ref, log=log)

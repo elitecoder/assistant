@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -272,7 +273,33 @@ def check_bedrock_env() -> Check:
                  remedy="set ANTHROPIC_API_KEY or the Bedrock vars in ~/.zprofile (only if you want comms)")
 
 
-SLACK_CHECKS = [check_slack_token, check_slack_scopes, check_claude_bin, check_bedrock_env]
+def check_slack_owner() -> Check:
+    """Only the owner's Slack messages are typed into the warm session. In a channel, Assistant must be told which
+    member that is."""
+    target, why = _slack_config()
+    if target is None:
+        return Check("slack owner", SKIP, core=False, detail=why)
+    if target[:1] not in ("C", "G"):
+        return Check("slack owner", PASS, core=False, detail="the target is a person, so their messages are yours")
+    if re.fullmatch(r"[UW][A-Z0-9]{2,}", os.environ.get("SLACK_USER_ID", "").strip()):
+        return Check("slack owner", PASS, core=False, detail="SLACK_USER_ID names you")
+    try:
+        configured = str(json.loads(comms_lib.Paths.from_env().config.read_text()).get("slack", {}).get("owner") or "")
+    except (OSError, ValueError, AttributeError):
+        configured = ""
+    if re.fullmatch(r"[UW][A-Z0-9]{2,}", configured.strip()):
+        return Check("slack owner", PASS, core=False, detail="slack.owner in ~/.assistant/config.json names you")
+    return Check("slack owner", WARN, core=False,
+                 detail="the target is a channel and neither SLACK_USER_ID nor slack.owner in ~/.assistant/config.json "
+                        "is set to a member ID, so Assistant can't tell which messages are yours and types none of "
+                        "them into the session",
+                 remedy="add `export SLACK_USER_ID=U…` (your member ID: your Slack profile, the three dots, Copy "
+                        "member ID) to ~/.zprofile (the service reads that file, not ~/.zshrc), then run "
+                        "`launchctl kickstart -k gui/$UID/com.assistant.assistant-comms`")
+
+
+SLACK_CHECKS = [check_slack_token, check_slack_scopes, check_claude_bin, check_bedrock_env,
+                check_slack_owner]
 
 
 # --------------------------------------------------------------------------- provider / agents checks

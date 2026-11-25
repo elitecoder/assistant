@@ -723,8 +723,8 @@ CHECKS = (
     (
         "a broken telemetry module can't stop the pulse from starting",
         "bin/pulse.py",
-        "from assistant import logcap, mode, model_tiers, redact, transcript_slice  # noqa: E402",
-        "from assistant import logcap, mode, model_tiers, redact, telemetry, transcript_slice  # noqa: E402",
+        "from assistant import logcap, mode, model_tiers, redact, session_effects, transcript_slice  # noqa: E402",
+        "from assistant import logcap, mode, model_tiers, redact, session_effects, telemetry, transcript_slice  # noqa: E402",
         T + "test_the_pulse_does_not_load_telemetry_when_it_starts_and_the_start_up_check_does_not_list_it",
     ),
     (
