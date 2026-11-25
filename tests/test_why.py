@@ -865,6 +865,9 @@ def test_a_failed_start_absorbs_a_typing_only_when_its_own_sentence_says_what_be
     assert story([blocked], [typing("trust", "failed", t=NOW)])[-1].startswith("Assistant opened a session but wouldn't type into it")
     assert len(story([blocked], [typing("trust", "failed", t=NOW)])) == 1
     assert len(story([blocked], [typing("trust", t=NOW)])) == 2, "a trust answer that went out is not a refusal"
+    other = start(outcome="failed", ok=False, reason="other")
+    assert len(story([other], [typing("task", "failed", t=NOW + 2)])) == 2, "a failure that says nothing about typing hides nothing"
+    assert len(story([refused], [typing("trust", "failed", t=NOW)])) == 2, "that refusal is about the instruction, not the trust answer"
 
 
 @pytest.mark.parametrize("reason", ["other", "session_not_ready", "todo_not_marked", "no_workspace", "session_tool_down", "no_surface"])
