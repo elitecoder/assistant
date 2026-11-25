@@ -50,20 +50,26 @@ export function resolveOwner(env, home, warn = console.error) {
   return { id: null, how: 'unknown' }
 }
 
-export function describeOwner(owner) {
+export function describeOwner(owner, everyone = false) {
   const only = 'only your reactions are captured and start work'
   if (owner.how === 'SLACK_USER_ID') return `owner: ${owner.id}, from SLACK_USER_ID; ${only}`
   if (owner.how === 'config-owner') return `owner: ${owner.id}, from slack.owner in ~/.assistant/config.json; ${only}`
   if (owner.how === 'config-target') return `owner: ${owner.id}, from slack.target in ~/.assistant/config.json; ${only}`
+  if (everyone) {
+    return 'owner: unknown (SLACK_USER_ID is not set to a Slack user id and ~/.assistant/config.json has none), so every member\'s reaction is captured and starts work, as it did before; ' +
+      'set SLACK_USER_ID to your Slack user id to capture only yours'
+  }
   return 'owner: unknown (SLACK_USER_ID is not set to a Slack user id and ~/.assistant/config.json has none), so every reaction is captured as Ask me and none starts by itself; set SLACK_USER_ID to fix this'
 }
 
 // Whose reaction does what. autoDispatch: true starts by itself, false is manual only, null is "Ask me".
-export function decide(owner, reactor, autoDispatchOn) {
+// `everyone` (Pro mode, owner unknown, and SLACK_USER_ID not set at all): every reaction is captured as it was before the owner rule.
+export function decide(owner, reactor, autoDispatchOn, everyone = false) {
   if (owner.id) {
     if (reactor !== owner.id) return { capture: false }
     return { capture: true, autoDispatch: autoDispatchOn }
   }
+  if (everyone) return { capture: true, autoDispatch: autoDispatchOn }
   return { capture: true, autoDispatch: autoDispatchOn ? null : false }
 }
 
@@ -185,13 +191,16 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /**
  * Handle one reaction_added event. `ctx`: bot (Slack client), userName, owner, emojis, priority,
- * autoDispatchOn, machine, addTodo.
+ * autoDispatchOn, machine, addTodo. For Pro mode: `mode` (async, 'pro' or 'default'; absent means the default mode) and
+ * `openBeforeOwnerRule` (SLACK_USER_ID was absent or empty, the only case in which the reactor captured every member's
+ * reaction before the owner rule; any other value limited it to that exact string).
  */
 export async function handleReaction(event, ctx) {
   const { bot, owner, emojis, machine } = ctx
   const reaction = (event.reaction ?? '').split('::')[0] // strip skin tone
   if (!emojis.has(reaction)) return // routed to a different machine/emoji
-  const verdict = decide(owner, event.user, ctx.autoDispatchOn)
+  const everyone = !owner.id && ctx.openBeforeOwnerRule === true && ctx.mode !== undefined && (await ctx.mode()) === 'pro'
+  const verdict = decide(owner, event.user, ctx.autoDispatchOn, everyone)
   if (!verdict.capture) return // someone else reacted
   if (event.item?.type !== 'message') return
 
@@ -225,7 +234,7 @@ export async function handleReaction(event, ctx) {
     /* permalink optional */
   }
 
-  const unknownOwner = !owner.id
+  const unknownOwner = !owner.id && !everyone
   const built = await buildTodo({ messages, link, machine, userName: ctx.userName, unknownOwner, ownerInvalid: owner.how === 'invalid', reactor: event.user, reactedTs: ts, partial })
   const title = unknownOwner ? UNCONFIRMED_TITLE + built.title : built.title
   const source = `slack-react:${channel}:${threadTs}`
@@ -234,7 +243,7 @@ export async function handleReaction(event, ctx) {
     // A reaction that isn't confirmed as the owner's is a low priority, and only so many may wait at once.
     ...(unknownOwner ? { priority: 'P3', reactedBy: event.user, unconfirmedCap: MAX_UNCONFIRMED } : { priority: ctx.priority }),
   }
-  const mark = unknownOwner ? ' (Ask me: owner unknown)' : ''
+  const mark = unknownOwner ? ' (Ask me: owner unknown)' : everyone ? ' (owner unknown: captured as before the owner rule)' : ''
   const retryMs = ctx.retryMs ?? LOCK_RETRY_MS
   let result
   for (let attempt = 1; ; attempt++) {

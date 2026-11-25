@@ -277,6 +277,17 @@ MISTYPED_OWNER = (" (SLACK_USER_ID is set, but to something that isn't one: a me
                   "capital letters and digits)")
 
 
+# What the reactor does meanwhile: with no SLACK_USER_ID at all, Pro mode takes any member's reaction as yours; with a mistyped one
+# it keeps saving every reaction as Ask me.
+REACTOR_SAYS = {
+    False: "The Slack reactor can't tell either, so it takes a reaction with your task emoji from any member as yours.",
+    True: "The Slack reactor saves every reaction as Ask me until the ID is fixed.",
+}
+
+# The reactor reads SLACK_USER_ID when it starts, like the listener, and is its own service.
+REACTOR_RESTART = " (and `launchctl kickstart -k gui/$UID/com.assistant.slack-reactor` if you use reactions)"
+
+
 def check_slack_owner() -> Check:
     """Only the owner's Slack messages are typed into the warm session, once Assistant knows which member that is.
     In a channel it has to be told; until then every member's messages are typed, as before."""
@@ -298,11 +309,11 @@ def check_slack_owner() -> Check:
                  detail="the target is a channel and neither SLACK_USER_ID nor slack.owner in ~/.assistant/config.json "
                         "is set to a member ID" + (MISTYPED_OWNER if env_id else "") +
                         ", so Assistant can't tell which messages are yours and types every "
-                        "member's messages into the session, as it always has. Fine if you are the only person in "
-                        "that channel",
+                        "member's messages into the session, as it always has. " + REACTOR_SAYS[bool(env_id)] +
+                        " Fine if you are the only person in the channels Assistant is in",
                  remedy="to have only your own messages typed, add `export SLACK_USER_ID=U…` (your member ID: your "
                         "Slack profile, the three dots, Copy member ID) to ~/.zprofile (the service reads that file, "
-                        "not ~/.zshrc), then run `launchctl kickstart -k gui/$UID/com.assistant.assistant-comms`")
+                        "not ~/.zshrc), then run `launchctl kickstart -k gui/$UID/com.assistant.assistant-comms`" + REACTOR_RESTART)
 
 
 SLACK_CHECKS = [check_slack_token, check_slack_scopes, check_claude_bin, check_bedrock_env,
