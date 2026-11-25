@@ -2122,6 +2122,8 @@ SPOTS = """(own) => {
   const pop = document.querySelector('.fb-pop:not([hidden])'), panel = pop.getBoundingClientRect(), w = panel.width, t = panel.height;
   const hit = (a, b, m = 0) => !(a.right + m <= b.left || a.left >= b.right + m || a.bottom + m <= b.top || a.top >= b.bottom + m);
   const row = document.querySelector(own), thumb = row.querySelector('.fb-down').getBoundingClientRect(), rowHeight = row.getBoundingClientRect().height;
+  const centre = Math.hypot(panel.left + w / 2 - thumb.left - thumb.width / 2, panel.top + t / 2 - thumb.top - thumb.height / 2);
+  const centreAt = (x, y) => Math.hypot(x + w / 2 - thumb.left - thumb.width / 2, y + t / 2 - thumb.top - thumb.height / 2);
   const gapOf = (x, y) => Math.hypot(Math.max(thumb.left - x - w, x - thumb.right, 0), Math.max(thumb.top - y - t, y - thumb.bottom, 0));
   const things = [...document.querySelectorAll('.fb-down, .fb-open, .fb-note')].map(e => ({e, r: e.getBoundingClientRect()})).filter(o => o.r.width && o.r.bottom > 0 && o.r.top < innerHeight);
   const name = o => o.e.className.split(' ').pop() + ' of ' + ((o.e.closest('.sf-row') || {dataset: {}}).dataset.key || '').split('/').pop();
@@ -2131,12 +2133,12 @@ SPOTS = """(own) => {
   const ownTell = row.querySelector('.fb-open'), isOwn = o => o.e === ownTell, isNote = o => o.e.classList.contains('fb-note');
   const must = o => !isOwn(o) && !isNote(o) || (isNote(o) && o.e.closest('.sf-row') === row);
   const clearOf = (x, y, keep) => !things.some(o => keep(o) && hit({left: x, right: x + w, top: y, bottom: y + t}, o.r, 4));
-  const exists = keep => { for (let x = lo; x <= hi - w; x += 6) for (let y = 8; y <= innerHeight - 8 - t; y += 6) if (gapOf(x, y) <= rowHeight && clearOf(x, y, keep)) return true; return false; };
+  const exists = keep => { for (let x = lo; x <= hi - w; x += 6) for (let y = 8; y <= innerHeight - 8 - t; y += 6) if (gapOf(x, y) <= rowHeight && (innerWidth > 620 || centreAt(x, y) <= rowHeight) && clearOf(x, y, keep)) return true; return false; };
   const free = exists(() => true);
   const freeOfOwnLink = exists(o => must(o) || isOwn(o));
   const coveredObjs = things.filter(o => hit(panel, o.r));
   const ownLinkCovered = coveredObjs.some(isOwn), otherNoteCovered = coveredObjs.some(o => isNote(o) && !must(o));
-  return {gap: gapOf(panel.left, panel.top), rowHeight, covered, free, freeOfOwnLink, ownLinkCovered, otherNoteCovered,
+  return {gap: gapOf(panel.left, panel.top), centre, rowHeight, covered, free, freeOfOwnLink, ownLinkCovered, otherNoteCovered,
           inScreen: panel.left >= 8 && panel.right <= innerWidth - 8 && panel.top >= 8 && panel.bottom <= innerHeight - 8};
 }"""
 
@@ -2172,6 +2174,34 @@ def test_the_reasons_open_next_to_their_thumb_at_the_top_the_middle_and_the_bott
                     thumbs.nth(j).evaluate(OPEN_AT["middle"])
                     thumbs.nth(j).click()
                 tab.wait_for_selector(".fb-note", state="detached")
+        browser.close()
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_with_every_row_below_already_thumbed_the_reasons_still_open_next_to_their_thumb_at_the_top_of_the_window(site, wq, width):
+    keys = many_rows(wq, 24)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": width, "height": 800})
+        tab.goto(site + "#open-list")
+        thumbs = tab.locator(ROW_THUMBS)
+        thumbs.first.wait_for()
+        for j in range(12, 24):  # a long run of rows with notes of their own
+            thumbs.nth(j).evaluate(OPEN_AT["middle"])
+            thumbs.nth(j).click()
+        # the row just under the tab bar, a little lower, and (for the last row) as far down as the page lets it go
+        for i, offset in ((12, 0), (12, 58), (13, 90), (15, 140), (17, 120), (23, 0), (23, 90)):
+            tab.locator(".sf-row").nth(i).evaluate("(e, y) => { e.scrollIntoView({block: 'start'}); window.scrollBy(0, -y); }", offset)
+            tab.locator(".sf-row").nth(i).locator(":scope > .sf-main .fb-note button", has_text="Add a reason").evaluate("e => e.click()")  # the tab bar may cover it
+            tab.wait_for_selector(".fb-pop:not([hidden])")
+            tab.evaluate("new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))")
+            found = tab.evaluate(SPOTS, f'.sf-row[data-key="{keys[i]}"]')
+            assert found["gap"] <= found["rowHeight"] and found["inScreen"], (width, i, offset, found)
+            if width == 390:  # on a phone the list is narrow enough to sit by its thumb: its middle is within one row of the thumb's
+                assert found["centre"] <= found["rowHeight"], (width, i, offset, found)
+            assert not found["free"] or found["covered"] == [], ("a place that covers nothing existed", width, i, offset, found)
+            assert not found["freeOfOwnLink"] or not found["ownLinkCovered"], (width, i, offset, found)
+            tab.keyboard.press("Escape")
         browser.close()
 
 

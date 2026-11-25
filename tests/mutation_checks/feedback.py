@@ -829,4 +829,32 @@ CHECKS = (
         '.fb-line:not(:empty){margin-top:6px}',
         TB + "test_the_thumb_on_every_kind_of_row_has_a_44_pixel_tap_area_on_a_phone_that_no_other_tap_area_overlaps",
     ),
+    (
+        "on a phone the reasons open within one row's height of their thumb, middle to middle",
+        P,
+        '+(c>reach?1000:0)+c/20+',
+        '+c/20+',
+        TB + "test_with_every_row_below_already_thumbed_the_reasons_still_open_next_to_their_thumb_at_the_top_of_the_window[390]",
+    ),
+    (
+        "on a phone the list is narrow enough to sit by its thumb",
+        P,
+        '@media (max-width:620px){.fb-pop{width:min(224px,',
+        '@media (max-width:620px){.fb-pop{width:min(280px,',
+        TB + "test_with_every_row_below_already_thumbed_the_reasons_still_open_next_to_their_thumb_at_the_top_of_the_window[390]",
+    ),
+    (
+        "on a phone the list's choices are small enough for two rows",
+        P,
+        '.fb-pop{gap:4px}.fb-pop .btn{padding:5px 7px;font-size:10px}',
+        '.fb-pop{gap:6px}.fb-pop .btn{padding:6px 10px;font-size:11px}',
+        TB + "test_the_reasons_never_cover_a_thumb_a_tell_assistant_link_their_own_note_or_the_edge_of_the_screen[390]",
+    ),
+    (
+        "the list is measured as it is drawn, so its edge never passes the screen's",
+        P,
+        '{width:w,height:t}=p.getBoundingClientRect()',
+        'w=p.offsetWidth,t=p.offsetHeight',
+        TB + "test_with_every_row_below_already_thumbed_the_reasons_still_open_next_to_their_thumb_at_the_top_of_the_window[1280]",
+    ),
 )
