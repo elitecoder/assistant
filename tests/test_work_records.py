@@ -117,8 +117,12 @@ def test_one_piece_of_work_leaves_one_trail_from_arrival_to_the_check(wq, monkey
     assert dispatched is True
     todo_result.main(task, DONE_TEXT)
     refresh.run(now=NOW)
+    # The typing that started the agent is one more step of the same piece of work: its own `effect` record shares the
+    # trace. It is checked here and left out of the list of steps below.
+    [typing] = [e for e in trail(row_trace) if e["kind"] == "effect"]
+    assert typing["fields"]["action"] == "session.type" and typing["fields"]["target"] == task
     assert [(e["kind"], e["subject"], e["fields"].get("state") or e["fields"].get("name") or e["fields"].get("verdict"))
-            for e in trail(row_trace)] == [
+            for e in trail(row_trace) if e["kind"] != "effect"] == [
         ("triage_verdict", pointers.row_pointer(LINK), "agent"),
         ("task", task, "open"),
         ("dispatch", task, None),
@@ -126,7 +130,7 @@ def test_one_piece_of_work_leaves_one_trail_from_arrival_to_the_check(wq, monkey
         ("task", task, "done"),
         ("check", task, "pr-merged"),
     ]
-    verdict, created, dispatch_record, started, finished, check = trail(row_trace)
+    verdict, created, dispatch_record, started, finished, check = [e for e in trail(row_trace) if e["kind"] != "effect"]
     assert created["fields"] == {"state": "open", "origin": "work-queue", "mode": "handsoff"}
     assert (dispatch_record["fields"]["outcome"], dispatch_record["fields"]["workspace"],
             dispatch_record["fields"]["mode"]) == ("done", "workspace:1000020126", "handsoff")
@@ -494,7 +498,7 @@ def test_a_dispatch_records_its_outcome_the_workspace_and_the_new_state(wq, monk
     sent_task(wq)
     pulse, ok, _ = dispatch(monkeypatch, "td-1")
     assert ok is True
-    dispatched, started = trail(OWN)
+    dispatched, started = [e for e in trail(OWN) if e["kind"] != "effect"]  # the typing's own record is tested apart
     assert (dispatched["kind"], dispatched["subject"], dispatched["component"]) == ("dispatch", "td-1", "pulse")
     assert dispatched["fields"]["outcome"] == "done" and dispatched["fields"]["ok"] is True
     assert dispatched["fields"]["workspace"] == "workspace:1000020126" and dispatched["fields"]["mode"] == "assist"
@@ -1451,7 +1455,7 @@ REAL_REF = "workspace:1000020126"
 def test_a_dispatch_to_a_session_with_a_ten_digit_number_keeps_its_workspace(wq, monkeypatch):
     sent_task(wq)
     _, ok, _ = dispatch(monkeypatch, "td-1", workspace=REAL_REF)
-    [dispatched, _started] = trail(OWN)
+    [dispatched, _started] = [e for e in trail(OWN) if e["kind"] != "effect"]
     assert ok is True and dispatched["fields"]["workspace"] == REAL_REF and "_dropped" not in dispatched["fields"]
 
 

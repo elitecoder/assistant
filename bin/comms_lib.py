@@ -15,6 +15,7 @@ import json
 import os
 import re as _re
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -751,15 +752,30 @@ def load_bedrock_env(home: Path | None = None) -> dict[str, str]:
 
 # --------------------------------------------------------------------------- subprocess
 
+_last = threading.local()
+
+
+def last_run() -> tuple[int, str] | None:
+    """(exit status, stderr) of the command run_cmd last ran on this thread since clear_last_run, or None. For a
+    caller that must tell a time-out from a refusal and gets back only a parsed answer."""
+    return getattr(_last, "result", None)
+
+
+def clear_last_run() -> None:
+    _last.result = None
+
+
 def run_cmd(argv: list[str], timeout: int = 30) -> tuple[int, str, str]:
     """Run a command, return (rc, stdout, stderr). Never raises on non-zero."""
     try:
         p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-        return p.returncode, p.stdout, p.stderr
+        result = p.returncode, p.stdout, p.stderr
     except subprocess.TimeoutExpired as e:
-        return -1, e.stdout or "", f"timeout after {timeout}s"
+        result = -1, e.stdout or "", f"timeout after {timeout}s"
     except FileNotFoundError as e:
-        return -1, "", str(e)
+        result = -1, "", str(e)
+    _last.result = result[0], result[2]
+    return result
 
 
 def sidebar_numbers(paths: Paths) -> dict[str, int]:

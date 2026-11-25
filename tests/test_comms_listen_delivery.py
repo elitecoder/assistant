@@ -47,6 +47,7 @@ def env(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("COMMS_HOME", str(home))
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("SLACK_PING_TARGET", raising=False)
+    monkeypatch.setenv("SLACK_USER_ID", "UOWNER")  # only the owner's messages are typed
     monkeypatch.setattr(listen, "INBOX_DIR", home / ".assistant" / "inbox")
     calls: list[list[str]] = []
 
@@ -71,7 +72,7 @@ def _log(paths):
 
 def _msg(text, age_sec=0.0, channel="C0"):
     return {"channel": channel, "text": text, "msg_ts": f"{time.time() - age_sec:.6f}",
-            "reply_to": None}
+            "reply_to": None, "author": "UOWNER"}
 
 
 # ─── pending queue ──────────────────────────────────────────────────────────
@@ -341,8 +342,8 @@ def test_inbound_loop_records_and_queues_before_the_worker_sees_it(env, monkeypa
             stop_.set()
 
     def fake_poll(stop_, env_, msg_queue):
-        msg_queue.put(_msg("new"))
-        msg_queue.put(_msg("newer"))
+        msg_queue.put({**_msg("new"), "author": "UOWNER"})
+        msg_queue.put({**_msg("newer"), "author": "UOWNER"})
 
     monkeypatch.setattr(listen, "_channel_worker", fake_worker)
     monkeypatch.setattr(listen, "_poll_thread", fake_poll)

@@ -18,6 +18,7 @@ parse.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import sys
@@ -27,14 +28,35 @@ from pathlib import Path
 
 BIN = Path(__file__).resolve().parent
 PULSE = BIN / "pulse.py"
-# pulse.py plus its unguarded module-level imports. Keep in sync with pulse.py.
+# pulse.py plus its unguarded module-level imports, and what they import in turn. Pro mode also needs the ledger's
+# modules (`session_effects`, which `session_gate` loads when Pro mode first types, and what it imports), so a broken
+# one is caught here and not in the middle of a round. Keep in sync with pulse.py
+# (`tests/test_run_pulse_wrapper.py` checks the list).
 STARTUP_FILES = (PULSE, BIN.parent / "src/assistant/__init__.py",
+                 BIN.parent / "src/assistant/effects.py",
                  BIN.parent / "src/assistant/logcap.py",
                  BIN.parent / "src/assistant/mode.py",
                  BIN.parent / "src/assistant/model_tiers.py",
+                 BIN.parent / "src/assistant/pointers.py",
                  BIN.parent / "src/assistant/redact.py",
+                 BIN.parent / "src/assistant/session_effects.py",
+                 BIN.parent / "src/assistant/session_gate.py",
                  BIN.parent / "src/assistant/transcript_slice.py")
+# Only Pro mode loads these (through `session_gate`, when it first types), so only Pro mode checks them: in the default
+# mode a broken one must not stop the pulse, as on origin/main, which never looked at them.
+PRO_ONLY = tuple(BIN.parent / f"src/assistant/{name}.py" for name in ("effects", "pointers", "session_effects"))
 LEDGER_EVERY_SEC = 86400  # 1 day
+
+
+def _pro() -> bool:
+    """Pro mode, asked the way `assistant.session_gate` asks. Anything that goes wrong asking is the default mode."""
+    try:
+        spec = importlib.util.spec_from_file_location("_run_pulse_mode", BIN.parent / "src/assistant/mode.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return bool(module.is_pro())
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _record_failure(assistant_dir: Path, error: str, now: float) -> None:
@@ -65,7 +87,10 @@ def _record_failure(assistant_dir: Path, error: str, now: float) -> None:
 
 def main(argv: list[str], *, execv=os.execv) -> int:
     assistant_dir = Path.home() / ".assistant"
+    pro = _pro()
     for path in STARTUP_FILES:
+        if path in PRO_ONLY and not pro:
+            continue
         try:
             compile(path.read_bytes(), str(path), "exec", dont_inherit=True)
         except (OSError, SyntaxError, ValueError) as exc:
