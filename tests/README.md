@@ -119,8 +119,11 @@ Keep both verdicts and the measured results with the exact commit under review.
 The mutation check uses separate temporary copies. It breaks each protection
 in `CHECKS` one at a time and requires the corresponding test to fail; it never edits your
 working copy or sends commands to live sessions. `--shard i/n` runs every n-th
-check from the i-th; the workflow runs shards 1/4 through 4/4 in parallel jobs, three checks at a time in each (`--workers 3`), and
-`test_mutation_shards.py` proves the shards together run each check exactly once.
+check from the i-th; the workflow runs shards 1/4 through 4/4 in parallel Linux jobs, four checks at a time in each
+(`--workers 4`), and `test_mutation_shards.py` proves the shards together run each check exactly once. Checks whose
+test needs a Mac (`MAC_ONLY_TESTS` in `tests/mutation_smoke.py`: tests that save through the Slack task-list lock,
+which takes a macOS-only flag) are left out of the shards off a Mac; the coverage job, on macOS, runs them with
+`--mac-only`.
 
 **Add the checks for a change in a file of its own**, `tests/mutation_checks/<what-the-change-is>.py`, which
 defines `CHECKS` as a tuple of `(name, file, original, broken, test)` entries. The harness adds every file in that

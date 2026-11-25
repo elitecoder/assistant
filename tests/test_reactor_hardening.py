@@ -40,10 +40,12 @@ def node_tests(name: str) -> None:
     assert proc.returncode == 0, out[-4000:] + err[-2000:]
 
 
+@MAC_LOCK
 def test_reactor_capture_node_tests_pass():
     node_tests("capture.test.js")
 
 
+@MAC_LOCK
 def test_reactor_todo_store_node_tests_pass():
     node_tests("todo-store.test.js")
 

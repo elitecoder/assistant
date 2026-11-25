@@ -8,6 +8,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -823,3 +824,9 @@ def test_the_hourly_update_never_starts_workspace_numbers_you_stopped(tmp_path):
     log.write_text("")
     run_installer({**env, "ASSISTANT_SELF_UPDATE": "1"})
     assert any(line.startswith("bootstrap") and label in line for line in log.read_text().splitlines())
+
+
+def test_every_list_the_installer_declares_starts_empty():
+    """bash 5 under set -u stops on a list that was declared and never given a value; macOS's bash 3.2 doesn't."""
+    declared = re.findall(r"^\s*(?:declare|local) -a (\w+)(.*)$", (REPO / "install.sh").read_text(), re.M)
+    assert declared and all(rest.startswith("=(") for _, rest in declared), declared

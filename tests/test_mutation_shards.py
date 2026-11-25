@@ -3,6 +3,7 @@ and the quality workflow runs every shard and fails its required check unless al
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -221,11 +222,40 @@ def test_a_worker_count_that_isnt_one_to_eight_is_refused(spec):
         mutation_smoke.workers(spec)
 
 
-def test_the_workflow_runs_as_many_jobs_as_the_account_runs_at_once():
-    """Five macOS jobs run at a time here: the shards plus the coverage job must not exceed that, or jobs queue."""
-    shards = re.search(r"shard: \[([0-9, ]+)\]", WORKFLOW).group(1).split(", ")
-    assert len(shards) + 1 <= 5
-    assert '--workers 3 \\' in WORKFLOW
+def test_only_the_coverage_job_waits_for_a_mac():
+    """GitHub often has no Mac free, so only the coverage job runs on one. It also runs the Mac-only checks; the shards
+    run the rest on Linux, four at a time, one per core."""
+    jobs = re.split(r"\n  (?=[a-z-]+:\n)", WORKFLOW.split("\njobs:\n", 1)[1])
+    runners = {job.split(":", 1)[0].strip(): re.search(r"runs-on: (\S+)", job).group(1) for job in jobs}
+    assert runners == {"changed-code-coverage": "macos-latest", "mutations": "ubuntu-latest",
+                       "quality-gate": "ubuntu-latest"}
+    coverage_job, mutation_job = jobs[0], jobs[1]
+    assert "mutation_smoke.py --mac-only --workers 3 \\" in coverage_job
+    assert '--shard "${{ matrix.shard }}/4" --workers 4 \\' in mutation_job
+    assert "sudo apt-get install -y -q zsh" in mutation_job, "the Slack setup tests run the setup script in zsh"
+
+
+def load_harness(monkeypatch, platform):
+    monkeypatch.setattr(sys, "platform", platform)
+    spec = importlib.util.spec_from_file_location(f"mutation_smoke_on_{platform}", Path(mutation_smoke.__file__))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_off_a_mac_the_shards_leave_out_the_mac_only_checks_and_the_mac_job_runs_them(monkeypatch):
+    mac, linux = load_harness(monkeypatch, "darwin"), load_harness(monkeypatch, "linux")
+    assert mac.MAC_ONLY_CHECKS and mac.MAC_ONLY_CHECKS == linux.MAC_ONLY_CHECKS
+    assert not set(linux.CHECKS) & set(linux.MAC_ONLY_CHECKS)
+    assert Counter(linux.CHECKS + linux.MAC_ONLY_CHECKS) == Counter(mac.CHECKS), "every check runs once, somewhere"
+    assert {check[4] for check in mac.MAC_ONLY_CHECKS} == mac.MAC_ONLY_TESTS, "each Mac-only test backs a check"
+
+
+def test_mac_only_runs_just_the_checks_whose_tests_need_a_mac(tmp_path, monkeypatch):
+    monkeypatch.setattr(mutation_smoke, "run_check", lambda name, *rest: {"check": name, "mutant": "rejected"})
+    out = tmp_path / "mac.json"
+    mutation_smoke.main(["--mac-only", "--output", str(out)])
+    assert [c["check"] for c in json.loads(out.read_text())["checks"]] == [c[0] for c in mutation_smoke.MAC_ONLY_CHECKS]
 
 
 def test_the_mutation_job_installs_what_the_tests_it_runs_import():

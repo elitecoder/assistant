@@ -5977,6 +5977,17 @@ def well_formed(checks: tuple, where: str = "") -> tuple:
 
 
 CHECKS = well_formed(CHECKS + checks_in(CHECKS_DIR))
+# These tests save through the Slack task-list lock, which takes a macOS-only flag, and skip on other systems, so the
+# checks they back run only on a Mac: --mac-only runs just those, and elsewhere they're left out.
+MAC_ONLY_TESTS = frozenset((
+    "tests/test_reactor_hardening.py::test_reactor_capture_node_tests_pass",
+    "tests/test_reactor_hardening.py::test_reactor_todo_store_node_tests_pass",
+    "tests/test_reactor_hardening.py::test_an_add_waits_while_a_python_writer_holds_the_lock",
+    "tests/test_reactor_hardening.py::test_an_add_that_cannot_get_the_lock_in_time_fails_and_writes_nothing",
+))
+MAC_ONLY_CHECKS = tuple(check for check in CHECKS if check[4] in MAC_ONLY_TESTS)
+if sys.platform != "darwin":
+    CHECKS = tuple(check for check in CHECKS if check[4] not in MAC_ONLY_TESTS)
 
 
 def shard(spec: str) -> tuple:
@@ -6006,7 +6017,11 @@ def main(argv: list[str] | None = None):
                         help="run N checks at a time; each check works in its own copy of the sources and its own home")
     parser.add_argument("--name", default="", metavar="TEXT",
                         help="run only the checks whose name contains TEXT, to try the ones you just wrote")
+    parser.add_argument("--mac-only", action="store_true",
+                        help="run only the checks whose tests need a Mac; the shards leave them out on other systems")
     args = parser.parse_args(argv)
+    if args.mac_only:
+        args.shard = MAC_ONLY_CHECKS
     if args.name:
         args.shard = tuple(check for check in args.shard if args.name in check[0])
         if not args.shard:
