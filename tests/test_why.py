@@ -205,7 +205,6 @@ def test_a_kind_nobody_knows_is_left_out_and_the_copies_of_the_other_records_are
     ("gmail.mark_read", "Marked read in Gmail"), ("gmail.trash", "Moved to Gmail Trash"),
     ("gmail.untrash", "Taken out of Gmail Trash"), ("mail.unsubscribe", "Sent the unsubscribe request"),
     ("slack.save.complete", "Marked done in Slack"), ("slack.save.uncomplete", "Reopened in Slack"),
-    ("session.type", "Typed into an agent session"),
 ])
 def test_a_finished_change_says_what_was_done_for_each_class_in_the_ledger(cls, said):
     assert text_of(effect(cls)) == f"{said}, because you pressed the button."
@@ -800,3 +799,134 @@ def test_a_key_joining_an_id_takes_the_earliest_first_time_its_group_holds(tmp_p
 def test_no_sentence_about_a_failed_start_talks_about_rounds():
     said = list(why.START_FAILED.values()) + [why.PARKED_HOW, why.RETRY, why._dispatch(ev("dispatch", NOW, "td-1", outcome="failed"))]
     assert not [t for t in said if "round" in t], said
+
+
+# --- typing into a session ---------------------------------------------------------------------------------------
+
+def typing(source, outcome="done", t=NOW, task="td-1", **kw):
+    target = {"source": source, "session": "workspace:1000010007", **({"task": task} if task else {})}
+    return {"id": "ef-%016x" % (abs(hash((source, t, task))) % 16 ** 16), "class": "session.type", "target": target,
+            "authorized_by": {"kind": "owner_flag"}, "t": t, "finished_t": t + 1, "outcome": outcome, "verified": outcome == "done",
+            "error": "", "undoes": "", **kw}
+
+
+def start(ts=NOW + 5, **fields):
+    return ev("dispatch", ts, "td-1", **{"outcome": "done", "ok": True, "confirmed": True, **fields})
+
+
+def story(events, effects, now=NOW + 1000):
+    return [s["text"] for s in why.steps_of(events, effects, now=now)]
+
+
+def test_a_start_that_typed_the_trust_answer_and_the_instruction_is_one_step():
+    assert story([start()], [typing("trust", t=NOW), typing("task", t=NOW + 2)]) == [
+        "Assistant started an agent on it and typed the task's instruction into the new session."]
+    assert story([start()], [typing("task", t=NOW + 2)]) == [
+        "Assistant started an agent on it and typed the task's instruction into the new session."]
+
+
+def test_an_instruction_the_ledger_could_not_confirm_is_said_once_whichever_record_could_not_tell():
+    unsure = "Assistant started an agent on it and typed the task's instruction, but couldn't tell if it arrived."
+    assert story([start()], [typing("trust", t=NOW), typing("task", "unknown", t=NOW + 2)]) == [unsure]
+    assert story([start(confirmed=False)], [typing("task", "unknown", t=NOW + 2)]) == [unsure]
+    assert story([start(confirmed=False)], [typing("task", "done", t=NOW + 2)]) == [unsure]
+    assert story([start(confirmed=False)], []) == [
+        "Assistant started an agent on it. It couldn't confirm the session got the instruction."]
+
+
+def test_a_start_with_only_the_trust_answer_typed_says_the_plain_start_and_hides_nothing_that_belongs_to_another():
+    assert story([start()], [typing("trust", t=NOW)]) == ["Assistant started an agent on it."]
+    other = typing("task", t=NOW + 2, task="td-9")
+    assert story([start()], [other]) == ["Assistant typed the task's instruction into its session.", "Assistant started an agent on it."]
+
+
+def test_two_starts_of_one_task_each_keep_their_own_typings_one_to_one():
+    first = start(ts=NOW + 5, outcome="failed", ok=False, reason="session_refused_text")
+    second = start(ts=NOW + 200)
+    effects_ = [typing("task", "failed", t=NOW + 2), typing("trust", t=NOW + 150), typing("task", t=NOW + 152)]
+    assert story([first, second], effects_) == [
+        "cmux refused the instruction, so nothing was typed. The task is parked.",
+        "Assistant started an agent on it and typed the task's instruction into the new session."]
+    twice = story([start()], [typing("task", t=NOW + 1), typing("task", t=NOW + 2)])
+    assert twice == ["Assistant typed the task's instruction into its session.",
+                     "Assistant started an agent on it and typed the task's instruction into the new session."], "a start takes one typing of each source"
+
+
+def test_a_failed_start_absorbs_its_typings_and_nothing_is_said_twice():
+    failed = start(outcome="failed", ok=False, reason="session_refused_text")
+    said = story([failed], [typing("trust", t=NOW), typing("task", "failed", t=NOW + 2)])
+    assert said == ["cmux refused the instruction, so nothing was typed. The task is parked."]
+    refused = start(outcome="failed", ok=False, reason="typing_refused")
+    assert story([refused], [typing("trust", t=NOW)]) == [
+        "Assistant opened a session but wouldn't type into it, because it couldn't record what it types. The task is parked."]
+
+
+def test_a_typing_far_from_any_start_or_for_no_task_is_shown_on_its_own():
+    assert story([start(ts=NOW + 500)], [typing("task", t=NOW)])[0] == "Assistant typed the task's instruction into its session."
+    assert story([start(ts=NOW + 5)], [typing("task", t=NOW + 40, task=None)])[-1] == "Assistant typed the task's instruction into its session."
+    assert story([start(ts=NOW)], [typing("task", t=NOW + 60)]) == ["Assistant started an agent on it.", "Assistant typed the task's instruction into its session."]
+    assert len(story([start(ts=NOW + 125)], [typing("task", t=NOW)])) == 2, "more than the window before its start"
+
+
+@pytest.mark.parametrize("source, said", [
+    ("task", "Assistant typed the task's instruction into its session."),
+    ("trust", "Assistant answered the new session's folder-trust question."),
+    ("nudge:stranded", "Assistant nudged the session because it looked stalled."),
+    ("cleanup", "Assistant typed /cleanup into the session."),
+    ("merge", "Assistant asked the session to merge its pull request."),
+    ("slack-message", "Assistant typed your Slack message into its session."),
+    ("submit", "Assistant typed into an agent session."),
+    ("boot", "Assistant typed into an agent session."),
+    ("brand-new-source", "Assistant typed into an agent session."),
+])
+def test_a_typing_shown_on_its_own_says_what_it_was_by_where_it_came_from(source, said):
+    assert story([], [typing(source, task=None)]) == [said]
+
+
+@pytest.mark.parametrize("outcome, suffix", [("failed", "and nothing was typed."), ("unknown", "but couldn't tell if it arrived.")])
+def test_a_typing_that_failed_or_is_unknown_says_so_for_each_source(outcome, suffix):
+    done = {"task": "the task's instruction into its session", "trust": "the new session's folder-trust question"}
+    assert story([], [typing("task", outcome, task=None)])[0].endswith(suffix)
+    assert story([], [typing("trust", outcome, task=None)])[0].endswith(suffix)
+    assert story([], [typing("task", outcome, task=None)])[0].startswith(
+        "Assistant tried to type the task's" if outcome == "failed" else "Assistant typed the task's")
+    assert story([], [typing("trust", outcome, task=None)])[0].startswith(
+        "Assistant tried to answer" if outcome == "failed" else "Assistant answered")
+    assert done
+
+
+def test_a_typing_still_going_is_in_progress_and_one_with_no_answer_for_ten_minutes_is_unknown():
+    still = typing("cleanup", None, task=None, finished_t=None)
+    assert story([], [still], now=NOW + 5) == ["Assistant is typing /cleanup into the session."]
+    assert story([], [still], now=NOW + why.IN_FLIGHT_SEC) == ["Assistant typed /cleanup into the session, but couldn't tell if it arrived."]
+
+
+def test_only_a_typing_a_person_started_says_so_and_the_rest_name_no_allowance():
+    for kind in ("owner_flag", "standing", "decision"):
+        assert story([], [typing("nudge:stranded", task=None, authorized_by={"kind": kind})]) == [
+            "Assistant nudged the session because it looked stalled."]
+        assert story([], [typing("run-now", task=None, authorized_by={"kind": kind})]) == ["Assistant typed into an agent session."]
+    for source in ("run-now", "restore", "cli"):
+        assert story([], [typing(source, task=None, authorized_by={"kind": "tap"})]) == [
+            "Assistant typed into an agent session, because you pressed the button."]
+    assert story([], [typing("slack-message", task=None, authorized_by={"kind": "tap"})]) == [
+        "Assistant typed your Slack message into its session."]
+
+
+def test_a_source_the_ledger_holds_is_never_echoed():
+    for source in ("task", "weird:source", "x" * 30, "<b>"):
+        said = story([], [typing(source, task=None)])[0]
+        assert source not in said or source == "task"
+
+
+def test_every_source_session_effects_knows_that_a_start_or_a_window_names_has_its_own_sentence_or_the_general_one():
+    from assistant import session_effects
+    assert set(session_effects.WINDOWED_SOURCES) - {"pulse", "cli", "restore", "run-now", "boot", "clear"} <= set(why.TYPED)
+    assert set(why.START_SOURCES) == {"task", "trust"}
+
+
+def test_a_nudge_or_cleanup_for_a_task_is_never_taken_for_part_of_its_start():
+    said = story([start()], [typing("nudge:stranded", t=NOW + 2), typing("cleanup", t=NOW + 3), typing("task", t=NOW + 1)])
+    assert said == [
+        "Assistant nudged the session because it looked stalled.", "Assistant typed /cleanup into the session.",
+        "Assistant started an agent on it and typed the task's instruction into the new session."]

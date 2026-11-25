@@ -248,7 +248,7 @@ Nov 18, 11:06 am   Assistant first saw this, in GitHub.
 Nov 18, 11:07 am   The model sorted it into Do first and suggested you do it yourself. Model: claude-sonnet-5-5. Sorting rules: version 1a2b3c4d.
 Nov 18, 2:30 pm    You sent it to an agent for a first pass. It became task td-41.
 Nov 18, 2:31 pm    Assistant tried to start an agent 3 times and couldn't: cmux didn't answer. It will try again by itself. Last time: Nov 18, 2:41 pm.
-Nov 18, 2:46 pm    Assistant started an agent on it.
+Nov 18, 2:46 pm    Assistant started an agent on it and typed the task's instruction into the new session.
 Nov 18, 3:10 pm    The agent reported it finished.
 Nov 18, 3:20 pm    Assistant checked the result: the pull request is merged.
 Nov 18, 3:21 pm    Archived in Gmail, because you pressed the button.
@@ -267,6 +267,14 @@ task (it names it, for example "remove task td-41") on the Tasks tab and send th
 row to an agent again; it keeps the same trail. When Assistant started an agent
 but couldn't mark the task as started, it may start a second one by itself. Other
 failures promise nothing.
+
+A start is one step: when the record of what Assistant types into sessions shows it
+answered the new session's folder-trust question and typed the task's instruction, the
+start says so ("…and typed the task's instruction into the new session", or "…but
+couldn't tell if it arrived" when it couldn't tell). A typing that belongs to no
+start is a step of its own and says what it was ("Assistant nudged the session
+because it looked stalled.", "Assistant typed /cleanup into the session."). It says
+"because you pressed the button" only for a typing you started.
 
 Under the steps it says "This is everything Assistant has recorded about this
 item. The record stays on this Mac." when it read all of it, and "Some of it
