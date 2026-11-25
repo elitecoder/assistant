@@ -15,7 +15,7 @@ P = "work_queue/page.py"
 T = "tests/test_why.py::"
 TS = "tests/test_why_server.py::"
 TB = "tests/test_work_queue_browser.py::"
-TRI = "tests/test_why_restart.py::"
+TRI = "tests/test_why_typing.py::"
 
 CHECKS = (
     # --- the sentences ---
@@ -622,8 +622,8 @@ CHECKS = (
     (
         "a start takes one typing of each source",
         W,
-        "and source not in typed.get(index, {}):",
-        ":",
+        "        if source in typed.get(index, {}):\n            continue",
+        "        if False:\n            continue",
         T + "test_two_starts_of_one_task_each_keep_their_own_typings_one_to_one",
     ),
     (
@@ -634,11 +634,11 @@ CHECKS = (
         T + "test_a_nudge_or_cleanup_for_a_task_is_never_taken_for_part_of_its_start",
     ),
     (
-        "a failed start absorbs its typings",
+        "a failed start absorbs a typing only when its sentence says what became of it",
         W,
-        "                claimed.add(e.get(\"id\"))\n                break",
-        "                break",
-        T + "test_a_failed_start_absorbs_its_typings_and_nothing_is_said_twice",
+        '        elif e.get("outcome") == "failed" and source in ACCOUNTS_FOR.get(record.get("reason"), ()):',
+        "        elif True:",
+        T + "test_a_failed_start_for_any_other_reason_shows_every_typing_it_does_not_mention",
     ),
     (
         "a typing that couldn't be confirmed is said once, in the start's sentence",
@@ -664,7 +664,7 @@ CHECKS = (
     (
         "a typing that failed says nothing was typed",
         W,
-        'return f"Assistant tried to {tried} and nothing was typed."',
+        'return f"Assistant tried to {tried}, but it didn\'t go through."',
         'return f"Assistant {done}{because}."',
         T + "test_a_typing_that_failed_or_is_unknown_says_so_for_each_source",
     ),
@@ -674,5 +674,54 @@ CHECKS = (
         "    steps = _event_steps(events, typed) + _effect_steps(effects, now, claimed)",
         "    steps = _event_steps(events, {}) + _effect_steps(effects, now, ())",
         "tests/test_why_typing.py::test_a_start_that_answered_trust_and_typed_the_instruction_reads_as_one_step",
+    ),
+    (
+        "a failed start that absorbed a typing still shows the ones it doesn't mention",
+        W,
+        '        elif e.get("outcome") == "failed" and source in ACCOUNTS_FOR.get(record.get("reason"), ()):',
+        '        elif e.get("outcome") != "done" and source in ("task", "trust"):',
+        T + "test_a_failed_start_absorbs_a_typing_only_when_its_own_sentence_says_what_became_of_it",
+    ),
+    (
+        "a refused start says whether a session was opened",
+        W,
+        '        parked = WORKSPACE.fullmatch(fields.get("workspace") or "") is not None\n        task = record["subject"] if TASK_ID.fullmatch(record["subject"] or "") else ""\n        said, retry = REFUSED[reason]',
+        '        parked = True\n        task = record["subject"] if TASK_ID.fullmatch(record["subject"] or "") else ""\n        said, retry = REFUSED[reason]',
+        T + "test_a_refused_start_says_whether_the_task_was_blocked_and_what_to_do_and_names_the_task_only_when_it_has_an_id",
+    ),
+    (
+        "a blocked task's advice is to queue it to start, not to send the row again",
+        W,
+        'BLOCKED_HOW = (\'The task is marked blocked. To run it again, close the workspace it opened and press "Queue to start" \'',
+        'BLOCKED_HOW = (\'The task is marked blocked. To run it again, remove the task and send the row again, not "Queue to start" \'',
+        T + "test_a_refused_start_says_whether_the_task_was_blocked_and_what_to_do_and_names_the_task_only_when_it_has_an_id",
+    ),
+    (
+        "a typing with no result that is stale is not said to have been typed",
+        W,
+        "    if abs(float(e.get(\"t\") or 0) - now) >= IN_FLIGHT_SEC:  # no result and not young: the intent may be all there is",
+        "    if False:  # no result and not young: the intent may be all there is",
+        T + "test_a_typing_still_going_is_in_progress_and_one_with_no_result_that_is_stale_or_dated_ahead_is_not_said_to_have_been_typed",
+    ),
+    (
+        "a start picks the typing's own start when starts are close together",
+        W,
+        "        gap, index = min(near, key=lambda pair: (pair[0] < 0, abs(pair[0])))",
+        "        gap, index = min(near)",
+        TRI + "test_two_starts_of_one_task_each_keep_their_own_typings",
+    ),
+    (
+        "when Assistant couldn't tell, it says what to do",
+        W,
+        '"session received it. Look at the session to check.")',
+        '"session received it.")',
+        T + "test_an_instruction_the_ledger_could_not_confirm_is_said_once_whichever_record_could_not_tell",
+    ),
+    (
+        "a refused start with a session opened is blocked and names the way back",
+        W,
+        'press "Queue to start" \'\n               "on {task} on the Tasks tab of the Assistant dashboard.")',
+        'press "Queue to start" \'\n               "on {task} on the Tasks tab of the Assistant dashboard. ")',
+        TRI + "test_a_session_whose_typing_was_refused_is_blocked_and_queue_to_start_really_opens_it_again",
     ),
 )
