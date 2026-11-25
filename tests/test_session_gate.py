@@ -210,16 +210,11 @@ def no_gate(monkeypatch):
     monkeypatch.delattr(assistant, "session_gate", raising=False)
 
 
-@pytest.mark.parametrize("filename, asks", [("pulse.py", None), ("comms_session.py", None), ("todo-server.py", "_pro"),
-                                            ("cmux-send.py", "_pro")])
+@pytest.mark.parametrize("filename, asks", [("todo-server.py", "_pro"), ("cmux-send.py", "_pro")])
 def test_a_service_whose_gate_cant_load_still_starts_and_is_the_default_mode(no_gate, filename, asks, default_mode):
     module = dm.load("nogate_" + filename.replace("-", "_").replace(".py", ""), filename)
-    assert module.session_gate is None if hasattr(module, "session_gate") else True
-    if asks:
-        assert getattr(module, asks)() is False
-    else:
-        assert module.session_effects.active() is False
-        assert issubclass(module.session_effects.Refused, Exception)
+    assert module.session_gate is None
+    assert getattr(module, asks)() is False
 
 
 def test_restore_whose_gate_cant_load_still_starts(no_gate, default_mode):
@@ -249,3 +244,19 @@ def test_the_merge_script_takes_the_mode_it_is_given(default_mode):
         with mock.patch.object(merge.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="{", stderr="")) as ran:
             merge.step2_send_and_verify(dm.WS, "/x", "tap", given)
         assert ("--source" in ran.call_args.args[0]) is given
+
+
+@pytest.mark.parametrize("filename", ["pulse.py", "comms_session.py"])
+def test_the_two_services_that_start_workspaces_dont_start_without_the_gate_so_nothing_is_opened_or_typed(
+        no_gate, filename, default_mode):
+    """As on origin/main with any broken module: the service fails at start, and the pre-flight says why. Run twice, as
+    two pulses (or two restarts of the service) would be."""
+    from unittest import mock
+    started = []
+    import subprocess
+    with mock.patch.object(subprocess, "run", side_effect=lambda *a, **k: started.append(a)), \
+            mock.patch.object(subprocess, "Popen", side_effect=lambda *a, **k: started.append(a)):
+        for _ in range(2):
+            with pytest.raises(ImportError):
+                dm.load("nogate_start_" + filename.replace(".py", ""), filename)
+    assert started == []

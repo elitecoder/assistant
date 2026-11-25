@@ -83,18 +83,10 @@ from assistant import model_tiers  # noqa: E402
 
 # Pro mode's ledger is loaded only when Pro mode needs it, and the default mode types through the gate's own keys:
 # the default mode never depends on `session_effects`, `effects` or `pointers` loading (see assistant.session_gate).
-try:
-    from assistant import session_gate  # noqa: E402
-    session_effects = session_gate.effects
-except Exception:  # noqa: BLE001 - nothing here may stop the Slack service from starting
-    session_gate = None
-
-    class session_effects:  # noqa: N801 - the default mode, when even the gate can't load
-        Refused = type("Refused", (Exception,), {})
-
-        @staticmethod
-        def active() -> bool:
-            return False
+# The gate itself is imported without a `try`: if it can't load, the Slack service doesn't start, as on origin/main
+# with any broken module, rather than starting a warm session it then can't type into.
+from assistant import session_gate  # noqa: E402
+session_effects = session_gate.effects
 
 # Comms is a narrow conversational role — Sonnet, not the Opus the ~/.zprofile
 # `claude` alias bakes in. We bypass the alias by invoking the binary at its

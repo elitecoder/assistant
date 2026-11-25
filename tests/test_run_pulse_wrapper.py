@@ -223,3 +223,34 @@ def test_pulse_launch_agent_runs_the_preflight():
     plist = plistlib.loads((REPO / "launchagents/com.assistant.assistant-pulse.plist")
                            .read_bytes())
     assert plist["ProgramArguments"] == ["__PYTHON__", "__REPO__/bin/run-pulse.py"]
+
+
+def _run_in_layout(tmp_path, monkeypatch, broken, mode_body):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    wrapper = _layout(tmp_path, 'print("RAN")\n')
+    (tmp_path / "src/assistant/mode.py").write_text(mode_body)
+    (tmp_path / f"src/assistant/{broken}.py").write_text("def broken(:\n")
+    return subprocess.run([sys.executable, str(wrapper)], capture_output=True, text=True, timeout=60,
+                          env=dict(os.environ, HOME=str(tmp_path / "home")))
+
+
+@pytest.mark.parametrize("name", ["effects", "pointers", "session_effects"])
+def test_a_broken_ledger_file_stops_the_pulse_in_pro_mode_only(tmp_path, monkeypatch, name):
+    ran = _run_in_layout(tmp_path / "pro", monkeypatch, name, "def is_pro():\n    return True\n") \
+        if (tmp_path / "pro").mkdir() is None else None
+    assert ran.stdout == "" and f"{name}.py: SyntaxError" in ran.stderr
+    (tmp_path / "default").mkdir()
+    ran = _run_in_layout(tmp_path / "default", monkeypatch, name, "def is_pro():\n    return False\n")
+    assert ran.stdout.strip() == "RAN" and ran.stderr == ""
+
+
+@pytest.mark.parametrize("mode_body", ["", "def is_pro():\n    raise OSError('unreadable')\n"])
+def test_a_mode_that_cant_be_asked_is_the_default_mode_for_the_start_up_check(tmp_path, monkeypatch, mode_body):
+    ran = _run_in_layout(tmp_path, monkeypatch, "effects", mode_body)
+    assert ran.stdout.strip() == "RAN"
+
+
+@pytest.mark.parametrize("mode_body", ["def is_pro():\n    return True\n", "def is_pro():\n    return False\n"])
+def test_a_broken_gate_stops_the_pulse_in_either_mode(tmp_path, monkeypatch, mode_body):
+    ran = _run_in_layout(tmp_path, monkeypatch, "session_gate", mode_body)
+    assert ran.stdout == "" and "session_gate.py: SyntaxError" in ran.stderr

@@ -89,18 +89,11 @@ from assistant import logcap, mode, model_tiers, redact, transcript_slice  # noq
 
 # Pro mode's ledger is loaded only when Pro mode needs it, and the default mode types through the gate's own keys:
 # the default mode never depends on `session_effects`, `effects` or `pointers` loading (see assistant.session_gate).
-try:
-    from assistant import session_gate  # noqa: E402
-    session_effects = session_gate.effects
-except Exception:  # noqa: BLE001 - nothing here may stop the pulse from starting
-    session_gate = None
-
-    class session_effects:  # noqa: N801 - the default mode, when even the gate can't load
-        Refused = type("Refused", (Exception,), {})
-
-        @staticmethod
-        def active() -> bool:
-            return False
+# The gate itself is imported without a `try`, like the pulse's other modules: if it can't load the pulse doesn't start
+# (and the pre-flight in run-pulse.py says why), as on origin/main with any broken module. A pulse that started
+# without it would open a workspace and then be unable to type into it, every run.
+from assistant import session_gate  # noqa: E402
+session_effects = session_gate.effects
 
 # ASSISTANT_DIR is env-overridable so the launchd-spawned daemon (which cannot
 # rely on $HOME under macOS home sandboxing) points at the real tree.
