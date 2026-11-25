@@ -45,6 +45,14 @@ def broken(request, monkeypatch):
     return request.param
 
 
+@pytest.mark.parametrize("filename", ["pulse.py", "comms_session.py", "comms-listen.py", "todo-server.py", "cmux-send.py",
+                                      "cmux-restore-sessions.py"])
+def test_every_service_that_types_loads_with_the_ledger_unimportable_and_asks_the_mode_without_it(filename):
+    module = dm.load("fresh_" + filename.replace("-", "_").replace(".py", ""), filename)
+    proxy = getattr(module, "session_effects", None)  # the stand-in, which loads nothing in the default mode
+    assert proxy is None or proxy.active() is False
+
+
 # --- the gate itself ------------------------------------------------------------------------------------------------
 
 @pytest.fixture
