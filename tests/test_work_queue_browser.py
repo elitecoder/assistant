@@ -2143,10 +2143,11 @@ SPOTS = """(own) => {
   const clearOf = (x, y, keep) => !things.some(o => keep(o) && hit({left: x, right: x + w, top: y, bottom: y + t}, o.r, 4));
   const exists = keep => { for (let x = lo; x <= hi - w; x += 6) for (let y = 8; y <= innerHeight - 8 - t; y += 6) if (gapOf(x, y) <= rowHeight && (innerWidth > 620 || centreAt(x, y) <= rowHeight) && clearOf(x, y, keep)) return true; return false; };
   const free = exists(() => true);
+  const reachable = exists(must);  // somewhere near enough that covers no thumb, no other Tell Assistant link and not its own note
   const freeOfOwnLink = exists(o => must(o) || isOwn(o));
   const coveredObjs = things.filter(o => hit(panel, o.r));
   const ownLinkCovered = coveredObjs.some(isOwn), otherNoteCovered = coveredObjs.some(o => isNote(o) && !must(o));
-  return {gap: gapOf(panel.left, panel.top), centre, rowHeight, covered, free, freeOfOwnLink, ownLinkCovered, otherNoteCovered,
+  return {gap: gapOf(panel.left, panel.top), centre, rowHeight, reachable, size: [Math.round(w), Math.round(t)], choices: [...pop.querySelectorAll('button')].map(b => [b.getBoundingClientRect().height, parseFloat(getComputedStyle(b).fontSize)]), covered, free, freeOfOwnLink, ownLinkCovered, otherNoteCovered,
           inScreen: panel.left >= 8 && panel.right <= innerWidth - 8 && panel.top >= 8 && panel.bottom <= innerHeight - 8};
 }"""
 
@@ -2172,7 +2173,10 @@ def test_the_reasons_open_next_to_their_thumb_at_the_top_the_middle_and_the_bott
                 tab.wait_for_selector(".fb-pop:not([hidden])")
                 tab.evaluate("new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))")
                 found = tab.evaluate(SPOTS, f'.sf-row[data-key="{keys[i]}"]')
-                assert found["gap"] <= found["rowHeight"] and found["inScreen"], (width, i, where, found)
+                assert found["inScreen"] and (not found["reachable"] or found["gap"] <= found["rowHeight"]), (width, i, where, found)
+                if width == 390:
+                    assert not found["reachable"] or found["centre"] <= found["rowHeight"], (width, i, where, found)
+                    assert min(h for h, _ in found["choices"]) >= 32 and min(f for _, f in found["choices"]) >= 12, found["choices"]
                 assert not [c for c in found["covered"] if c.startswith("fb-down") or c.startswith("fb-open")] or all(
                     c.endswith(f" of {keys[i].split('/')[-1]}") and c.startswith("fb-open") for c in found["covered"] if c.startswith(("fb-down", "fb-open"))), (width, i, where, found)
                 assert not found["free"] or found["covered"] == [], ("a place that covers nothing existed", width, i, where, found)
@@ -2204,9 +2208,11 @@ def test_with_every_row_below_already_thumbed_the_reasons_still_open_next_to_the
             tab.wait_for_selector(".fb-pop:not([hidden])")
             tab.evaluate("new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))")
             found = tab.evaluate(SPOTS, f'.sf-row[data-key="{keys[i]}"]')
-            assert found["gap"] <= found["rowHeight"] and found["inScreen"], (width, i, offset, found)
-            if width == 390:  # on a phone the list is narrow enough to sit by its thumb: its middle is within one row of the thumb's
-                assert found["centre"] <= found["rowHeight"], (width, i, offset, found)
+            assert found["inScreen"], (width, i, offset, found)
+            if found["reachable"]:  # where something near enough keeps clear of what must stay uncovered, the list is on it
+                assert found["gap"] <= found["rowHeight"] and (width > 390 or found["centre"] <= found["rowHeight"]), (width, i, offset, found)
+            if width == 390:  # on a phone the choices are big enough to tap and to read
+                assert min(h for h, _ in found["choices"]) >= 32 and min(f for _, f in found["choices"]) >= 12, found["choices"]
             assert not found["free"] or found["covered"] == [], ("a place that covers nothing existed", width, i, offset, found)
             assert not found["freeOfOwnLink"] or not found["ownLinkCovered"], (width, i, offset, found)
             tab.keyboard.press("Escape")

@@ -635,7 +635,7 @@ border-radius:6px;border:1px solid var(--line-strong);background:var(--hover);co
 .ready-check{display:block;margin-top:4px;font-size:12px;color:var(--text-2)}.ready-check.note{color:var(--green)}
 .ready-cleared{margin:10px 0 0;padding-left:22px;display:flex;flex-direction:column;gap:8px;opacity:.75}
 .ready-cleared:empty{display:none}.ready-cleared li>div{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-@media (max-width:620px){.fb-pop{width:min(224px,calc(100vw - 16px))}.fb-pop{gap:4px}.fb-pop .btn{padding:5px 7px;font-size:10px}body{padding:20px 16px 40px}.sf-main{flex-wrap:wrap}.sf-main>.fb{display:contents}.sf-main .fb-down{margin:.5px 0 .5px .5px;padding:6.75px}.sf-main .fb-open{position:relative;padding:0;margin:-4px 0 0 .5px}.sf-main .fb-open::after{content:"";position:absolute;inset:-8px 0}.fb{flex-wrap:wrap}.sf-main .fb-note{position:static;flex-basis:100%;white-space:normal;text-align:left}.sf-link{flex-basis:100%}.ap-row{flex-direction:column}.ap-group summary{flex-wrap:wrap}
+@media (max-width:620px){.fb-pop{width:clamp(130px,calc(100vw - 220px),170px)}.fb-pop{gap:4px}.fb-pop .btn{min-height:32px;padding:0 8px;font-size:12px}body{padding:20px 16px 40px}.sf-main{flex-wrap:wrap}.sf-main>.fb{display:contents}.sf-main .fb-down{margin:.5px 0 .5px .5px;padding:6.75px}.sf-main .fb-open{position:relative;padding:0;margin:-4px 0 0 .5px}.sf-main .fb-open::after{content:"";position:absolute;inset:-8px 0}.fb{flex-wrap:wrap}.sf-main .fb-note{position:static;flex-basis:100%;white-space:normal;text-align:left}.sf-link{flex-basis:100%}.ap-row{flex-direction:column}.ap-group summary{flex-wrap:wrap}
 .draft{flex-direction:column}.draft textarea{width:100%}}
 """
 
@@ -867,16 +867,16 @@ function fbPlace(s){const h=FBX.get(s),p=h.pop,{width:w,height:t}=p.getBoundingC
  mine=s.querySelector('.fb-note')||h.x.querySelector('.fb-note'),n=(mine||h.down).getBoundingClientRect(),
  card=(s.closest('.section')||document.body).getBoundingClientRect(),lo=Math.max(8,card.left),hi=Math.min(innerWidth-8,card.right),
  rects=(q,keep)=>[...document.querySelectorAll(q)].filter(keep).map(b=>b.getBoundingClientRect()).filter(b=>b.width&&b.bottom>0&&b.top<innerHeight),
- must=rects('.fb-down,.fb-open',b=>b!==h.open).concat([n]),notes=rects('.fb-note',b=>b!==mine),
+ must=rects('.fb-down,.fb-open',b=>b!==h.open).concat([n]),link=h.open.getBoundingClientRect(),notes=rects('.fb-note',b=>b!==mine),
  btns=rects('.sf-main > .btn',()=>true),clamp=x=>Math.max(lo,Math.min(x,hi-w)),
- xs=[...new Set([n.left-8-w,r.left-8-w,r.right-w,lo,hi-w,...btns.filter(b=>Math.abs(b.top-r.top)<160).map(b=>b.left-8-w),
+ xs=[...new Set([n.left-8-w,r.left-8-w,r.right-w,lo,hi-w,...must.flatMap(b=>[b.right+4,b.left-4-w]),...btns.filter(b=>Math.abs(b.top-r.top)<160).map(b=>b.left-8-w),
    ...Array.from({length:Math.ceil((hi-lo-w)/24)+1},(_,k)=>lo+24*k)].map(clamp))],
  gap=(x,y)=>Math.hypot(Math.max(r.left-x-w,x-r.right,0),Math.max(r.top-y-t,y-r.bottom,0)),
  clear=(b,x,y,m)=>x+w+m<=b.left||x>=b.right+m||y+t+m<=b.top||y>=b.bottom+m,
  area=(b,x,y)=>Math.max(0,Math.min(x+w,b.right)-Math.max(x,b.left))*Math.max(0,Math.min(y+t,b.bottom)-Math.max(y,b.top)),
  // never over another thumb, another Tell Assistant or its own note; as far as it can be, not over its own link, another note or a button;
  // and always within one row's height of its thumb
- cost=(x,y)=>{const g=gap(x,y),c=Math.hypot(x+w/2-r.left-r.width/2,y+t/2-r.top-r.height/2);return g+(g>reach?1000:0)+(c>reach?1000:0)+c/20+100*notes.filter(b=>!clear(b,x,y,0)).length+btns.reduce((a,b)=>a+area(b,x,y),0)/400};
+ cost=(x,y)=>{const g=gap(x,y),c=Math.hypot(x+w/2-r.left-r.width/2,y+t/2-r.top-r.height/2);return g+(g>reach?1000:0)+(c>reach?1000:0)+c/20+(clear(link,x,y,4)?0:400)+100*notes.filter(b=>!clear(b,x,y,0)).length+btns.reduce((a,b)=>a+area(b,x,y),0)/400};
  let pick=null,low=1e9;for(const x of xs)for(let y=8;y<=innerHeight-t-8;y+=6)if(must.every(b=>clear(b,x,y,4))){const c=cost(x,y);if(c<low){low=c;pick=[x,y]}}
  pick=pick||[clamp(r.right-w),Math.max(8,Math.min(r.bottom+4,innerHeight-t-8))];
  p.style.left=pick[0]+'px';p.style.top=pick[1]+'px'}
