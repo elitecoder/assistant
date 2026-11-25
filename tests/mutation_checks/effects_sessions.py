@@ -569,6 +569,13 @@ CHECKS = (
         P + "test_an_error_making_the_trust_answers_keys_parks_the_task_and_the_next_task_still_goes_out",
     ),
     (
+        "an Enter-only retry that can't be recorded keeps the message queued",
+        CL,
+        '                if again.code != "loop":\n                    raise\n                raise refusal from None',
+        '                if False:\n                    raise\n                raise refusal from None',
+        C + "test_an_enter_only_retry_that_cant_be_recorded_leaves_the_message_queued_not_dropped",
+    ),
+    (
         "a tap used again by Assistant's own retry is counted like an automatic typing",
         SE,
         '    held = kind != "tap" or bool(same_tap and _tap_used(session or surface, same_tap))',

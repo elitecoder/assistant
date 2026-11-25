@@ -273,6 +273,27 @@ def test_enter_only_retries_of_one_message_stop_at_the_loop_limit_and_the_owner_
     assert any(t.startswith("[slack channel=") and "again" in t for t in cmux.typed()[typed:])  # typed at once
 
 
+def test_an_enter_only_retry_that_cant_be_recorded_leaves_the_message_queued_not_dropped(
+        reply, env_delivery, monkeypatch):
+    cmux, state = reply
+    paths, calls = env_delivery
+    rec = pending(paths)
+    state["landed"] = False
+    serve(monkeypatch)
+    listen._deliver_pending(paths, "C0", None)  # typed, never seen
+    state["box"] = f"[slack channel=C0 msg_ts={rec['msg_ts']}] {MARKER}"
+    real = effects.begin
+
+    def begin(cls, target, *a, **k):
+        if target.get("source") == "submit":
+            raise effects.Unrecorded("disk full")
+        return real(cls, target, *a, **k)
+
+    monkeypatch.setattr(effects, "begin", begin)
+    assert listen._deliver_pending(paths, "C0", None) is False
+    assert [r["text"] for r in listen.read_pending(paths)] == [MARKER] and replies(calls) == []
+
+
 def test_a_message_that_landed_since_is_delivered_without_typing_anything(reply, env_delivery, monkeypatch):
     cmux, state = reply
     paths, calls = env_delivery
