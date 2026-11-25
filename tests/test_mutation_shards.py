@@ -247,7 +247,8 @@ def test_off_a_mac_the_shards_leave_out_the_mac_only_checks_and_the_mac_job_runs
     mac, linux = load_harness(monkeypatch, "darwin"), load_harness(monkeypatch, "linux")
     assert mac.MAC_ONLY_CHECKS and mac.MAC_ONLY_CHECKS == linux.MAC_ONLY_CHECKS
     assert not set(linux.CHECKS) & set(linux.MAC_ONLY_CHECKS)
-    assert Counter(linux.CHECKS + linux.MAC_ONLY_CHECKS) == Counter(mac.CHECKS), "every check runs once, somewhere"
+    assert mac.CHECKS == mac.ALL_CHECKS == linux.ALL_CHECKS
+    assert Counter(linux.CHECKS + linux.MAC_ONLY_CHECKS) == Counter(linux.ALL_CHECKS), "every check runs once, somewhere"
     assert {check[4] for check in mac.MAC_ONLY_CHECKS} == mac.MAC_ONLY_TESTS, "each Mac-only test backs a check"
 
 
@@ -325,7 +326,7 @@ def test_a_file_that_doesnt_define_a_tuple_of_checks_is_refused(tmp_path, body):
 def test_the_list_the_shards_run_includes_every_file_in_the_folder():
     kept = mutation_smoke.checks_in(mutation_smoke.CHECKS_DIR)
     assert kept, "the folder holds at least the checks for its own loading"
-    assert mutation_smoke.CHECKS[-len(kept):] == kept, "they follow the list in mutation_smoke.py, in order"
+    assert mutation_smoke.ALL_CHECKS[-len(kept):] == kept, "they follow the list in mutation_smoke.py, in order"
     assert mutation_smoke.CHECKS_DIR == REPO / "tests/mutation_checks"
 
 

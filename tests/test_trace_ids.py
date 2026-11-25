@@ -682,6 +682,8 @@ def test_the_slack_reactors_tests_for_its_task_writer_pass():
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is not installed")
+    if sys.platform != "darwin":
+        pytest.skip("the reactor takes the task-list lock with a macOS flag")
     done = subprocess.run([node, "--test", "slack-reactor/test/todo-store.test.js"], cwd=REPO, text=True,
                           capture_output=True, timeout=120)
     assert done.returncode == 0, done.stdout + done.stderr

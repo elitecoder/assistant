@@ -5982,13 +5982,15 @@ CHECKS = well_formed(CHECKS + checks_in(CHECKS_DIR))
 MAC_ONLY_TESTS = frozenset((
     "tests/test_reactor_hardening.py::test_reactor_capture_node_tests_pass",
     "tests/test_secrets_in_logs.py::test_reactor_node_tests_pass",
+    "tests/test_trace_ids.py::test_the_slack_reactors_tests_for_its_task_writer_pass",
     "tests/test_reactor_hardening.py::test_reactor_todo_store_node_tests_pass",
     "tests/test_reactor_hardening.py::test_an_add_waits_while_a_python_writer_holds_the_lock",
     "tests/test_reactor_hardening.py::test_an_add_that_cannot_get_the_lock_in_time_fails_and_writes_nothing",
 ))
-MAC_ONLY_CHECKS = tuple(check for check in CHECKS if check[4] in MAC_ONLY_TESTS)
+ALL_CHECKS = CHECKS
+MAC_ONLY_CHECKS = tuple(check for check in ALL_CHECKS if check[4] in MAC_ONLY_TESTS)
 if sys.platform != "darwin":
-    CHECKS = tuple(check for check in CHECKS if check[4] not in MAC_ONLY_TESTS)
+    CHECKS = tuple(check for check in ALL_CHECKS if check[4] not in MAC_ONLY_TESTS)
 
 
 def shard(spec: str) -> tuple:
