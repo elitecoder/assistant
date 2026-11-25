@@ -37,8 +37,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   The reason: before, every non-bot message in the channel you set up was typed
   into a session that runs with its permission prompts off, so any member of
   the channel could make it run commands on your Mac. Now only your own
-  messages are typed. Your Slack id comes from `SLACK_USER_ID`, or from the
-  target when it is a person. A message from someone else is kept as received,
+  messages are typed. Your Slack id comes from `SLACK_USER_ID`, then
+  `slack.owner` in `~/.assistant/config.json`, then the target when it is a
+  person. A message from someone else is kept as received,
   never typed, and Assistant says once a day, in its thread, that it only takes
   instructions from you. The Slack check in `assistant-doctor.py` warns when
   the target is a channel and the id isn't set.
@@ -59,8 +60,10 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   including a script that you or an agent runs, is limited to three of the same
   thing into one session in thirty minutes and is not retyped for thirty minutes
   after a typing whose outcome isn't known; you can always type into the
-  session yourself. The page tells you when something may already have been
-  typed.
+  session yourself. If you script `bin/cmux-send.py`: its sends into one
+  session count together unless each kind names its own `--source`, so a fourth
+  inside thirty minutes is refused (exit status 4) even when the text differs.
+  The page tells you when something may already have been typed.
 - Check every request that changes something on the dashboard server the same
   way, with no exceptions. Before, a web page open in your browser could make
   your machine start a TODO's agent session (`/dispatch-now`), type a
@@ -187,7 +190,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   Assistant stops trying it tells you in the message's thread (also when your
   Slack target is a person): if its text is still in the prompt box only Enter
   is pressed again, and only while the box still shows that message, so text
-  you are typing is never submitted. A test fails the
+  you are typing there isn't submitted (apart from the split second between
+  that check and the key press). A test fails the
   build if any other code types into a session. Typing by the
   `spawn-claude-workspace` skill, by the Slack session's own model and by crash
   resume isn't recorded yet; see `docs/effects.md`.

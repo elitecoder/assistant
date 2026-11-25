@@ -181,7 +181,11 @@ What the record does for you:
   three times in thirty minutes is refused, and the log says it tries again
   once the oldest of them is 30 minutes old. Typings that failed don't count;
   ones nobody could tell about do. Each task and each Slack message counts as
-  its own thing.
+  its own thing. For `bin/cmux-send.py`, "the same thing" is everything sent
+  with the same `--source`, because the record never holds the text: by default
+  all of its sends into one session count together, so a fourth inside thirty
+  minutes is refused even when the text differs. Name a different `--source`
+  for a different kind of message.
 - **Typing that may have landed isn't repeated by Assistant on its own.** The
   result is `done` when the text and Enter both went out and nothing says they
   didn't land, `failed` when nothing went out, and `unknown` when the text went
