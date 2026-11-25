@@ -9,8 +9,8 @@ back, so:
   * No record, no typing. `begin()` raises `Refused` when the intent can't be written, and the caller types nothing.
   * Every typing names what allowed it: a person's tap, a task whose owner turned on auto-start, or a standing
     setting that is on. Text somebody else wrote is never what allows typing.
-  * The ledger holds the session, the task, and where the text came from (a fixed name such as `nudge:stranded`),
-    never the text, a prompt path, a title or a Slack message.
+  * The ledger holds the session, the task (when its id has the record's shape, `td-N`), and where the text came
+    from (a fixed name such as `nudge:stranded`), never the text, a prompt path, a title or a Slack message.
   * The same thing typed into the same session more than three times in half an hour is refused (a loop), whatever
     allowed it, except the first use of a one-time tap (a Slack message the owner rule let through). A task or a Slack message
     counts as its own thing.
@@ -57,13 +57,6 @@ SESSION = re.compile(r"workspace:[0-9]{1,18}")
 # session for half an hour only. That applies to every one of them however it was authorized: the merge script run
 # by hand, `bin/cmux-send.py` run by an agent, "run now" and restore are held like the pulse's typing.
 WINDOWED_SOURCES = ("nudge:stranded", "cleanup", "boot", "clear", "merge", "pulse", "cli", "restore", "run-now")
-
-# Where the text is chosen by a person or an outside script each time, so the same source and session says nothing
-# about whether this is the same thing: `bin/cmux-send.py` run by hand or by a script (`cli`), the dashboard's "Run
-# now" (`run-now`) and the merge request (`merge`). For these the typing's key also holds a digest of the text, so the
-# loop limit counts, and an unconfirmed typing holds, *this text* in this session. Every other source is a fixed
-# instruction or a loop of Assistant's own, where a runaway typing may vary its text and the limit must still hold.
-DIGEST_SOURCES = ("cli", "run-now", "merge")
 
 UNRECORDED = ("Assistant couldn't record what it types, so it typed nothing. "
               "Check that your disk isn't full and that the folder ~/.assistant/effects can be written to.")
@@ -157,28 +150,16 @@ def _tap_used(where: str, once_tap: str) -> bool:
                for found in effects.history(CLASS, limit=LOOP_SCAN))
 
 
-def typed_digest(text) -> str:
-    """The digest `begin` takes for `text`: 16 hex characters keyed by this install's secret (`feedback.text_pointer`),
-    so the ledger can tell two texts apart and never holds either. "" when it can't be made, for any reason."""
-    try:
-        from assistant import feedback  # noqa: PLC0415
-        found = feedback.text_pointer("typed", text) if isinstance(text, str) else ""
-    except Exception:  # noqa: BLE001 - a digest that can't be made never stops a typing
-        return ""
-    return found if effects.TARGET_KEYS["msg_digest"].fullmatch(found) else ""
-
-
 def begin(session: str, source: str, *, kind: str, ref: str, component: str, task: str = "", trace: str = "",
-          slack_ts: str = "", surface: str = "", anchor: float | None = None, once_tap: str = "",
-          text_digest: str = "") -> str:
+          slack_ts: str = "", surface: str = "", anchor: float | None = None, once_tap: str = "") -> str:
     """Record the intent to type into `session` (`workspace:N`) and return the effect id. Type only if this returns.
 
     `source` is where the text comes from, a fixed name. `kind` and `ref` are what allowed it (`tap`, `owner_flag`
     or `standing`, and a pointer: a task id, the name of a nudge, a route). `anchor` is the time that allowance was
     given, when it has one of its own (a Slack message's time): the ledger then refuses a second typing of the same
     thing without a newer allowance. `once_tap` names a one-time tap (see below). `surface` names a terminal for a session known only by that id (`session` is
-    then empty). `text_digest` is `typed_digest(text)`; it is used only for the sources in `DIGEST_SOURCES`, and a
-    task id the record can't hold is left out of the record (such a task is still typed into). Raises `Refused`."""
+    then empty). A task id the record can't hold is left out of the record; such a task is still typed into.
+    Raises `Refused`."""
     now = _now()
     target: dict = {"source": source}
     if session:
@@ -198,8 +179,6 @@ def begin(session: str, source: str, *, kind: str, ref: str, component: str, tas
         raise Refused("invalid", INVALID) from None
     if anchor is not None and anchor > now + effects.FUTURE_SEC:
         raise Refused("later", LATER)
-    digest = text_digest if source in DIGEST_SOURCES and effects.TARGET_KEYS["msg_digest"].fullmatch(text_digest) else ""
-    keyed = {**target, "msg_digest": digest} if digest else target  # what is counted and held
     # One thing is exempt from the loop limit and from the hold after an unknown: the first use of a tap that can
     # only be used once (`once_tap`: a Slack message, `slack:<time>`, that the owner rule let through, which is the
     # owner's own, or anyone's in a channel where Assistant can't tell which member the owner is;
@@ -207,16 +186,16 @@ def begin(session: str, source: str, *, kind: str, ref: str, component: str, tas
     # (every Enter-only retry of that message) are counted and held. Everything else is counted and held, whatever
     # its authorization kind: a script can't tell a person from an agent, and a person can type into the session.
     held = not (kind == "tap" and once_tap and not _tap_used(session or surface, once_tap))
-    if held and _loop_count(keyed, now) >= LOOP_MAX:
+    if held and _loop_count(target, now) >= LOOP_MAX:
         raise Refused("loop", LOOP.format(where=where))
-    if held and anchor is None and source in WINDOWED_SOURCES and _held_by_unknown(keyed, now):
+    if held and anchor is None and source in WINDOWED_SOURCES and _held_by_unknown(target, now):
         raise Refused("unknown", UNKNOWN.format(where=where), UNKNOWN_SHORT.format(where=where))
     # Recorded to the second, and rounded up when it is "now": rounded down it could fall before the result of a
     # typing that finished a moment ago, and the ledger would take it for an approval older than that result.
     auth = {"kind": kind, "ref": ref, "at": _iso(math.ceil(now) if anchor is None else anchor)}
     try:
         return effects.begin(CLASS, target, auth, trace=trace if pointers.is_trace_id(trace) else "",
-                             component=component, text_digest=digest)
+                             component=component)
     except effects.Duplicate as exc:
         if exc.done:
             raise Refused("done", DONE.format(where=where)) from None

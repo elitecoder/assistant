@@ -192,17 +192,13 @@ What the record does for you:
   three times in thirty minutes is refused, and the log says it tries again
   once the oldest of them is 30 minutes old. Typings that failed don't count;
   ones nobody could tell about do. Each task and each Slack message counts as
-  its own thing. A task whose id the record can't hold (one that Assistant
-  made itself, such as `td-auto-1a2b3c4d`) is recorded without the task, and is
-  still typed into. For `bin/cmux-send.py`, "the same thing" is everything sent
-  with the same `--source`, because the record never holds the text. The three
-  sources whose text a person or an outside script chooses each time (a send
-  with no `--source`, "run now" and the merge request) are the exception: the
-  record also holds a keyed digest of the text (16 characters, made with a
-  secret kept on this Mac; the text never reaches the record), so for them
-  "the same thing" is the same text into the same session, and four different
-  texts inside thirty minutes are all typed. Typings recorded before this
-  change have no digest and never match one that has.
+  its own thing. A task whose id the record can't hold (one Assistant made
+  itself, such as `td-auto-1a2b3c4d`) is recorded without the task and is still
+  typed into. For `bin/cmux-send.py`, "the same thing" is everything sent
+  with the same `--source`, because the record never holds the text: by default
+  all of its sends into one session count together, so a fourth inside thirty
+  minutes is refused even when the text differs. Name a different `--source`
+  for a different kind of message.
 - **Typing that may have landed isn't repeated by Assistant on its own.** The
   result is `done` when the text and Enter both went out and nothing says they
   didn't land, `failed` when nothing went out, and `unknown` when the text went
@@ -212,8 +208,7 @@ What the record does for you:
   script that you or an agent runs (`cmux-send.py`, the merge script, "run now",
   restore), is limited to three of the same thing into one session in thirty
   minutes, and is not typed again for thirty minutes after a typing whose
-  outcome isn't known. For a script, "run now" and the merge request, that
-  means the same text: a different text into the same session is typed. No option or flag overrides this: a script can't tell a
+  outcome isn't known. No option or flag overrides this: a script can't tell a
   person from an agent, and you can always type into the session yourself. The
   page tells you what happened (for a time-out: "Assistant sent this but didn't
   hear back, so it may have been typed. Check the session before you send it

@@ -349,23 +349,6 @@ def test_the_send_script_never_refuses_a_loop_in_the_default_mode(default_mode):
     effects_untouched(default_mode)
 
 
-def test_the_send_script_types_different_texts_in_the_default_mode_and_makes_no_digest_or_key(default_mode):
-    """The text digest is Pro mode's: the default mode never loads it, so no secret is made and no record is."""
-    for text in ("/merge-when-ready 7", "/merge-when-ready 8", "/merge-when-ready 9", "/merge-when-ready 10"):
-        send = load("cmux_send_default3", "cmux-send.py")
-        send.SENDS_LOG = str(default_mode / ".assistant/sends.jsonl")
-        calls = []
-        sys.argv = ["cmux-send.py", "--ws", WS, "--text", text, "--enter", "--post-send-wait", "0"]
-        with mock.patch.object(send, "resolve_terminal_surface", return_value=SURFACE), \
-                mock.patch.object(send, "rpc", lambda m, p: calls.append((m, p)) or (0, {"ok": True})), \
-                mock.patch.object(send.time, "sleep"), mock.patch("sys.stdout", io.StringIO()), \
-                pytest.raises(SystemExit) as stop:
-            send.main()
-        assert stop.value.code == 0 and calls[0] == ("surface.send_text", {"surface_id": "S-1", "text": text})
-    effects_untouched(default_mode)
-    assert not (default_mode / ".assistant/feedback").exists()
-
-
 def test_the_pulse_types_into_a_task_with_an_auto_id_in_the_default_mode_and_records_nothing(default_mode):
     pulse = load("pulse_default_auto", "pulse.py")
     assert pulse._begin_dispatch_typing("td-auto-1a2b3c4d", {}, WS, "task") == pulse.DEFAULT_TYPING

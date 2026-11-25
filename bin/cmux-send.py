@@ -322,13 +322,9 @@ def main():
         sys.exit(4)
 
     component = re.sub(r"[^A-Za-z0-9_:./-]", "-", os.path.basename(args.caller))[:64] or "cmux-send"
-    # For a person's or an outside script's text the record holds a keyed digest of it, never the text, so "the same
-    # thing three times" and "typed this earlier and couldn't tell" are about this text and not about the source.
-    digest = session_effects.typed_digest(args.text) if args.source in session_effects.DIGEST_SOURCES else ""
     try:
         effect_id = session_effects.begin(
-            args.ws, args.source, kind=args.auth_kind, ref=args.auth_ref, task=args.task, component=component,
-            text_digest=digest)
+            args.ws, args.source, kind=args.auth_kind, ref=args.auth_ref, task=args.task, component=component)
     except session_effects.Refused as refusal:
         refuse(refusal)
 

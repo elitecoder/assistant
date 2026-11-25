@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -86,7 +85,6 @@ def test_run_now_is_recorded_as_a_tap_on_the_route_and_types_through_the_one_scr
     assert json.loads(path.read_text())["status"] == "working"
     rows = [json.loads(line) for line in (home / ".assistant/effects/effects.jsonl").read_text().splitlines()]
     assert [r["kind"] for r in rows] == ["intent", "result"] and rows[1]["outcome"] == "done"
-    assert re.fullmatch(r"[0-9a-f]{16}", rows[0]["target"].pop("msg_digest"))  # this text, as a keyed digest
     assert rows[0]["target"] == {"source": "run-now", "session": "workspace:1000010007"}
     assert rows[0]["auth"]["kind"] == "tap" and rows[0]["auth"]["ref"] == "/proposal/run-now"
     assert rows[0]["component"] == "todo-server"

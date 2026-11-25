@@ -56,8 +56,8 @@ CHECKS = (
     (
         "the fourth identical typing in half an hour is refused: the loop limit counts the earlier ones",
         SE,
-        "    if held and _loop_count(keyed, now) >= LOOP_MAX:",
-        "    if held and _loop_count(keyed, now) > LOOP_MAX:",
+        "    if held and _loop_count(target, now) >= LOOP_MAX:",
+        "    if held and _loop_count(target, now) > LOOP_MAX:",
         T + "test_the_fourth_identical_typing_in_half_an_hour_is_refused_and_the_words_name_the_session",
     ),
     (
@@ -107,7 +107,7 @@ CHECKS = (
     (
         "an unknown nudge, cleanup, boot, clear or merge holds the same one in the same session",
         SE,
-        "    if held and anchor is None and source in WINDOWED_SOURCES and _held_by_unknown(keyed, now):",
+        "    if held and anchor is None and source in WINDOWED_SOURCES and _held_by_unknown(target, now):",
         "    if False:",
         T + "test_an_unknown_typing_holds_the_same_source_in_the_same_session_for_half_an_hour_only",
     ),
@@ -608,14 +608,14 @@ CHECKS = (
     (
         "the script's default run is limited like everything else",
         SE,
-        "    if held and _loop_count(keyed, now) >= LOOP_MAX:",
+        "    if held and _loop_count(target, now) >= LOOP_MAX:",
         "    if False:",
         S + "test_a_script_run_by_an_agent_with_its_defaults_is_limited_and_held_like_everything_else",
     ),
     (
         "the script's default run is held after a typing nobody could tell about",
         SE,
-        "    if held and anchor is None and source in WINDOWED_SOURCES and _held_by_unknown(keyed, now):",
+        "    if held and anchor is None and source in WINDOWED_SOURCES and _held_by_unknown(target, now):",
         "    if False:",
         S + "test_a_default_run_right_after_a_typing_nobody_could_tell_about_is_refused",
     ),
@@ -1041,8 +1041,8 @@ CHECKS = (
     (
         "cmux-send records the intent for the workspace and source it was given",
         SEND,
-        "            args.ws, args.source, kind=args.auth_kind, ref=args.auth_ref, task=args.task, component=component,",
-        '            args.ws, "cli", kind=args.auth_kind, ref=args.auth_ref, task=args.task, component=component,',
+        "            args.ws, args.source, kind=args.auth_kind, ref=args.auth_ref, task=args.task, component=component)",
+        '            args.ws, "cli", kind=args.auth_kind, ref=args.auth_ref, task=args.task, component=component)',
         S + "test_the_intent_is_on_disk_before_the_first_keystroke_and_one_effect_is_made",
     ),
     # --- the Slack session -----------------------------------------------------------------------------------

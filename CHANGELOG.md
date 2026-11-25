@@ -344,13 +344,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - In Pro mode, a task Assistant made itself (its id looks like `td-auto-1a2b3c4d`) is started
   again. Before, Assistant opened a session for it, refused to type into it, parked the task and
   paused every other task's start, with a card blaming the session's name. It now types the
-  instruction and records it without the task. Default mode is unchanged.
-- In Pro mode, "run now", a script run through `cmux-send.py` and a merge request are limited and
-  held by what is typed, not by where it comes from. Before, a fourth "run now" into one session in
-  half an hour was refused even when the four were different, and one typing nobody could confirm
-  held every later one for half an hour. Now only the same text into the same session is counted
-  or held; the record keeps a keyed digest of the text, never the text. Nudges, `/cleanup`, boot
-  and the rest keep their limits. Default mode is unchanged.
+  instruction and records it without the task. A task parked this way earlier stays parked until
+  you close its workspace and press "Queue to start" on it. Default mode is unchanged.
 - In Pro mode, Assistant types your Slack messages into the warm session again
   when the target is a channel and `SLACK_USER_ID` isn't set. An update on
   2026-11-25 made it refuse them all and reply "I can't tell which Slack
