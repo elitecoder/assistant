@@ -568,6 +568,19 @@ def test_a_feedback_file_read_to_its_limit_is_cut_at_its_own_oldest_record(home,
     assert whole["count"] == 4 and whole["text"].endswith("This happened 4 times.")
 
 
+def test_a_feedback_read_that_hit_its_limit_is_cut_even_when_its_oldest_time_cannot_be_read(home, monkeypatch):
+    folder = home / ".assistant/feedback"
+    folder.mkdir(parents=True)
+    lines = [json.dumps({"id": "fb-%016x" % n, "ts": "not a time", "signal": "done", "kind": "row", "trace": TRACE}) for n in range(3)]
+    (folder / "feedback.jsonl").write_text("\n".join(lines) + "\n")
+    feedback.forget()
+    monkeypatch.setattr(why, "FEEDBACK_READ", 3)
+    answer = why.read(TRACE, first=NOW)
+    assert answer["footer"] == "Only the newest records were read, so older steps may be missing. The record stays on this Mac."
+    monkeypatch.setattr(why, "FEEDBACK_READ", 100)
+    assert why.read(TRACE, first=NOW)["footer"].startswith("This is everything")
+
+
 def test_a_store_that_is_there_but_cant_be_read_is_unreadable_and_never_nothing_recorded(home):
     telemetry.emit("task", TRACE, "td-1", "work-queue", state="done", prev_state="open")
     path = home / ".assistant/telemetry/telemetry.db"

@@ -432,8 +432,8 @@ def _gather(trace: str) -> tuple:
         cuts["events"] = round(events[0]["ts"], 3)
     if len(effects) >= EFFECTS_READ:
         cuts["effects"] = round(min(e.get("finished_t") or e.get("t") or 0 for e in effects), 3)
-    if len(feedback) >= FEEDBACK_READ and (at := _iso_seconds(feedback[0].get("ts"))):
-        cuts["feedback"] = round(at, 3)
+    if len(feedback) >= FEEDBACK_READ:  # cut whatever its oldest record's time looks like: 0 floors no run, but the footer says so
+        cuts["feedback"] = round(_iso_seconds(feedback[0].get("ts")) or 0, 3)
     return events, effects, feedback, cuts, unreadable
 
 

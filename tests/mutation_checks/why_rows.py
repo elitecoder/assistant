@@ -598,4 +598,11 @@ CHECKS = (
         '        cuts["effects"] = round(min(e.get("t") or 0 for e in effects), 3)',
         T + "test_the_ledgers_cut_is_the_time_its_steps_are_given_which_is_when_the_change_finished",
     ),
+    (
+        "a feedback read that hit its limit is cut whatever its oldest time looks like",
+        W,
+        '        cuts["feedback"] = round(_iso_seconds(feedback[0].get("ts")) or 0, 3)',
+        '        cuts["feedback"] = round(_iso_seconds(feedback[0].get("ts")), 3)',
+        T + "test_a_feedback_read_that_hit_its_limit_is_cut_even_when_its_oldest_time_cannot_be_read",
+    ),
 )
