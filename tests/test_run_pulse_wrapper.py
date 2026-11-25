@@ -254,3 +254,16 @@ def test_a_mode_that_cant_be_asked_is_the_default_mode_for_the_start_up_check(tm
 def test_a_broken_gate_stops_the_pulse_in_either_mode(tmp_path, monkeypatch, mode_body):
     ran = _run_in_layout(tmp_path, monkeypatch, "session_gate", mode_body)
     assert ran.stdout == "" and "session_gate.py: SyntaxError" in ran.stderr
+
+
+def test_the_start_up_check_asks_the_real_mode_and_takes_any_failure_for_the_default_mode(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".assistant").mkdir()
+    mod = _load()
+    (tmp_path / ".assistant/config.json").write_text('{"mode": "pro"}')
+    assert mod._pro() is True
+    (tmp_path / ".assistant/config.json").write_text('{"mode": "default"}')
+    assert mod._pro() is False
+    monkeypatch.setattr(mod, "BIN", tmp_path / "nowhere/bin")  # no mode.py to load
+    (tmp_path / ".assistant/config.json").write_text('{"mode": "pro"}')
+    assert mod._pro() is False
