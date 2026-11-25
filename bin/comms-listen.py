@@ -331,12 +331,15 @@ IGNORED_REPLY_SEC = 86400  # at most one "I didn't act on this" reply a day, for
 
 
 def owner_id(paths: comms_lib.Paths, env: dict | None = None) -> str:
-    """The owner's Slack member id, in the order the Slack reactor works it out: SLACK_USER_ID, else `slack.owner` in
-    ~/.assistant/config.json, else `slack.target` when that is a member id (a direct message); each only when it has
-    the shape of an id. Empty when it can't be worked out, and when SLACK_USER_ID is set to something that isn't an id."""
+    """The owner's Slack member id: SLACK_USER_ID, else `slack.owner` in ~/.assistant/config.json, else `slack.target`
+    when that is a member id (a direct message); each only when it has the shape of an id. A SLACK_USER_ID of any
+    other shape is skipped, not taken to mean "nobody" (the Slack reactor does take it so, because there an unknown
+    owner starts nothing): here an unknown owner means every message in a channel is typed, so a typo must not throw
+    away an owner the config names. Empty when none of the three names one, which includes a config that can't be
+    read while SLACK_USER_ID names nobody."""
     found = ((env or {}).get("SLACK_USER_ID") or os.environ.get("SLACK_USER_ID") or "").strip()
-    if found:
-        return found if USER_ID.fullmatch(found) else ""
+    if USER_ID.fullmatch(found):
+        return found
     try:
         configured = str(json.loads(paths.config.read_text()).get("slack", {}).get("owner") or "").strip()
     except (OSError, ValueError, AttributeError):

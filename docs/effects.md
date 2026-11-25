@@ -168,7 +168,7 @@ holds the text, a prompt's file name, a title or a Slack message.
 | The instruction that starts a task, and the folder-trust answer before it | `task`, `trust` | The task's auto-start flag, as your own (a Work queue send, your Slack reaction, `/todo`) or as a standing setting (the goals planner, a policy rule, or anything not listed) |
 | The "stalled" nudge, and `/cleanup` | `nudge:stranded`, `cleanup` | Pro mode, the Observer and the watcher being on, and actions not held |
 | A merge request (`/merge-when-ready`, `/monitor-ffp-ci`) | `merge` | The same standing setting when the pulse sends it; a button press when you run the script |
-| A message in the Slack session | `slack-message`, and `submit` for pressing Enter again | Your own Slack message, as of its time |
+| A message in the Slack session | `slack-message`, and `submit` for pressing Enter again | The Slack message (your own, when Assistant knows which member is you), as of its time |
 | The Slack session's start-up instruction, trust answer and `/clear` | `boot`, `trust`, `clear` | The Slack channel being set up and its service running |
 | "Run now" on a proposal | `run-now` | A button press on that route |
 | `cmux-restore-sessions` | `restore` | You running it |

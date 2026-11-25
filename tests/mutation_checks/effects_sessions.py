@@ -1260,6 +1260,27 @@ CHECKS = (
         C + ONLY_OWNER,
     ),
     (
+        "a mistyped SLACK_USER_ID is skipped, so the owner the config names still counts",
+        CL,
+        "    if USER_ID.fullmatch(found):\n        return found",
+        "    if found:\n        return found if USER_ID.fullmatch(found) else \"\"",
+        C + "test_a_mistyped_owner_id_does_not_throw_away_the_owner_the_config_names",
+    ),
+    (
+        "the doctor says when SLACK_USER_ID is set but mistyped",
+        DOC,
+        '"is set to a member ID" + (MISTYPED_OWNER if env_id else "") +',
+        '"is set to a member ID" +',
+        C + "test_the_doctor_warns_when_a_channel_is_the_target_and_the_owner_is_unknown",
+    ),
+    (
+        "the doctor says SLACK_USER_ID is mistyped only when it is set",
+        DOC,
+        '"is set to a member ID" + (MISTYPED_OWNER if env_id else "") +',
+        '"is set to a member ID" + MISTYPED_OWNER +',
+        C + "test_the_doctor_warns_when_a_channel_is_the_target_and_the_owner_is_unknown",
+    ),
+    (
         "a channel with no known owner types every message, as before the owner rule",
         CL,
         'TYPED = ("owner", "dm", "unknown-owner")',

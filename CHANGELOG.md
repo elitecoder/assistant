@@ -39,10 +39,13 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   Assistant says once a day, in its thread, that it only takes instructions
   from you. When the target is a channel and none of those names you, Assistant
   can't tell which member is you, so it types every message in that channel as
-  it always has, and the Slack check in `assistant-doctor.py` warns. If anyone
-  else is in that channel, add `export SLACK_USER_ID=U…` (your member ID: your
-  Slack profile, the three dots, Copy member ID) to `~/.zprofile` and restart
-  the service (`launchctl kickstart -k gui/$UID/com.assistant.assistant-comms`).
+  it always has, and the Slack check in `assistant-doctor.py` warns. To have
+  only your own messages typed there, add `export SLACK_USER_ID=U…` (your
+  member ID: your Slack profile, the three dots, Copy member ID) to
+  `~/.zprofile` and restart the service
+  (`launchctl kickstart -k gui/$UID/com.assistant.assistant-comms`). A
+  `SLACK_USER_ID` that isn't a member ID is skipped, the next of those is used,
+  and the Slack check says so.
   In the default mode any member of a configured Slack channel can still have a
   message typed into the warm session, as before, and nothing here changes that
   for now.

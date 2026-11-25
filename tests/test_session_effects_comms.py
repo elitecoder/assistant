@@ -533,6 +533,8 @@ def _config(paths, target):
     ("C0CHAN", "", "", True),
     ("G0PRIVATE", "", "U0OWNER", True),      # a private channel is a channel
     ("C0CHAN", "not-an-id", "U0OWNER", True),  # an id of the wrong shape names nobody, so the owner is unknown
+    ("U0OWNER", "<@U0OWNER>", "U0OWNER", True),   # and it is skipped: the person the target names is still the owner
+    ("U0OWNER", "<@U0OWNER>", "U0OTHER", False),
     ("D0DM", "", "U0OWNER", True),           # a direct-message conversation holds only the owner
     ("D0DM", "", "", False),
 ])
@@ -557,6 +559,18 @@ def test_the_log_says_in_a_sentence_why_a_message_was_not_typed(env_delivery, mo
            "received and did not type it into the session." in log
     assert f"Slack message {TS} in C0CHAN has no author, so Assistant did not type it into the session." in log
     assert len(log.splitlines()) == 2
+
+
+@pytest.mark.parametrize("mistyped", ["<@U0OWNER>", "u0owner", "U0OWNER,U0OTHER", "C0CHAN "])
+def test_a_mistyped_owner_id_does_not_throw_away_the_owner_the_config_names(env_delivery, monkeypatch, mistyped):
+    """With no owner, every message in a channel is typed. So a typo in SLACK_USER_ID must not turn a config that
+    names the owner into one that names nobody."""
+    paths, _ = env_delivery
+    paths.config.write_text(json.dumps({"slack": {"target": "C0CHAN", "owner": "U0OWNER", "allowed_targets": ["C0CHAN"]}}))
+    monkeypatch.setenv("SLACK_USER_ID", mistyped)
+    assert listen.owner_id(paths) == "U0OWNER" and listen.owner_id(paths, {"SLACK_USER_ID": mistyped}) == "U0OWNER"
+    assert listen.typed_for(paths, {"msg_ts": TS, "author": "U0OTHER", "channel": "C0CHAN"}) is False
+    assert listen.typed_for(paths, {"msg_ts": TS, "author": "U0OWNER", "channel": "C0CHAN"}) is True
 
 
 def test_an_owner_id_in_the_daemons_own_environment_counts(env_delivery, monkeypatch):
@@ -742,6 +756,12 @@ def test_the_doctor_warns_when_a_channel_is_the_target_and_the_owner_is_unknown(
     assert "not ~/.zshrc" in check.remedy  # the service reads ~/.zprofile, so that is where the id must be set
     assert "types every member's messages into the session, as it always has" in check.detail
     assert "types none" not in check.detail and check.remedy.startswith("to have only your own messages typed, add ")
+    assert "SLACK_USER_ID is set, but" not in check.detail  # it isn't set at all
+    monkeypatch.setenv("SLACK_USER_ID", "<@U0OWNER>")  # set, and mistyped: the check says so, and still warns
+    mistyped = doctor.check_slack_owner()
+    assert mistyped.status == doctor.WARN and "is set to a member ID (SLACK_USER_ID is set, but to something that " \
+        "isn't one: a member ID is a U or W followed by capital letters and digits), so Assistant can't tell" in mistyped.detail
+    monkeypatch.delenv("SLACK_USER_ID")
     paths.config.write_text(json.dumps({"slack": {"target": "C0CHAN", "owner": "U0OWNER", "allowed_targets": ["C0CHAN"]}}))
     assert doctor.check_slack_owner().status == doctor.PASS  # slack.owner names the owner, as it does for the reactor
     _config(paths, "C0CHAN")
