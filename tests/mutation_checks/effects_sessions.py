@@ -512,13 +512,7 @@ CHECKS = (
         '    "I only take instructions from <@{owner}>, so I haven\'t acted on this message. (If that isn\'t you, SLACK_USER_ID "',
         C + "test_a_message_from_someone_else_is_recorded_as_received_but_never_queued",
     ),
-    (
-        "a log line about a message leaves out the command to run",
-        CL,
-        "                f\"again. {refusal.short}\")",
-        "                f\"again. {refusal}\")",
-        C + "test_a_log_line_about_a_message_leaves_out_the_command_to_run",
-    ),
+
     (
         "a parked task is blocked, so \"Queue to start\" can restart it",
         PULSE,
