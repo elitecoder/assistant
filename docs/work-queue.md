@@ -268,13 +268,25 @@ row to an agent again; it keeps the same trail. When Assistant started an agent
 but couldn't mark the task as started, it may start a second one by itself. Other
 failures promise nothing.
 
-A start is one step: when the record of what Assistant types into sessions shows it
-answered the new session's folder-trust question and typed the task's instruction, the
-start says so ("…and typed the task's instruction into the new session", or "…but
-couldn't tell if it arrived" when it couldn't tell). A typing that belongs to no
+A start is one step. When the record of what Assistant types into sessions shows it
+typed the task's instruction, the start says so ("…and typed the task's instruction
+into the new session", or "…but couldn't tell if the session received it. Look at
+the session to check." when it couldn't tell). The folder-trust answer is part of
+the start: it isn't mentioned there, and shows as a step of its own only when it
+stands alone (for example when the start then failed). A typing that belongs to no
 start is a step of its own and says what it was ("Assistant nudged the session
-because it looked stalled.", "Assistant typed /cleanup into the session."). It says
-"because you pressed the button" only for a typing you started.
+because it looked stalled.", "Assistant typed /cleanup into the session."); one that
+failed says "…but it didn't go through", and one that never got an answer says it
+may or may not have gone through. It says "because you pressed the button" only for
+a typing you started.
+
+When a session was opened and then nothing could be typed into it (cmux refused the
+text, or Assistant couldn't record the typing), the step says the task is marked
+blocked and what to do: close the workspace it opened and press **Queue to start**
+on the task on the Tasks tab of the Assistant dashboard. When Assistant couldn't
+record what it types before any session was opened, the task stays queued and the
+step says it will try again by itself. (Removing the task and sending the row again
+is the way out only of a start that stopped because the session wasn't ready.)
 
 Under the steps it says "This is everything Assistant has recorded about this
 item. The record stays on this Mac." when it read all of it, and "Some of it
