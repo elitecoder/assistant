@@ -651,7 +651,7 @@ ST.queued={};ST.mail={};ST.checks={};ST.feedback={};let GONE=new Set(),qTimer=0;
 const CLEARED_FOR=7*DAY,READY_MARK='https://work-queue.local/ready/',MARKED={done:'Marked done',dropped:'Dropped',snoozed:'Snoozed'};
 const $=id=>document.getElementById(id);
 async function api(path,opts){const r=await fetch(path,Object.assign({headers:{'Content-Type':'application/json'}},opts||{}));if(!r.ok)throw new Error((await r.json().catch(()=>({}))).error||r.status);const o=await r.json();
- if(o&&o.feedback&&o.feedback.recorded===false){let done=false;try{done=JSON.parse((opts||{}).body||'{}').state==='done'}catch(_){}
+ if(o&&o.feedback&&o.feedback.recorded===false){const done=JSON.parse(opts.body).state==='done';
   toast(done?'Done. Assistant couldn’t record that for later.':'That worked. Assistant couldn’t record it for later.')}return o}
 function toast(msg,bad){document.querySelectorAll('.toast').forEach(t=>t.remove());const t=document.createElement('div');t.className=bad?'toast err':'toast';t.textContent=msg;document.body.append(t);setTimeout(()=>t.remove(),12000)}
 function paint(){const now=Date.now(),sent=new Set(ST.sent||[]);let hidden=0;
@@ -867,21 +867,27 @@ function fbBuild(s){const k=s.dataset.fk,h={},x=document.createElement('span'),l
   h.why.onkeydown=ev=>{if(ev.key==='Escape'&&WHY[s.dataset.fp])whyClose(s)};s.append(h.why)}
  if(h.pop)s.append(h.pop);x.className='fb-extra';x.dataset.fp=s.dataset.fp;line.className='fb-line';x.append(line);h.x=x;FBX.set(s,h);const at=s.closest('.ap-row');if(at)at.querySelector('.ap-text').append(x);else s.parentElement.after(x)}
 function fbPlace(s){const h=FBX.get(s),p=h.pop,w=p.offsetWidth,t=p.offsetHeight,r=h.down.getBoundingClientRect(),
- n=(s.querySelector('.fb-note')||h.x.querySelector('.fb-note')||h.down).getBoundingClientRect(),
+ own=s.closest('.sf-row,.ap-row,li')||s.parentElement,reach=Math.max(60,own.getBoundingClientRect().height),
+ mine=s.querySelector('.fb-note')||h.x.querySelector('.fb-note'),n=(mine||h.down).getBoundingClientRect(),
  card=(s.closest('.section')||document.body).getBoundingClientRect(),lo=Math.max(8,card.left),hi=Math.min(innerWidth-8,card.right),
- rects=q=>[...document.querySelectorAll(q)].filter(b=>b!==h.open).map(b=>b.getBoundingClientRect()).filter(b=>b.width),
- must=rects('.fb-down,.fb-open').concat([n]),nice=must.concat(rects('.sf-main > .btn,.why-link')),
- clamp=x=>Math.max(lo,Math.min(x,hi-w)),
- xs=[n.left-8-w,r.left-8-w,r.right-w,lo,hi-w,...nice.filter(b=>Math.abs(b.top-r.top)<160).map(b=>b.left-8-w)].map(clamp),
- near=(x,y)=>Math.hypot(x+w/2-r.left-r.width/2,y+t/2-r.top-r.height/2),
- spots=avoid=>{const out=[];for(const x of xs)for(let y=8;y<=innerHeight-t-8;y+=6)
-   if(avoid.every(b=>x+w+4<=b.left||x>=b.right+4||y+t+4<=b.top||y>=b.bottom+4))out.push([x,y]);return out.sort((a,b)=>near(...a)-near(...b))[0]},
- away=spots(nice),close=spots(must),[x,y]=(away&&near(...away)<150?away:close||away)||[clamp(r.right-w),Math.max(8,Math.min(r.bottom+4,innerHeight-t-8))];
- p.style.left=x+'px';p.style.top=y+'px'}
+ rects=(q,keep)=>[...document.querySelectorAll(q)].filter(keep).map(b=>b.getBoundingClientRect()).filter(b=>b.width&&b.bottom>0&&b.top<innerHeight),
+ must=rects('.fb-down,.fb-open',b=>b!==h.open).concat([n]),link=h.open.getBoundingClientRect(),notes=rects('.fb-note',b=>b!==mine),
+ btns=rects('.sf-main > .btn,.why-link',()=>true),clamp=x=>Math.max(lo,Math.min(x,hi-w)),
+ xs=[...new Set([n.left-8-w,r.left-8-w,r.right-w,lo,hi-w,...btns.filter(b=>Math.abs(b.top-r.top)<160).map(b=>b.left-8-w),
+   ...Array.from({length:Math.ceil((hi-lo-w)/24)+1},(_,k)=>lo+24*k)].map(clamp))],
+ gap=(x,y)=>Math.hypot(Math.max(r.left-x-w,x-r.right,0),Math.max(r.top-y-t,y-r.bottom,0)),
+ clear=(b,x,y,m)=>x+w+m<=b.left||x>=b.right+m||y+t+m<=b.top||y>=b.bottom+m,
+ area=(b,x,y)=>Math.max(0,Math.min(x+w,b.right)-Math.max(x,b.left))*Math.max(0,Math.min(y+t,b.bottom)-Math.max(y,b.top)),
+ // never over another thumb, another Tell Assistant or its own note; as far as it can be, not over its own link, another note or a button;
+ // and always within one row's height of its thumb
+ cost=(x,y)=>{const g=gap(x,y);return g+(g>reach?1000:0)+(clear(link,x,y,4)?0:400)+100*notes.filter(b=>!clear(b,x,y,0)).length+btns.reduce((a,b)=>a+area(b,x,y),0)/400};
+ let pick=null,low=1e9;for(const x of xs)for(let y=8;y<=innerHeight-t-8;y+=6)if(must.every(b=>clear(b,x,y,4))){const c=cost(x,y);if(c<low){low=c;pick=[x,y]}}
+ pick=pick||[clamp(r.right-w),Math.max(8,Math.min(r.bottom+4,innerHeight-t-8))];
+ p.style.left=pick[0]+'px';p.style.top=pick[1]+'px'}
 function fbPopFill(s,h,v,u){const R=FBR[s.dataset.fk];h.pop.textContent='';
  if(R.length){const t=document.createElement('span');t.className='fb-why';t.textContent='Why is this wrong? Optional';h.pop.append(t)}
  R.forEach(([c,l])=>{const b=fbBtn(l,'r:'+c,()=>fbReason(s,c));b.classList.add('fb-r');b.setAttribute('aria-pressed',v.reason===c);h.pop.append(b)});
- h.pop.append(fbBtn('Skip','skip',()=>{u.pop=false;fbPaint()}))}
+ h.pop.append(fbBtn('Skip','skip',()=>{u.pop=false;fbPaint();h.down.focus()}))}
 function fbSync(s){const fp=s.dataset.fp,u=FBUI[fp]=FBUI[fp]||{},v=ST.feedback[fp]||{},h=FBX.get(s),open=!!(h.pop&&u.pop===fbWhere(s)&&v.down);
  if(h.down){h.down.setAttribute('aria-pressed',!!v.down);h.down.setAttribute('aria-label',v.down?h.what+'. Press to take it back':h.what);h.down.title=v.down?'Press to take it back':'Tell Assistant this is wrong';h.pop.hidden=!open;
   if(open){const sig=[v.down,v.reason].join('|');if(h.psig!==sig){h.psig=sig;fbPopFill(s,h,v,u)}fbPlace(s)}}
@@ -931,13 +937,14 @@ function whyPaint(){document.querySelectorAll('.fb').forEach(s=>{const h=FBX.get
  const sig=JSON.stringify([u.status,u.data]);if(box.dataset.sig!==sig){box.dataset.sig=sig;whyFill(box,s,u)}})}
 function fbPost(body){return api('/api/feedback',{method:'POST',body:JSON.stringify(body)})}
 async function fbSend(s,body,after){const u=FBUI[s.dataset.fp];if(u.busy)return;u.busy=true;
- try{const o=await fbPost(body);ST.feedback=Object.assign({},ST.feedback,{[s.dataset.fp]:o.view});Object.assign(u,after(o.view));fbPaint()}
+ let ok=false;try{const o=await fbPost(body);ST.feedback=Object.assign({},ST.feedback,{[s.dataset.fp]:o.view});Object.assign(u,after(o.view));fbPaint();ok=true}
  catch(e){toast('Assistant couldn’t save that. Try again.',true)}
- u.busy=false}
+ u.busy=false;return ok}
 function fbUndo(s,id){return fbSend(s,{key:s.dataset.fkey,kind:s.dataset.fk,signal:'retract',amends:id},()=>({pop:false}))}
+function fbChange(s){const h=FBX.get(s),b=(s.querySelector('.fb-note')||h.x.querySelector('.fb-note')||s).querySelector('[data-fb="change"]');(b||h.down).focus()}  // the panel is gone: focus goes to the note's Change link
 function fbReason(s,reason){const v=ST.feedback[s.dataset.fp];
- if(v.reason===reason){FBUI[s.dataset.fp].pop=false;return fbPaint()}
- return fbSend(s,{key:s.dataset.fkey,kind:s.dataset.fk,signal:'thumbs_down',reason,amends:v.down},()=>({pop:false}))}
+ if(v.reason===reason){FBUI[s.dataset.fp].pop=false;fbPaint();return fbChange(s)}
+ return fbSend(s,{key:s.dataset.fkey,kind:s.dataset.fk,signal:'thumbs_down',reason,amends:v.down},()=>({pop:false})).then(ok=>ok&&fbChange(s))}
 function fbTell(s){const u=FBUI[s.dataset.fp];u.tell=true;fbPaint();FBX.get(s).x.querySelector('textarea').focus()}
 function fbSendTell(s){const u=FBUI[s.dataset.fp],words=(u.words||'').trim();if(!words)return toast('Write something to tell Assistant first.');
  return fbSend(s,{key:s.dataset.fkey,kind:s.dataset.fk,signal:'tell',words},()=>({tell:false,words:''}))}
