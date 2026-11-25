@@ -411,11 +411,15 @@ def run_inbound(listen, messages, monkeypatch):
     return paths, woke
 
 
-@pytest.mark.parametrize("target, author", [("C0CHAN", "U0OTHER"), ("C0CHAN", "U0OWNER"), ("C0CHAN", ""),
-                                            ("U0OWNER", "U0OTHER"), ("D0DIRECT01", "U0OWNER")])
+@pytest.mark.parametrize("target, author, owner", [
+    ("C0CHAN", "U0OTHER", ""), ("C0CHAN", "U0OWNER", ""), ("C0CHAN", "", ""), ("U0OWNER", "U0OTHER", ""),
+    ("D0DIRECT01", "U0OWNER", ""),
+    ("C0CHAN", "U0OTHER", "U0OWNER"), ("C0CHAN", "", "U0OWNER")])  # with the owner named, still anyone's
 def test_every_message_from_the_conversation_is_queued_to_be_typed_whoever_wrote_it_and_nobody_is_told(
-        listen, default_mode, monkeypatch, target, author):
+        listen, default_mode, monkeypatch, target, author, owner):
     config(default_mode, target)
+    if owner:
+        monkeypatch.setenv("SLACK_USER_ID", owner)
     message = {"channel": "C0CHAN", "msg_ts": "1793613610.000100", "author": author, "text": "hello", "reply_to": None}
     paths, woke = run_inbound(listen, [message], monkeypatch)
     assert [r["text"] for r in listen.read_pending(paths)] == ["hello"] and woke == ["C0CHAN"]
@@ -508,6 +512,7 @@ def test_a_message_waiting_for_a_session_that_isnt_responding_gets_the_old_note_
 def test_messages_queued_by_anyone_are_delivered_and_an_expired_one_is_dropped_without_a_word(
         listen, default_mode, monkeypatch):
     config(default_mode, "C0CHAN")
+    monkeypatch.setenv("SLACK_USER_ID", "U0OWNER")  # even with the owner known, the default mode types anyone's
     paths = listen.comms_lib.Paths.from_env()
     session = Session(listen, monkeypatch)
     listen.add_pending(paths, {"channel": "C0", "text": "queued", "msg_ts": f"{time.time():.6f}", "author": "U0OTHER"})

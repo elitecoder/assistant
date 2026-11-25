@@ -274,8 +274,8 @@ def check_bedrock_env() -> Check:
 
 
 def check_slack_owner() -> Check:
-    """Only the owner's Slack messages are typed into the warm session. In a channel, Assistant must be told which
-    member that is."""
+    """Only the owner's Slack messages are typed into the warm session, once Assistant knows which member that is.
+    In a channel it has to be told; until then every member's messages are typed, as before."""
     target, why = _slack_config()
     if target is None:
         return Check("slack owner", SKIP, core=False, detail=why)
@@ -291,11 +291,12 @@ def check_slack_owner() -> Check:
         return Check("slack owner", PASS, core=False, detail="slack.owner in ~/.assistant/config.json names you")
     return Check("slack owner", WARN, core=False,
                  detail="the target is a channel and neither SLACK_USER_ID nor slack.owner in ~/.assistant/config.json "
-                        "is set to a member ID, so Assistant can't tell which messages are yours and types none of "
-                        "them into the session",
-                 remedy="add `export SLACK_USER_ID=U…` (your member ID: your Slack profile, the three dots, Copy "
-                        "member ID) to ~/.zprofile (the service reads that file, not ~/.zshrc), then run "
-                        "`launchctl kickstart -k gui/$UID/com.assistant.assistant-comms`")
+                        "is set to a member ID, so Assistant can't tell which messages are yours and types every "
+                        "member's messages into the session, as it always has. Fine if you are the only person in "
+                        "that channel",
+                 remedy="to have only your own messages typed, add `export SLACK_USER_ID=U…` (your member ID: your "
+                        "Slack profile, the three dots, Copy member ID) to ~/.zprofile (the service reads that file, "
+                        "not ~/.zshrc), then run `launchctl kickstart -k gui/$UID/com.assistant.assistant-comms`")
 
 
 SLACK_CHECKS = [check_slack_token, check_slack_scopes, check_claude_bin, check_bedrock_env,

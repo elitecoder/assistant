@@ -227,10 +227,11 @@ What the record does for you:
   your message (sent HH:MM) reached the session, and I won't type it twice.
   Check the session, or send it again." Messages that waited three hours get a
   note too. Each message in a batch typed together has its own record.
-- **Only your Slack messages are typed.** A message from someone else in the
-  channel is kept as received and never typed, and Assistant says so in its
-  thread once a day for each author. When it can't tell which account is yours
-  and the target is a channel, it says that once a day, and the Slack check in
+- **Only your Slack messages are typed, when Assistant knows which member is
+  you.** A message from someone else in the channel is then kept as received
+  and never typed, and Assistant says so in its thread once a day for each
+  author. When it can't tell which account is yours and the target is a
+  channel, every message there is typed, as before, and the Slack check in
   `assistant-doctor.py` warns. See
   [assistant-comms-onboarding.md](assistant-comms-onboarding.md).
 - **"Run now" is stricter.** The session must be a `workspace:N`, and the text

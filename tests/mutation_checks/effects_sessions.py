@@ -503,7 +503,7 @@ CHECKS = (
         CL,
         "            tell_ignored(paths, r, env)  # the same notice a new ignored message gets, once a day",
         "            pass  # the same notice a new ignored message gets, once a day",
-        C + "test_a_message_queued_before_the_update_gets_the_same_notice_a_new_one_would",
+        C + "test_messages_queued_before_the_owner_check_are_checked_again_when_they_are_delivered",
     ),
     (
         "the note for a record that can't be written says so",
@@ -742,8 +742,8 @@ CHECKS = (
     (
         "the doctor says the service reads ~/.zprofile",
         DOC,
-        '"member ID) to ~/.zprofile (the service reads that file, not ~/.zshrc), then run "',
-        '"member ID) to ~/.zprofile, then run "',
+        'Copy member ID) to ~/.zprofile (the service reads that file, "\n                        "not ~/.zshrc), then run',
+        'Copy member ID) to ~/.zprofile, "\n                        "then run',
         C + "test_the_doctor_warns_when_a_channel_is_the_target_and_the_owner_is_unknown",
     ),
     (
@@ -876,8 +876,8 @@ CHECKS = (
     (
         'queued messages are checked against the owner in Pro mode only',
         CL,
-        '    foreign = [r for r in fresh if classify_author(paths, r, env)[0] not in ("owner", "dm")] if pro else []',
-        '    foreign = [r for r in fresh if classify_author(paths, r, env)[0] not in ("owner", "dm")]',
+        '    foreign = [r for r in fresh if classify_author(paths, r, env)[0] not in TYPED] if pro else []',
+        '    foreign = [r for r in fresh if classify_author(paths, r, env)[0] not in TYPED]',
         'tests/test_default_mode_is_main.py::test_messages_queued_by_anyone_are_delivered_and_an_expired_one_is_dropped_without_a_word',
     ),
 
@@ -1248,8 +1248,8 @@ CHECKS = (
     (
         "only the owner's Slack messages are typed",
         CL,
-        '        return ("owner" if author == owner else "other"), owner',
-        '        return "owner", owner',
+        '    return (("owner" if author == owner else "other") if owner else "dm"), owner',
+        '    return ("owner" if owner else "dm"), owner',
         C + ONLY_OWNER,
     ),
     (
@@ -1260,11 +1260,39 @@ CHECKS = (
         C + ONLY_OWNER,
     ),
     (
-        "a channel with no known owner types nothing",
+        "a channel with no known owner types every message, as before the owner rule",
         CL,
-        '    return ("dm" if _safe_target(paths).startswith("D") else "unknown-owner"), ""',
-        '    return "dm", ""',
+        'TYPED = ("owner", "dm", "unknown-owner")',
+        'TYPED = ("owner", "dm")',
+        C + "test_with_a_channel_and_no_owner_id_every_message_is_queued_for_typing_and_nothing_is_said",
+    ),
+    (
+        "with no owner to compare against, a message with no author is typed too",
+        CL,
+        '    if not owner and not _safe_target(paths).startswith("D"):\n        return "unknown-owner", ""',
+        '    if False:\n        return "unknown-owner", ""',
         C + ONLY_OWNER,
+    ),
+    (
+        "a direct-message conversation keeps its own rule when the owner id is unknown",
+        CL,
+        '    if not owner and not _safe_target(paths).startswith("D"):',
+        '    if not owner:',
+        C + ONLY_OWNER,
+    ),
+    (
+        "a message queued in a channel with no known owner is typed, not dropped",
+        CL,
+        "    foreign = [r for r in fresh if classify_author(paths, r, env)[0] not in TYPED] if pro else []",
+        '    foreign = [r for r in fresh if classify_author(paths, r, env)[0] not in ("owner", "dm")] if pro else []',
+        C + "test_a_message_queued_in_a_channel_with_no_owner_id_is_typed_as_before",
+    ),
+    (
+        "no notice goes for a message that was typed",
+        CL,
+        """    if who != "other" or not _once_a_day(paths, f"author-{channel}-{rec.get('author')}"):""",
+        """    if not _once_a_day(paths, f"author-{channel}-{rec.get('author')}"):""",
+        C + "test_no_reply_goes_for_a_message_that_was_typed_or_has_no_author",
     ),
 
     (
@@ -1295,7 +1323,7 @@ CHECKS = (
         CL,
         "        if time.time() - json.loads(marker.read_text()).get(\"ts\", 0) < IGNORED_REPLY_SEC:",
         "        if time.time() - json.loads(marker.read_text()).get(\"ts\", 0) < 0:",
-        C + "test_the_first_message_ignored_for_want_of_an_owner_id_gets_one_reply_in_its_own_thread",
+        C + "test_someone_elses_message_gets_one_reply_a_day_for_each_author",
     ),
     (
         "a marker that can't be written means no reply",
@@ -1309,7 +1337,7 @@ CHECKS = (
         CL,
         "                                   reply_to=str(ts) if ts else None),\n                        timeout=30, env=env)\n    if rc != 0:\n        log(f\"Assistant's reply about the ignored message",
         "                                   reply_to=None),\n                        timeout=30, env=env)\n    if rc != 0:\n        log(f\"Assistant's reply about the ignored message",
-        C + "test_the_first_message_ignored_for_want_of_an_owner_id_gets_one_reply_in_its_own_thread",
+        C + "test_someone_elses_message_gets_one_reply_a_day_for_each_author",
     ),
     (
         "the doctor checks that the owner is known when the target is a channel",
