@@ -132,7 +132,6 @@ def _pro() -> bool:
 
 
 SEND_SCRIPT = Path(__file__).resolve().parent / "cmux-send.py"
-RUN_NOW_MAX = 500
 # cmux-send.py's worst case: the terminal lookup (10 s), two keystrokes (10 s each) and its 2.5 s wait.
 SEND_SCRIPT_TIMEOUT_SEC = 45
 CMUX_BIN = shutil.which("cmux") or "/Applications/cmux.app/Contents/Resources/bin/cmux"
@@ -415,8 +414,9 @@ def _run_now_failure(sent) -> str:
 def _run_now(ws_ref, data) -> str:
     """Type a proposal's text into its session. Returns what to tell the person when it didn't, "" when it did.
     The default mode types what the file says, into whatever session it names, as it always did. In Pro mode the file
-    is written by another tool, so it is checked before anything is typed (a real session, and one short line), and
-    the typing goes through cmux-send.py, which records it first."""
+    is written by another tool, so it is checked before anything is typed (a real session, and no character a person
+    couldn't see in the text next to the button: the text itself may be long, and it may have several lines, as it is
+    typed in the default mode), and the typing goes through cmux-send.py, which records it first."""
     if not _pro():
         try:
             session_gate.run_now_legacy(CMUX_BIN, ws_ref, data.get("action", ""))
@@ -426,9 +426,12 @@ def _run_now(ws_ref, data) -> str:
     text = data.get("action", "")
     if not re.fullmatch(r"workspace:[0-9]{1,18}", str(ws_ref)):
         return "run-now needs the session as workspace:N, so nothing was typed"
-    if not isinstance(text, str) or not text or len(text) > RUN_NOW_MAX or any(
-            unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp") for c in text):
-        return f"run-now types one line of up to {RUN_NOW_MAX} characters, so nothing was typed"
+    if not isinstance(text, str) or not text:
+        return "run-now has no text to type, so nothing was typed"
+    hidden = sorted({c for c in text if c not in "\n\t" and unicodedata.category(c) in ("Cc", "Cf", "Zl", "Zp")})
+    if hidden:
+        return ("run-now won't type text with characters you can't see in it (" +
+                ", ".join(f"U+{ord(c):04X}" for c in hidden[:5]) + "), so nothing was typed")
     try:
         sent = subprocess.run(
             [sys.executable, str(SEND_SCRIPT), "--ws", ws_ref, "--text", text, "--enter",

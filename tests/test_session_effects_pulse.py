@@ -440,3 +440,24 @@ def pro_mode(monkeypatch):
     """Everything this file tests is Pro mode's; the test says so, instead of leaning on the suite's default."""
     from assistant import mode
     monkeypatch.setattr(mode, "current", lambda: "pro")
+
+
+def test_a_pulse_task_with_an_auto_id_is_typed_into_recorded_and_not_parked(mod, home):
+    """Through the pulse's own dispatch, with a real ledger in a temporary home: nothing parks, nothing blocks."""
+    _seed_todo(mod, [{"id": "td-auto-1a2b3c4d", "title": "T", "status": "open", "autoDispatch": True,
+                            "source": "work-queue:2026-11-24"}])
+    cmux = Cmux(mod, home, screens=(TRUST, READY))
+    assert cmux.dispatch("td-auto-1a2b3c4d") is True
+    rows_ = ledger(home)
+    intents = [r for r in rows_ if r["kind"] == "intent"]
+    assert [r["target"] for r in intents] == [{"source": "trust", "session": WS},
+                                              {"source": "task", "session": WS}]
+    assert intents[1]["auth"]["kind"] == "owner_flag" and intents[1]["auth"]["ref"] == "td-auto-1a2b3c4d"
+    assert intents[1]["trace"].startswith("tl-")  # the stand-in trace for a task that has none of its own
+    assert [m for m, _ in cmux.calls] == ["surface.send_text", "surface.send_key"] * 2
+    item = json.loads(mod.TODO_PATH.read_text())["items"][0]
+    assert "parkedBy" not in item and item["status"] != "blocked" and item["dispatchedWs"] == WS
+    assert mod._dispatch_blocked == "" and mod._parked_tasks() == []
+
+
+WS = "workspace:1000010007"

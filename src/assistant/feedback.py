@@ -404,6 +404,19 @@ def who_pointer(sender) -> str:
     return "who:" + hmac.new(key, sender.encode("utf-8", "replace"), hashlib.sha256).hexdigest()[:16] if key else ""
 
 
+def text_pointer(kind: str, text: str) -> str:
+    """16 hex characters that stand for `text` without holding it: an HMAC-SHA-256 of the text keyed by this install's secret
+    (the one `who_pointer` uses, with `kind` mixed in so the two never match). The same text gives the same pointer here,
+    and a list of guesses can't be matched against it. "" when the secret can't be had (never an error)."""
+    try:
+        key = _key()
+    except OSError:
+        return ""
+    if not key:
+        return ""
+    return hmac.new(key, f"{kind}\0{text}".encode("utf-8", "replace"), hashlib.sha256).hexdigest()[:16]
+
+
 def _text(name: str, value) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{name} must be text")

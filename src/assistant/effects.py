@@ -551,8 +551,12 @@ def _abandon(effect_id: str) -> None:
                 "outcome": "failed", "verified": None, "error": "not recorded"})
 
 
-def begin(effect_class, target, authorized_by, trace="", component="", undoes="") -> str:
+def begin(effect_class, target, authorized_by, trace="", component="", undoes="", text_digest="") -> str:
     """Record the intent to do an effect and return its id. The caller acts only if this returns.
+
+    `text_digest` (16 hex characters, made by the caller from the text with a secret of this install, never the text)
+    is recorded as the target's `msg_digest`, so the same target with a different text is a different target. A caller
+    may not put `msg_digest` in `target` itself; this is the one way in.
 
     ValueError: an unknown class, or a target, trace, component or `undoes` that isn't a pointer.
     NotAuthorized: this kind of authorization isn't accepted for the class, it is malformed or dated more than a
@@ -565,6 +569,10 @@ def begin(effect_class, target, authorized_by, trace="", component="", undoes=""
         raise ValueError("unknown effect class")
     spec = CLASSES[effect_class]
     target = clean_target(target)
+    if text_digest:
+        if "msg_digest" in target or not (isinstance(text_digest, str) and TARGET_KEYS["msg_digest"].fullmatch(text_digest)):
+            raise ValueError("text_digest must be 16 hex characters")
+        target = {**target, "msg_digest": text_digest}
     if trace and not pointers.is_trace_id(trace):
         raise ValueError("trace must be a trace id")
     if not isinstance(component, str) or not _COMPONENT.fullmatch(component):

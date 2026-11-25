@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import sys
 from pathlib import Path
 from unittest import mock
@@ -78,6 +79,8 @@ def test_run_by_hand_it_counts_as_a_persons_tap_and_the_task_is_recorded(send, h
     code, _ = run(send, Rpc(home), "--task", "td-9")
     row = ledger(home)[0]
     assert code == 0 and row["auth"]["kind"] == "tap" and row["auth"]["ref"] == "cli:cmux-send"
+    digest = row["target"].pop("msg_digest")  # a typing run by hand is told apart by its text: a keyed digest, no text
+    assert re.fullmatch(r"[0-9a-f]{16}", digest) and MARKER not in digest
     assert row["target"] == {"source": "cli", "session": "workspace:1000010005", "task": "td-9"}
 
 

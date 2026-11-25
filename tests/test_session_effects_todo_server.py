@@ -1,7 +1,8 @@
-"""The dashboard's "run now" on a proposal types only a short line into a real session, and records it first."""
+"""The dashboard's "run now" on a proposal types what the proposal says into a real session, and records it first."""
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -24,7 +25,7 @@ def seed(env, action=MARKER, ref="workspace:1000010007"):
 
 @pytest.mark.parametrize("action, ref", [
     (MARKER, "not-a-session"), (MARKER, "workspace:7; rm -rf"), (MARKER, "surface:3"),
-    ("one\ntwo", "workspace:1000010007"), ("one\rtwo", "workspace:1000010007"), ("x" * 501, "workspace:1000010007"), ("", "workspace:1000010007"),
+    ("one\rtwo", "workspace:1000010007"), ("", "workspace:1000010007"),
     (["a"], "workspace:1000010007"), (MARKER, "workspace:" + "1" * 19),
     # control characters: Ctrl-C, back-tab, Ctrl-U, the end of a bracketed paste, a line separator
     ("a\x03b", "workspace:1000010007"), ("a\x1b[Zb", "workspace:1000010007"), ("a\x15b", "workspace:1000010007"),
@@ -85,6 +86,7 @@ def test_run_now_is_recorded_as_a_tap_on_the_route_and_types_through_the_one_scr
     assert json.loads(path.read_text())["status"] == "working"
     rows = [json.loads(line) for line in (home / ".assistant/effects/effects.jsonl").read_text().splitlines()]
     assert [r["kind"] for r in rows] == ["intent", "result"] and rows[1]["outcome"] == "done"
+    assert re.fullmatch(r"[0-9a-f]{16}", rows[0]["target"].pop("msg_digest"))  # this text, as a keyed digest
     assert rows[0]["target"] == {"source": "run-now", "session": "workspace:1000010007"}
     assert rows[0]["auth"]["kind"] == "tap" and rows[0]["auth"]["ref"] == "/proposal/run-now"
     assert rows[0]["component"] == "todo-server"
