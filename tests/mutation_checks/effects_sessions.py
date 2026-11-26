@@ -1764,8 +1764,8 @@ CHECKS = (
     (
         'the start-up check always looks at the gate',
         'bin/run-pulse.py',
-        '"src/assistant/{name}.py" for name in ("effects", "pointers", "session_effects"))',
-        '"src/assistant/{name}.py" for name in ("effects", "pointers", "session_effects", "session_gate"))',
+        'for name in ("effects", "pointers", "session_backend", "session_effects"))',
+        'for name in ("effects", "pointers", "session_backend", "session_effects", "session_gate"))',
         'tests/test_run_pulse_wrapper.py::test_a_broken_gate_stops_the_pulse_in_either_mode',
     ),
     (
