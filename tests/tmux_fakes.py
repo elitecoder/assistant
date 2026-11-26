@@ -51,13 +51,18 @@ def server(monkeypatch):
     base = Path(tempfile.mkdtemp(prefix="atx-", dir="/tmp"))
     monkeypatch.setenv("TMUX_TMPDIR", str(base))
     monkeypatch.setenv("SHELL", "/bin/sh")  # every pane runs a plain shell with a plain prompt
+    monkeypatch.setenv("HISTFILE", "/dev/null")  # and that shell writes no history into the test's home as it ends
     for name in ("TMUX", "TMUX_PANE", "ASSISTANT_TMUX_BIN"):
         monkeypatch.delenv(name, raising=False)
     yield base
     # By its socket, never by the environment: a test may have changed that, and a bare `tmux kill-server`
     # would then end the developer's own sessions.
     _RUN([TMUX, "-S", str(base / f"tmux-{os.getuid()}" / "default"), "kill-server"], capture_output=True)
-    shutil.rmtree(base, ignore_errors=True)
+    for _ in range(40):  # a pane's shell may still be writing as it ends; the folder goes once it is quiet
+        shutil.rmtree(base, ignore_errors=True)
+        if not base.exists():
+            break
+        time.sleep(0.05)
 
 
 class FakeClaude:
