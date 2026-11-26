@@ -112,6 +112,16 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
     stops the page from being built.
 
 ### Added
+- Pro mode can keep agent sessions in tmux instead of cmux, which also works on
+  Linux. Set `{"sessions": {"backend": "tmux"}}` in `~/.assistant/config.json`;
+  with no setting, Pro mode uses cmux on a Mac and tmux elsewhere. The default
+  mode is unchanged and always uses cmux. With tmux, each tmux window is a
+  workspace, a task Assistant starts gets a detached tmux session of its own,
+  and Claude Code sessions are identified, watched, nudged, and reported when
+  they finish a turn or wait on you. Copilot and Droid sessions start but aren't
+  identified yet, and the skills that call `cmux` from inside a session
+  (`/cleanup`, `/back-off`, `/attend`, `/spawn-claude-workspace`) still need
+  cmux. See "Sessions in tmux" in `docs/configuration.md`.
 - Find out why a row is on your Work queue, and what Assistant has done with
   it. Every Open list row, Start here item, email, row waiting for your
   approval and Ready for you result now has a short **Why?** link next to

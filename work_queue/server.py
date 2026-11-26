@@ -64,7 +64,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
-from assistant import effects, feedback, mode, pointers, records, todostore, why
+from assistant import effects, feedback, mode, pointers, records, session_backend, todostore, why
 
 from work_queue import config, held_saves, page, refresh, tools, traces
 from work_queue.inputs import slack
@@ -400,7 +400,8 @@ def focus_workspace(body: dict):
     ws = item.get("dispatchedWs")
     if not isinstance(ws, str) or not WORKSPACE.fullmatch(ws):
         return 404, {"error": f"{td} has no workspace yet"}
-    cmux = os.environ.get("CMUX_BIN") or "cmux"
+    in_tmux = session_backend.backend() == session_backend.TMUX  # Pro mode may keep sessions in tmux
+    cmux = session_backend.TMUX_CLI if in_tmux else os.environ.get("CMUX_BIN") or "cmux"
     out, error = run_tool([cmux, "identify", "--workspace", ws])
     if error:
         return (404 if "not found" in error.lower() else 502), {"error": f"Couldn't reach {ws}: {error}"}
@@ -415,8 +416,8 @@ def focus_workspace(body: dict):
     title = next((w.get("title") for w in listed if isinstance(w, dict) and w.get("ref") == ws), None)
     if not isinstance(title, str) or not title.startswith(f"{td}:"):
         return 409, {"error": f"{ws} no longer belongs to {td}: its title doesn't start with {td}:, so it wasn't opened"}
-    for step in ([cmux, "focus-window", "--window", win], [cmux, "select-workspace", "--workspace", ws, "--window", win],
-                 ["open", "-b", "com.cmuxterm.app"]):
+    steps = [[cmux, "focus-window", "--window", win], [cmux, "select-workspace", "--workspace", ws, "--window", win]]
+    for step in steps if in_tmux else [*steps, ["open", "-b", "com.cmuxterm.app"]]:
         if error := run_tool(step)[1]:
             return 502, {"error": f"Couldn't bring {ws} to the front: {error}"}
     return 200, {"workspace": ws, "window": win}

@@ -136,6 +136,11 @@ RUN_NOW_MAX = 500
 # cmux-send.py's worst case: the terminal lookup (10 s), two keystrokes (10 s each) and its 2.5 s wait.
 SEND_SCRIPT_TIMEOUT_SEC = 45
 CMUX_BIN = shutil.which("cmux") or "/Applications/cmux.app/Contents/Resources/bin/cmux"
+try:  # Pro mode may keep sessions in tmux instead (assistant.session_backend). If asking fails, this stays cmux.
+    from assistant import session_backend  # noqa: E402
+    CMUX_BIN = session_backend.cli(CMUX_BIN)
+except Exception:  # noqa: BLE001 - nothing here may stop this script from starting
+    pass
 
 HOME = Path(os.path.expanduser("~"))
 JSON_PATH = HOME / ".claude" / "assistant-todo.json"

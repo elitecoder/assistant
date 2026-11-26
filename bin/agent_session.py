@@ -982,6 +982,22 @@ def agent_from_transcript(path: object) -> str | None:
     return next((agent for marker, agent in _TRANSCRIPT_MARKERS if marker in text), None)
 
 
+def claude_live_sessions(timeout: float = 10.0) -> list | None:
+    """Claude Code's own list of its live sessions (`claude agents --json`): rows of {pid, sessionId, cwd, kind,
+    startedAt, status, ...}. [] when Claude Code isn't installed here. None when it is and didn't answer (it
+    timed out, failed, or printed something else; `agents --json` needs Claude Code 2.1.139 or later), so that
+    "couldn't look" never reads as "nothing is running"."""
+    claude = shutil.which(binary(CLAUDE))
+    if not claude:
+        return []
+    try:
+        done = subprocess.run([claude, "agents", "--json"], capture_output=True, text=True, timeout=timeout)
+        rows = json.loads(done.stdout) if done.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    return rows if isinstance(rows, list) else None
+
+
 def agent_from_executable(path: object) -> str | None:
     """Agent name for a launch executable path (``/x/bin/copilot`` → copilot)."""
     return _KIND_TO_AGENT.get(os.path.basename(str(path or "")).lower())

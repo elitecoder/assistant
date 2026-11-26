@@ -31,6 +31,13 @@ if str(REPO / "src") not in sys.path:
 sys.path.insert(0, str(REPO / "bin"))  # loaded by path (tests/drive_dashboard_overview.py)
 sys.path.insert(1, str(REPO))
 
+CMUX_CLI = "cmux"
+try:  # Pro mode may keep sessions in tmux instead (assistant.session_backend). If asking fails, this stays cmux.
+    from assistant import session_backend  # noqa: E402
+    CMUX_CLI = session_backend.cli(CMUX_CLI)
+except Exception:  # noqa: BLE001 - nothing here may stop this script from starting
+    pass
+
 import agent_session  # noqa: E402
 from assistant import apitoken
 from assistant import brief as brief_store
@@ -1879,7 +1886,7 @@ def _cmux_workspaces() -> dict[str, dict]:
     empty dict so the Fleet tab falls back to ws_ref-as-title with no color."""
     try:
         out = subprocess.run(
-            ["cmux", "list-workspaces", "--json"],
+            [CMUX_CLI, "list-workspaces", "--json"],
             capture_output=True, text=True, timeout=8,
         )
         if out.returncode != 0 or not out.stdout.strip():

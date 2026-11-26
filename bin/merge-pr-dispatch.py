@@ -64,6 +64,12 @@ import sys
 import time
 
 CMUX = os.environ.get("CMUX_BIN", "/Applications/cmux.app/Contents/Resources/bin/cmux")
+try:  # Pro mode may keep sessions in tmux instead (assistant.session_backend). If asking fails, this stays cmux.
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+    from assistant import session_backend  # noqa: E402
+    CMUX = session_backend.cli(CMUX)
+except Exception:  # noqa: BLE001 - nothing here may stop this script from starting
+    pass
 REPO = "Adobe-Firefly/firefly-platform"
 # Resolve sibling scripts relative to THIS file, not a hardcoded ~/dev/assistant
 # — so a checkout elsewhere still finds them (portability).

@@ -36,6 +36,12 @@ import time
 from datetime import datetime
 
 CMUX = "/Applications/cmux.app/Contents/Resources/bin/cmux"
+try:  # Pro mode may keep sessions in tmux instead (assistant.session_backend). If asking fails, this stays cmux.
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+    from assistant import session_backend  # noqa: E402
+    CMUX = session_backend.cli(CMUX)
+except Exception:  # noqa: BLE001 - nothing here may stop this script from starting
+    pass
 SUMM_DIR = os.path.expanduser("~/.assistant/observer-summaries")
 BACK_OFF_PATH = os.path.expanduser("~/.assistant/back-off.json")
 EVENTS_PATH = os.path.expanduser("~/.assistant/events.jsonl")

@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import agent_session
+import cmux_sessions
 
 
 # --------------------------------------------------------------------------- paths
@@ -77,7 +78,7 @@ class Paths:
             conversation=comms_dir / "conversation.jsonl",
             free_text_log=comms_dir / "free-text.log",
             curator=bin_dir / "assistant-curator.py",
-            cmux_bin=Path(env.get("CMUX_BIN", "/Applications/cmux.app/Contents/Resources/bin/cmux")),
+            cmux_bin=Path(cmux_sessions.session_cli(env.get("CMUX_BIN", "/Applications/cmux.app/Contents/Resources/bin/cmux"))),
         )
 
 
