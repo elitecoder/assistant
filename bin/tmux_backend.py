@@ -381,18 +381,10 @@ def select_workspace(ws: dict) -> None:
 # ── agent sessions ────────────────────────────────────────────────────────────
 
 def _claude_rows() -> list:
-    """Claude Code's own list of its live interactive sessions: [{pid, sessionId, cwd, startedAt, status}].
-    No Claude Code on this machine is no sessions. A Claude Code that doesn't answer is a Failure: "couldn't
-    look" must never read as "nothing is running"."""
-    claude = shutil.which(agent_session.binary(agent_session.CLAUDE))
-    if not claude:
-        return []
-    try:
-        done = subprocess.run([claude, "agents", "--json"], capture_output=True, text=True, timeout=TIMEOUT_SEC)
-        rows = json.loads(done.stdout) if done.returncode == 0 else None
-    except (OSError, subprocess.SubprocessError, ValueError):
-        rows = None
-    if not isinstance(rows, list):
+    """Claude Code's live interactive sessions, from its own list: [{pid, sessionId, cwd, startedAt, status}].
+    A Claude Code that doesn't answer is a Failure: "couldn't look" must never read as "nothing is running"."""
+    rows = agent_session.claude_live_sessions(TIMEOUT_SEC)
+    if rows is None:
         raise Failure("unavailable", "`claude agents --json` didn't answer, so the sessions can't be listed "
                                      "(it needs Claude Code 2.1.139 or later)")
     return [row for row in rows

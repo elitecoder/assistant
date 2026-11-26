@@ -86,14 +86,16 @@ class FakeClaude:
         """Start a long-lived process named `claude` as the foreground job of `ws_ref`'s pane; its pid."""
         stand_in = self.folder / "agents" / "claude"
         stand_in.parent.mkdir(exist_ok=True)
+        # A link run under the name `claude`: `ps` names a process by the path it was started with. On a Mac the
+        # link is to `sleep`, started where it is (a copy of a system program is killed, and a Python built as a
+        # framework starts itself again under its own name). Elsewhere it is to this Python: on some Linux
+        # systems `sleep` is one multi-call program that refuses a name it doesn't know.
+        on_mac = sys.platform == "darwin"
         if not stand_in.is_symlink():
-            # A link to this Python, run under the name `claude`: `ps` names a process by the path it was started
-            # with, on a Mac and on Linux. (A copy of a system program is killed by macOS, and on some Linux
-            # systems `sleep` is one multi-call program that refuses a name it doesn't know.)
-            stand_in.symlink_to(sys.executable)
+            stand_in.symlink_to(shutil.which("sleep") if on_mac else sys.executable)
+        wait = "600" if on_mac else '-c "import time; time.sleep(600)"'
         pid_file = self.folder / f"pid-{ws_ref.replace(':', '-')}"
-        backend(["send", "--workspace", ws_ref,
-                 f"sh -c 'echo $$ > {pid_file}; exec {stand_in} -c \"import time; time.sleep(600)\"'"])
+        backend(["send", "--workspace", ws_ref, f"sh -c 'echo $$ > {pid_file}; exec {stand_in} {wait}'"])
         backend(["send-key", "--workspace", ws_ref, "enter"])
         until(lambda: pid_file.exists() and pid_file.read_text().strip())
         pid = int(pid_file.read_text())

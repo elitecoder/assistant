@@ -88,8 +88,8 @@ CHECKS = (
     (
         "a Claude Code that doesn't answer is not read as no sessions",
         "bin/tmux_backend.py",
-        "    if not isinstance(rows, list):\n        raise Failure(",
-        "    if not isinstance(rows, list):\n        return []\n    if False:\n        raise Failure(",
+        "    if rows is None:\n        raise Failure(",
+        "    if rows is None:\n        return []\n    if False:\n        raise Failure(",
         BACKEND + "test_a_claude_that_does_not_answer_is_an_error_not_an_empty_fleet",
     ),
     (
