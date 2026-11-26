@@ -75,6 +75,12 @@ CMUX_REGISTRY = HOME / ".claude/cmux-registry.json"
 PROTECTED_REFS = {"workspace:3", "workspace:108", "workspace:7"}
 CMUX_BIN = os.environ.get(
     "CMUX_BIN", "/Applications/cmux.app/Contents/Resources/bin/cmux")
+try:  # Pro mode may keep sessions in tmux instead (assistant.session_backend). If asking fails, this stays cmux.
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+    from assistant import session_backend  # noqa: E402
+    CMUX_BIN = session_backend.cli(CMUX_BIN)
+except Exception:  # noqa: BLE001 - nothing here may stop this script from starting
+    pass
 
 # How many lines of live terminal to hand the Observer. The visible viewport
 # plus enough scrollback to capture the last recap/error and a few turns of

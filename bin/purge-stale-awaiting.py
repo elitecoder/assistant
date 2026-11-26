@@ -50,6 +50,12 @@ LOG_PATH = Path.home() / ".assistant/awaiting-purge.log"
 DECISIONS_QUEUE_PATH = Path.home() / ".assistant/decisions/queue.json"
 DECISIONS_LOG_PATH = Path.home() / ".assistant/decisions/decisions.jsonl"
 CMUX_BIN = os.environ.get("CMUX_BIN", "/Applications/cmux.app/Contents/Resources/bin/cmux")
+try:  # Pro mode may keep sessions in tmux instead (assistant.session_backend). If asking fails, this stays cmux.
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
+    from assistant import session_backend  # noqa: E402
+    CMUX_BIN = session_backend.cli(CMUX_BIN)
+except Exception:  # noqa: BLE001 - nothing here may stop this script from starting
+    pass
 
 WS_RE = re.compile(r"workspace:(\d+)")
 PR_URL_RE = re.compile(r"https://[^\s/]+/[^\s/]+/[^\s/]+/pull/\d+")

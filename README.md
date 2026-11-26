@@ -137,7 +137,8 @@ walkthrough, see [ONBOARDING.md](ONBOARDING.md).
 - `git`
 - Python 3.11 or later
 - The [Claude Code CLI](https://claude.ai/code)
-- The cmux app, for the workspace features
+- The cmux app, for the workspace features. In Pro mode, sessions can be kept
+  in tmux instead; see [Sessions in tmux](docs/configuration.md#sessions-in-tmux-pro-mode).
 - [`uv`](https://docs.astral.sh/uv/) (optional; it makes setup faster)
 
 ## Learn more

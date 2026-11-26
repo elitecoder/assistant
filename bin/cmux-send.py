@@ -66,6 +66,11 @@ except Exception:  # noqa: BLE001 - nothing here may stop the default mode from 
     session_gate = None
 
 CMUX = os.environ.get("CMUX_BIN", "/Applications/cmux.app/Contents/Resources/bin/cmux")
+try:  # Pro mode may keep sessions in tmux instead (assistant.session_backend). If asking fails, this stays cmux.
+    from assistant import session_backend  # noqa: E402
+    CMUX = session_backend.cli(CMUX)
+except Exception:  # noqa: BLE001 - nothing here may stop this script from starting
+    pass
 WORLD = os.path.expanduser("~/.claude/cache/world.json")
 SENDS_LOG = os.path.expanduser("~/.assistant/sends.jsonl")
 

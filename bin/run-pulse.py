@@ -39,12 +39,16 @@ STARTUP_FILES = (PULSE, BIN.parent / "src/assistant/__init__.py",
                  BIN.parent / "src/assistant/model_tiers.py",
                  BIN.parent / "src/assistant/pointers.py",
                  BIN.parent / "src/assistant/redact.py",
+                 BIN.parent / "src/assistant/session_backend.py",
                  BIN.parent / "src/assistant/session_effects.py",
                  BIN.parent / "src/assistant/session_gate.py",
                  BIN.parent / "src/assistant/transcript_slice.py")
 # Only Pro mode loads these (through `session_gate`, when it first types), so only Pro mode checks them: in the default
-# mode a broken one must not stop the pulse, as on origin/main, which never looked at them.
-PRO_ONLY = tuple(BIN.parent / f"src/assistant/{name}.py" for name in ("effects", "pointers", "session_effects"))
+# mode a broken one must not stop the pulse, as on origin/main, which never looked at them. `session_backend` says
+# whether Pro mode keeps sessions in tmux; the pulse loads it inside a `try`, so in the default mode a broken one
+# changes nothing.
+PRO_ONLY = tuple(BIN.parent / f"src/assistant/{name}.py"
+                 for name in ("effects", "pointers", "session_backend", "session_effects"))
 LEDGER_EVERY_SEC = 86400  # 1 day
 
 

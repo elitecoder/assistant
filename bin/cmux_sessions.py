@@ -36,6 +36,12 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import agent_session  # noqa: E402
 
+try:  # Pro mode may keep sessions in tmux instead (assistant.session_backend). If loading it fails, this stays cmux.
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+    from assistant import session_backend as _session_backend  # noqa: E402
+except Exception:  # noqa: BLE001
+    _session_backend = None
+
 APP_CLI = "/Applications/cmux.app/Contents/Resources/bin/cmux"
 # A busy machine has taken 4.8 s to answer; a scan that times out sees no records.
 TIMEOUT_SEC = 15
@@ -67,7 +73,22 @@ class Session:
         return agent_session.agent_from_kind(self.agent)
 
 
+def session_cli(cmux: str) -> str:
+    """`cmux`, or the tmux backend when Pro mode keeps sessions in tmux. `cmux` when the module that knows
+    couldn't be loaded: nothing here may stop a caller from starting."""
+    return _session_backend.cli(cmux) if _session_backend else cmux
+
+
+def in_tmux() -> bool:
+    """Pro mode keeps sessions in tmux. False when the module that knows couldn't be loaded."""
+    return bool(_session_backend) and _session_backend.backend() == _session_backend.TMUX
+
+
 def cli_path() -> str:
+    return session_cli(_cmux_path())
+
+
+def _cmux_path() -> str:
     override = os.environ.get("CMUX_BIN")
     if override:
         return override

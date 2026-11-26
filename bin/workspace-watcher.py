@@ -77,6 +77,11 @@ ORCH_LEDGER = HOME / ".architect" / "orchestrator-ledger"
 DIAG_REPORTS = HOME / "Library" / "Logs" / "DiagnosticReports"
 
 CMUX_BIN = shutil.which("cmux") or "/Applications/cmux.app/Contents/Resources/bin/cmux"
+try:  # Pro mode may keep sessions in tmux instead (assistant.session_backend). If asking fails, this stays cmux.
+    from assistant import session_backend  # noqa: E402
+    CMUX_BIN = session_backend.cli(CMUX_BIN)
+except Exception:  # noqa: BLE001 - nothing here may stop this script from starting
+    pass
 
 # ---------- timing knobs ----------
 LEDGER_MATCH_WINDOW_SEC = 60          # cleanup ledger evidence is recorded if within ±60s (informational only)

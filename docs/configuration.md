@@ -83,6 +83,44 @@ The lesson extractor's pass over repeated successful actions is also off. Set
 `ASSISTANT_LESSON_LEDGER_PASS=1` to turn it on. The pass that finds corrections
 in your sessions still runs when `ASSISTANT_LESSON_EXTRACTOR=1`.
 
+## Sessions in tmux (Pro mode)
+
+Assistant keeps agent sessions in cmux. In Pro mode it can keep them in tmux
+instead, which also runs on Linux. To choose, add `sessions` to
+`~/.assistant/config.json`, next to `"mode"`:
+
+```json
+{"mode": "pro", "sessions": {"backend": "tmux"}}
+```
+
+`"cmux"` is the other value. With no setting, Pro mode uses cmux on a Mac and
+tmux on any other system, where there is no cmux. The default mode always uses
+cmux, whatever this says. A background job reads the setting when it starts,
+so restart the jobs after changing it (`./install.sh --apply` does).
+
+With tmux chosen:
+
+- Every tmux window on your default tmux server is a workspace, whichever
+  session it is in. `workspace:N` is tmux window `@N-1`, and a workspace's
+  title is the window's name when you gave it one, else the title the agent set.
+- A task Assistant starts gets a detached tmux session of its own, named after
+  the task. Attach to it with `tmux attach -t <name>`, or pick it with
+  `Ctrl-b s`. **Open workspace** switches the terminal you last used tmux in.
+- Claude Code sessions are identified, watched, nudged, and reported when
+  they finish a turn or wait on you. Assistant asks Claude Code itself which
+  session is in which terminal (`claude agents --json`, which needs Claude
+  Code 2.1.139 or later). If Claude Code doesn't answer, Assistant treats the
+  sessions as unknown and starts nothing until it does.
+- Copilot and Droid sessions start and can be typed into, but aren't
+  identified yet, so they don't appear as agent sessions.
+- The skills that run inside a session and call `cmux` themselves (`/cleanup`,
+  `/back-off`, `/attend`, `/spawn-claude-workspace`) still need cmux.
+- `cmux-ws-numberer`, `cmux-restore-sessions` and `workspace-watcher` act on
+  the cmux app and do nothing for tmux.
+
+`bin/assistant-doctor.py` checks tmux in cmux's place. If tmux isn't on the
+`PATH` your background jobs get, set `ASSISTANT_TMUX_BIN` to its full path.
+
 ## Strategist
 
 The Strategist is the model that drafts context for staged goal steps. Set it

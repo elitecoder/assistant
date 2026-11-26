@@ -134,6 +134,11 @@ TODO_PATH = HOME / ".claude/assistant-todo.json"
 DISPATCH_CLASSIFICATION_PROMPT = REPO / "prompts/dispatch-classification.md"
 SPAWN_PROMPT_DIR = HOME / ".claude/spawn-prompts"
 CMUX_BIN = os.environ.get("CMUX_BIN", "/Applications/cmux.app/Contents/Resources/bin/cmux")
+try:  # Pro mode may keep sessions in tmux instead (assistant.session_backend). If asking fails, this stays cmux.
+    from assistant import session_backend  # noqa: E402
+    CMUX_BIN = session_backend.cli(CMUX_BIN)
+except Exception:  # noqa: BLE001 - nothing here may stop this script from starting
+    pass
 # Model + launch flags are NOT set here — the dispatched workspace runs `claude`,
 # which expands the ~/.zprofile alias (model, --dangerously-skip-permissions,
 # --add-dir). That alias is the single source of truth; see step 2 in dispatch_todo.

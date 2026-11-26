@@ -127,6 +127,21 @@ def observer_enabled() -> bool:
     return isinstance(observer, dict) and observer.get("enabled") is True
 
 
+SESSION_BACKENDS = ("cmux", "tmux")
+
+
+def session_backend() -> str | None:
+    """Where Pro mode keeps agent sessions when config.json says: {"sessions": {"backend": "tmux"}} or
+    "cmux". None when the key is missing, holds anything else, or the file is unreadable;
+    `assistant.session_backend` then decides from the system it runs on."""
+    try:
+        sessions = _read_config().get("sessions")
+    except (OSError, ValueError):
+        return None
+    chosen = sessions.get("backend") if isinstance(sessions, dict) else None
+    return chosen if chosen in SESSION_BACKENDS else None
+
+
 # The background jobs that are off until someone turns them on in config.json.
 # `decisions` is the job that turns GitHub and session events into the decision
 # list. The setting is the file only: the dashboard is drawn by a different

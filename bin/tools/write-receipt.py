@@ -35,6 +35,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+CMUX_CLI = "cmux"
+try:  # Pro mode may keep sessions in tmux instead (assistant.session_backend). If asking fails, this stays cmux.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+    from assistant import session_backend  # noqa: E402
+    CMUX_CLI = session_backend.cli(CMUX_CLI)
+except Exception:  # noqa: BLE001 - nothing here may stop this script from starting
+    pass
+
 HOME = Path.home()
 RECEIPTS_DIR = HOME / ".assistant" / "receipts"
 LOG_PATH = HOME / "dev" / "generated-docs" / "work-receipts.jsonl"
@@ -83,7 +91,7 @@ def cmux_title(ws_ref: str) -> str | None:
     back to the ws_ref as the project name."""
     try:
         out = subprocess.run(
-            ["cmux", "list-workspaces", "--json"],
+            [CMUX_CLI, "list-workspaces", "--json"],
             capture_output=True, text=True, timeout=8,
         )
         if out.returncode != 0 or not out.stdout.strip():

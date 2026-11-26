@@ -28,6 +28,12 @@ THE_ONE = "src/assistant/session_effects.py"
 # The default mode types as it always did, and must not depend on the ledger's modules loading, so its keystrokes are
 # named in a module of their own (standard library only) that never records anything. It is the only other place.
 THE_DEFAULT_MODE = "src/assistant/session_gate.py"
+# When Pro mode keeps sessions in tmux, bin/tmux_backend.py stands where the cmux program stands: it is the far end
+# of the same calls, run as a program with cmux's arguments. It types only what one of those calls asks for: the two
+# rpc methods and `send`/`send-key`, which this fence sees at every caller, and `new-workspace --command`, whose
+# command it types into the new session's shell exactly as cmux does (see "Left alone on purpose" above).
+# Nothing imports it (a test below), so nothing can reach its typing any other way.
+THE_TMUX_END = "bin/tmux_backend.py"
 # Nothing is listed here: every path that types is routed. A path that is not yet routed must be named in this
 # list, with the reason, so nothing is skipped silently.
 NOT_YET_ROUTED: dict = {}
@@ -59,7 +65,7 @@ def _doc_nodes(tree):
 def _mentions_cmux(node) -> bool:
     name = node.id if isinstance(node, ast.Name) else node.attr if isinstance(node, ast.Attribute) \
         else node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else ""
-    return "cmux" in name.lower()
+    return "cmux" in name.lower() or "tmux" in name.lower()
 
 
 def _callee(node) -> str:
@@ -134,7 +140,7 @@ def test_only_the_one_module_names_the_calls_that_type():
     for folder in FOLDERS:
         for path in sorted((REPO / folder).rglob("*.py")):
             rel = str(path.relative_to(REPO))
-            if rel not in (THE_ONE, THE_DEFAULT_MODE) and rel not in NOT_YET_ROUTED:
+            if rel not in (THE_ONE, THE_DEFAULT_MODE, THE_TMUX_END) and rel not in NOT_YET_ROUTED:
                 found += [f"{rel}:{line}" for line in typing_calls(path.read_text())]
     assert found == [], "type through assistant.session_effects (it records the intent first): " + ", ".join(found)
 
@@ -142,8 +148,27 @@ def test_only_the_one_module_names_the_calls_that_type():
 def test_the_one_module_is_where_the_calls_live_and_every_listed_exception_still_types():
     assert typing_calls((REPO / THE_ONE).read_text())
     assert typing_calls((REPO / THE_DEFAULT_MODE).read_text())
+    assert typing_calls((REPO / THE_TMUX_END).read_text())
     for rel in NOT_YET_ROUTED:  # a path that is now routed must be taken off the list
         assert typing_calls((REPO / rel).read_text()), rel
+
+
+def test_the_tmux_end_is_run_as_a_program_and_never_imported():
+    """Imported, its functions could type with no record. Run as a program, it is reached only by the calls above."""
+    importers = []
+    for folder in FOLDERS:
+        for path in sorted((REPO / folder).rglob("*.py")):
+            for node in ast.walk(ast.parse(path.read_text())):
+                names = [alias.name for alias in node.names] if isinstance(node, ast.Import) else \
+                    [node.module or ""] if isinstance(node, ast.ImportFrom) else []
+                if any(name.split(".")[0] == "tmux_backend" for name in names):
+                    importers.append(str(path.relative_to(REPO)))
+            if "tmux_backend" in path.read_text() and str(path.relative_to(REPO)) not in (
+                    THE_TMUX_END, "src/assistant/session_backend.py"):
+                importers.append(f"{path.relative_to(REPO)} (names it)")
+    assert importers == []
+    assert typing_calls('run([session_backend.TMUX_CLI, "send", "--workspace", w, t])\n'
+                        'run([TMUX, "send", "--workspace", w, t])') == [1, 2]
 
 
 def test_every_transport_the_fence_allows_exists():

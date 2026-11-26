@@ -71,6 +71,11 @@ FIRED_LOG = ASSISTANT_DIR / "cmux-fired-patterns.jsonl"
 
 CMUX_BIN = os.environ.get("CMUX_BIN",
                           "/Applications/cmux.app/Contents/Resources/bin/cmux")
+try:  # Pro mode may keep sessions in tmux instead (assistant.session_backend). If asking fails, this stays cmux.
+    from assistant import session_backend  # noqa: E402
+    CMUX_BIN = session_backend.cli(CMUX_BIN)
+except Exception:  # noqa: BLE001 - nothing here may stop this script from starting
+    pass
 
 # Don't re-ping the same workspace for the same signal more than once per window.
 # Notifications in particular can fire repeatedly while the agent waits.

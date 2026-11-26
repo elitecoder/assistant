@@ -43,7 +43,7 @@ def _layout(tmp: Path, pulse_body: str, model_tiers: str = "TIERS = {}\n") -> Pa
     (tmp / "src/assistant/redact.py").write_text("")
     (tmp / "src/assistant/mode.py").write_text("")
     (tmp / "src/assistant/session_effects.py").write_text("")
-    for name in ("effects", "pointers", "session_gate"):
+    for name in ("effects", "pointers", "session_backend", "session_gate"):
         (tmp / f"src/assistant/{name}.py").write_text("")
     return tmp / "bin/run-pulse.py"
 
@@ -234,7 +234,7 @@ def _run_in_layout(tmp_path, monkeypatch, broken, mode_body):
                           env=dict(os.environ, HOME=str(tmp_path / "home")))
 
 
-@pytest.mark.parametrize("name", ["effects", "pointers", "session_effects"])
+@pytest.mark.parametrize("name", ["effects", "pointers", "session_backend", "session_effects"])
 def test_a_broken_ledger_file_stops_the_pulse_in_pro_mode_only(tmp_path, monkeypatch, name):
     ran = _run_in_layout(tmp_path / "pro", monkeypatch, name, "def is_pro():\n    return True\n") \
         if (tmp_path / "pro").mkdir() is None else None

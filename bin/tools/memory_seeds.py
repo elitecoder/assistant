@@ -31,6 +31,14 @@ from typing import Any, Iterable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import agent_session  # noqa: E402
 
+CMUX_CLI = "cmux"
+try:  # Pro mode may keep sessions in tmux instead (assistant.session_backend). If asking fails, this stays cmux.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+    from assistant import session_backend  # noqa: E402
+    CMUX_CLI = session_backend.cli(CMUX_CLI)
+except Exception:  # noqa: BLE001 - nothing here may stop this script from starting
+    pass
+
 HOME = Path.home()
 CLAUDE_MD = HOME / ".claude" / "CLAUDE.md"
 PROPOSALS = HOME / ".assistant" / "proposals.jsonl"
@@ -160,7 +168,7 @@ def working_style_seeds() -> list[dict[str, Any]]:
 def _cmux_workspaces() -> dict[str, str]:
     """ref -> title, best-effort. Empty dict if cmux is down."""
     try:
-        out = subprocess.run(["cmux", "list-workspaces", "--json"],
+        out = subprocess.run([CMUX_CLI, "list-workspaces", "--json"],
                              capture_output=True, text=True, timeout=8)
         if out.returncode != 0 or not out.stdout.strip():
             return {}

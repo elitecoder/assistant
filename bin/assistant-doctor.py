@@ -39,6 +39,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import agent_session  # noqa: E402
+import cmux_sessions  # noqa: E402
 import comms_lib  # noqa: E402
 from assistant import mode  # noqa: E402
 
@@ -94,10 +95,22 @@ def check_git() -> Check:
     )
 
 
+def check_tmux(cli: str) -> Check:
+    # Pro mode keeps sessions in tmux here (assistant.session_backend), so tmux is CORE in cmux's place.
+    rc, _out, err = comms_lib.run_cmd([cli, "ping"], timeout=10)
+    if rc == 0:
+        return Check("tmux", PASS, core=True, detail="sessions are kept in tmux (ping ok)")
+    return Check("tmux", FAIL, core=True, detail=f"sessions are kept in tmux, and it doesn't run: {err.strip()}",
+                 remedy="install tmux (brew install tmux, or your system's package manager), "
+                        "or set ASSISTANT_TMUX_BIN to its path")
+
+
 def check_cmux() -> Check:
     # cmux is CORE: pulse dispatches work into cmux workspaces, and the warm
     # comms session lives in one. Non-destructive: existence + `cmux ping`.
     cmux = str(comms_lib.Paths.from_env().cmux_bin)
+    if cmux_sessions.in_tmux():
+        return check_tmux(cmux)
     if not Path(cmux).exists():
         return Check("cmux app", FAIL, core=True, detail=f"missing at {cmux}",
                      remedy="install cmux.app, or set CMUX_BIN to its cmux binary")

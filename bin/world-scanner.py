@@ -91,6 +91,11 @@ EVENTS_PATH = HOME / ".assistant/events.jsonl"
 EVENTS_QUARANTINE_DIR = HOME / ".assistant/eventspine/quarantine"
 CONNECTORS_DIR = HOME / ".assistant/connectors"
 CMUX_BIN = shutil.which("cmux") or "/Applications/cmux.app/Contents/Resources/bin/cmux"
+try:  # Pro mode may keep sessions in tmux instead (assistant.session_backend). If asking fails, this stays cmux.
+    from assistant import session_backend  # noqa: E402
+    CMUX_BIN = session_backend.cli(CMUX_BIN)
+except Exception:  # noqa: BLE001 - nothing here may stop this script from starting
+    pass
 
 ACTIVITY_HOURS = 24
 # Tail window for the event-spine health scan — bounded so a fat log can
