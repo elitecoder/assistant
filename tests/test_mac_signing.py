@@ -54,6 +54,17 @@ def add_certificate(keychain: Path) -> str:
         certificate.write_text(run("security", "find-certificate", "-c", "Assistant Local Signing", "-p", str(keychain)))
         run("sudo", "security", "add-trusted-cert", "-d", "-r", "trustRoot", "-p", "codeSign",
             "-k", "/Library/Keychains/System.keychain", str(certificate))
+        probe = keychain.parent / "probe"
+        executable(probe, 0)
+        for label, command, env in (
+            ("valid", ["security", "find-identity", "-v", "-p", "codesigning", str(keychain)], None),
+            ("verify", ["security", "verify-cert", "-c", str(certificate), "-p", "codeSign", "-k", str(keychain)], None),
+            ("name", ["codesign", "-f", "-s", "Assistant Local Signing", "--keychain", str(keychain), str(probe)], None),
+            ("bare-env", ["codesign", "-f", "-s", "Assistant Local Signing", "--keychain", str(keychain), str(probe)],
+             {"PATH": "/usr/bin:/bin"}),
+        ):
+            done = subprocess.run(command, capture_output=True, text=True, env=env)
+            print(f"DIAG {label}: rc={done.returncode} {done.stdout}{done.stderr}")
     return made
 
 
