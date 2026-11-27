@@ -63,12 +63,14 @@ def executable(path: Path, version: int, *flags: str):
     run("cc", *flags, "-o", str(path), str(source))
 
 
-def signed_app(tmp_path: Path, version: int, keychain: Path, path: str = "/usr/bin:/bin") -> str:
+def signed_app(tmp_path: Path, version: int, keychain: Path, path: str = "/usr/bin:/bin", note: list | None = None) -> str:
     app = tmp_path / f"v{version}" / "Assistant.app"
     (app / "Contents/MacOS").mkdir(parents=True)
     executable(app / "Contents/MacOS/AssistantBar", version)
     shutil.copy(MAC / "Info.plist", app / "Contents/Info.plist")
-    run(str(MAC / "sign-app.sh"), str(app), env={"PATH": path, "ASSISTANT_SIGN_KEYCHAIN": str(keychain)})
+    said = run(str(MAC / "sign-app.sh"), str(app), env={"PATH": path, "ASSISTANT_SIGN_KEYCHAIN": str(keychain)})
+    if note is not None:
+        note.append(said)
     return requirement(app)
 
 
@@ -87,6 +89,19 @@ def test_a_long_identity_list_still_finds_the_certificate(tmp_path, keychain):
     security.write_text('#!/bin/bash\n/usr/bin/security "$@"\nyes "  padding" | head -n 200000\n')
     security.chmod(0o755)
     assert "certificate leaf" in signed_app(tmp_path, 1, keychain, path=f"{tools}:/usr/bin:/bin")
+
+
+def test_a_certificate_that_cannot_sign_falls_back_to_ad_hoc(tmp_path, keychain):
+    add_certificate(keychain)
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    codesign = tools / "codesign"
+    codesign.write_text('#!/bin/bash\n[[ " $* " == *" --sign - "* || " $* " != *" --sign "* ]] && exec /usr/bin/codesign "$@"\n'
+                        'echo "$5: no identity found" >&2\nexit 1\n')
+    codesign.chmod(0o755)
+    said: list[str] = []
+    assert "cdhash" in signed_app(tmp_path, 1, keychain, path=f"{tools}:/usr/bin:/bin", note=said)
+    assert "mark it trusted" in said[0]
 
 
 def test_without_the_certificate_each_build_gets_a_new_identity(tmp_path, keychain):

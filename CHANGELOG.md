@@ -14,7 +14,9 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   the Mac app. Run `mac/make-signing-cert.sh` once to add a local signing
   certificate to your login keychain; `build-app.sh` then signs every build
   with it through the new `sign-app.sh`, so the app keeps the same identity.
-  Without the certificate, builds still sign ad hoc and print a note.
+  Without the certificate, or when it can't sign, builds still sign ad hoc
+  and print a note. On macOS 26 or earlier, also mark the certificate trusted
+  for code signing; `mac/README.md` has the command.
 - A pause mid-sentence no longer cuts your question off. Assistant still ends
   a question 2.5 seconds after you stop talking, but 0.2 seconds into each
   pause it asks Pipecat's Smart Turn v3.2 (BSD 2-Clause) whether you've

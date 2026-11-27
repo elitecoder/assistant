@@ -13,10 +13,13 @@ if [[ -n "${ASSISTANT_SIGN_KEYCHAIN:-}" ]]; then
 fi
 identities="$("${find[@]}")"
 hash="$(sed -nE "s/^ *[0-9]+\) ([0-9A-F]{40}) \"$name\".*/\1/p" <<<"$identities" | head -n 1)"
-if [[ -n "$hash" ]]; then
-  codesign --force --deep --sign "$hash" ${keychain[@]+"${keychain[@]}"} "$app"
+if [[ -n "$hash" ]] && codesign --force --deep --sign "$hash" ${keychain[@]+"${keychain[@]}"} "$app"; then
   echo "Signed with \"$name\""
+  exit 0
+fi
+codesign --force --deep --sign - "$app"
+if [[ -n "$hash" ]]; then
+  echo "Signed ad hoc: \"$name\" couldn't sign. On macOS 26 or earlier, mark it trusted for code signing (see README.md)." >&2
 else
-  codesign --force --deep --sign - "$app"
   echo "Signed ad hoc: macOS asks for microphone access again after each build. Run ./make-signing-cert.sh once to stop that." >&2
 fi

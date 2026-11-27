@@ -409,7 +409,7 @@ CHECKS = (
     (
         "sign-app.sh uses the local certificate when it exists",
         "mac/sign-app.sh",
-        'if [[ -n "$hash" ]]; then\n',
+        'if [[ -n "$hash" ]] && codesign --force --deep --sign "$hash" ${keychain[@]+"${keychain[@]}"} "$app"; then\n',
         'if false; then\n',
         "tests/test_mac_signing.py::test_builds_signed_with_the_certificate_keep_one_identity",
     ),
