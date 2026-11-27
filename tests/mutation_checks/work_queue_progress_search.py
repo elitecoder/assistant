@@ -1,6 +1,8 @@
 """Checks for the Work queue page's With agents box and its search on every tab (work_queue/page.py, server.py)."""
 
 WITH_AGENTS = "tests/test_work_queue_browser.py::test_with_agents_shows_each_sent_task_still_going_with_the_steps_assistant_recorded"
+ESCAPE_WHY = "tests/test_work_queue_browser.py::test_escape_in_the_search_clears_it_and_leaves_an_open_why_block_open"
+PLACEHOLDER = "tests/test_work_queue_browser.py::test_the_placeholder_page_runs_the_same_script"
 SEARCH = "tests/test_work_queue_browser.py::test_slash_searches_the_tab_you_are_on_by_row_text_and_clears_on_escape_or_a_tab_switch"
 
 CHECKS = (
@@ -21,8 +23,8 @@ CHECKS = (
     (
         "With agents leaves out finished work",
         "work_queue/page.py",
-        "filter(q=>q.status!=='done'&&q.status!=='blocked')",
-        "filter(q=>q.status!=='blocked')",
+        "filter(q=>q.status==='open'||q.status==='in-progress')",
+        "filter(q=>q.status!=='done')",
         WITH_AGENTS,
     ),
     (
@@ -56,7 +58,7 @@ CHECKS = (
     (
         "search leaves out button labels",
         "work_queue/page.py",
-        "c.querySelectorAll('button, textarea, input, .compose, .task-progress, .fb, .why-box')",
+        "c.querySelectorAll('button, textarea, input, .compose, .task-progress, .fb, .fb-extra, .why-box')",
         "c.querySelectorAll('textarea')",
         SEARCH,
     ),
@@ -129,5 +131,75 @@ CHECKS = (
         "ev.preventDefault();s.focus()});",
         "ev.preventDefault()});",
         SEARCH,
+    ),
+    (
+        "deferred work stays out of With agents",
+        "work_queue/page.py",
+        "filter(q=>q.status==='open'||q.status==='in-progress')",
+        "filter(q=>q.status!=='done'&&q.status!=='blocked')",
+        WITH_AGENTS,
+    ),
+    (
+        "search leaves out what you told Assistant",
+        "work_queue/page.py",
+        ".fb, .fb-extra, .why-box')",
+        ".fb, .why-box')",
+        SEARCH,
+    ),
+    (
+        "a snoozed match doesn't keep its lane on screen",
+        "work_queue/page.py",
+        "const hits=c=>[...c.querySelectorAll(Q_HIT)].some(el=>getComputedStyle(el).display!=='none');",
+        "const hits=c=>!!c.querySelector(Q_HIT);",
+        SEARCH,
+    ),
+    (
+        "Select all picks only the rows the search shows",
+        "work_queue/page.py",
+        "p.checked=c.checked&&!p.closest('.q-miss')",
+        "p.checked=c.checked",
+        SEARCH,
+    ),
+    (
+        "a picked row the search hides isn't sent",
+        "work_queue/page.py",
+        "'.ag-row:not([hidden]):not(.q-miss) .ag-pick:checked'",
+        "'.ag-row:not([hidden]) .ag-pick:checked'",
+        SEARCH,
+    ),
+    (
+        "Approve all approves only the rows the search shows",
+        "work_queue/page.py",
+        "closest('.ap-group').querySelectorAll('.ap-row:not(.applied):not(.approved):not(.kept):not(.em-gone):not(.q-miss)')",
+        "closest('.ap-group').querySelectorAll('.ap-row:not(.applied):not(.approved):not(.kept):not(.em-gone)')",
+        SEARCH,
+    ),
+    (
+        "Approve all counts only the rows the search shows",
+        "work_queue/page.py",
+        "const left=g.querySelectorAll('.ap-row:not(.applied):not(.approved):not(.kept):not(.em-gone):not(.q-miss)').length;",
+        "const left=g.querySelectorAll('.ap-row:not(.applied):not(.approved):not(.kept):not(.em-gone)').length;",
+        SEARCH,
+    ),
+    (
+        "the search recounts Send and Approve all",
+        "work_queue/page.py",
+        ".some(el=>el.offsetParent!==null);agCount();renderAp()}",
+        ".some(el=>el.offsetParent!==null)}",
+        SEARCH,
+    ),
+    (
+        "Escape in the search leaves a Why block open",
+        "work_queue/page.py",
+        "||!Object.keys(WHY).length||ev.target.id==='tab-search')return;",
+        "||!Object.keys(WHY).length)return;",
+        ESCAPE_WHY,
+    ),
+    (
+        "the placeholder page survives a new address",
+        "work_queue/page.py",
+        "if(s&&s.value){s.value='';filterTab('')}",
+        "if(s.value){s.value='';filterTab('')}",
+        PLACEHOLDER,
     ),
 )

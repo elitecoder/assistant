@@ -777,7 +777,9 @@ def test_the_placeholder_page_runs_the_same_script(site, wq):
         wait_text(tab, "#refresh", "Refresh")
         assert "Nothing to show yet" in tab.content() and errors == []
         tab.keyboard.press("/")
-        assert tab.locator("#tab-search").count() == 0 and errors == [], "no search box, and / does nothing"
+        tab.evaluate("location.hash = '#elsewhere'")
+        tab.wait_for_timeout(100)
+        assert tab.locator("#tab-search").count() == 0 and errors == [], "no search box, and / or a new address does nothing"
         cov.snap()
         browser.close()
 
@@ -1447,9 +1449,10 @@ def test_with_agents_shows_each_sent_task_still_going_with_the_steps_assistant_r
         {"id": "td-305", "title": "Unreadable start", "status": "in-progress", "dispatchedAt": "soon"},
         {"id": "td-306", "title": "Finished", "status": "done", "resultAt": "2026-11-20T10:00:00+00:00",
          "detail": "x\n\nRESULT: Done it"},
-        {"id": "td-307", "title": "Stuck", "status": "blocked", "statusReason": "Need access"}]
+        {"id": "td-307", "title": "Stuck", "status": "blocked", "statusReason": "Need access"},
+        {"id": "td-308", "title": "Put off", "status": "deferred"}]
     wq.todo.write_text(json.dumps({"items": items}))
-    config.write_json(wq.data / "queued.json", {pr(n)["key"]: {"id": f"td-30{n}", "at": "t"} for n in range(1, 8)})
+    config.write_json(wq.data / "queued.json", {pr(n)["key"]: {"id": f"td-30{n}", "at": "t"} for n in range(1, 9)})
     asked = []
     monkeypatch.setitem(server.ROUTES, "/api/focus", lambda body: asked.append(body) or (200, {"workspace": "workspace:7"}))
     with sync_playwright() as pw:
@@ -1466,7 +1469,7 @@ def test_with_agents_shows_each_sent_task_still_going_with_the_steps_assistant_r
         assert [r[:4] for r in rows] == [
             ["Unreadable start (td-305)", "Started", 1, 1], ["Workspace only (td-304)", "Started", 1, 1],
             ["Has a PR (td-303)", "PR open", 1, 2], ["Started here (td-302)", "Started Nov 20", 1, 1],
-            ["Not started (td-301)", "Queued", 1, 0]], "newest first; done and blocked work stays out"
+            ["Not started (td-301)", "Queued", 1, 0]], "newest first; done, blocked, and deferred work stays out"
         assert [r[4] for r in rows] == [None, None, ["https://github.com/o/r/pull/30", "_blank"], None, None], \
             "only a web address becomes a link"
         tips = [r[5] for r in rows]
@@ -1537,9 +1540,12 @@ def test_slash_searches_the_tab_you_are_on_by_row_text_and_clears_on_escape_or_a
         tab.wait_for_timeout(300)
         assert shown(tab, "#ready .ready-list > li") == [" (td-101)"], "a refresh redraws Ready for you and keeps the search"
 
+        tab.fill("#tab-search", "change 13")
+        assert tab.locator("#open-list .sf-lane:visible").count() == 0, "a lane whose only match is snoozed hides"
+        assert tab.locator("#tab-search-empty").is_visible()
         tab.fill("#tab-search", "send to agent")
         assert shown(tab, rows) == [] and tab.locator("#tab-search-empty").is_visible(), "button labels don't match"
-        assert text(tab, "#tab-search-empty") == "Nothing on this tab matches. Press Escape to clear the search."
+        assert text(tab, "#tab-search-empty") == "Nothing on this tab matches. Press Escape in the box to clear the search."
         tab.press("#tab-search", "Escape")
         assert tab.input_value("#tab-search") == "" and tab.evaluate(focused) != "tab-search"
         assert shown(tab, rows) == everything and tab.locator("#tab-search-empty").is_hidden()
@@ -1547,9 +1553,39 @@ def test_slash_searches_the_tab_you_are_on_by_row_text_and_clears_on_escape_or_a
         tab.keyboard.type("a/b")
         assert tab.input_value("#tab-search") == "a/b", "a slash typed in the box is a slash"
 
+        tab.locator('#tabs .tab[data-t="agents"]').click()
+        tab.wait_for_selector('#tabs .tab.on[data-t="agents"]')
+        tab.locator(f'.ag-row[data-key="{pr(16)["key"]}"] .ag-pick').check()
+        assert text(tab, "#ag-go") == "Send 1 to agents"
+        tab.locator("#tab-search").fill("change 15")
+        assert text(tab, "#ag-go") == "Send 0 to agents", "a picked row the search hides isn't sent"
+        tab.locator("#ag-all").check()
+        assert text(tab, "#ag-go") == "Send 1 to agents", "Select all picks only the rows the search shows"
+        assert tab.evaluate("agPicks().map(r => r.dataset.key)") == [pr(15)["key"]]
+        tab.locator("#tab-search").fill("")
+        assert text(tab, "#ag-go") == "Send 1 to agents", "rows the search hid aren't left picked when it clears"
+
         tab.locator('#tabs .tab[data-t="mailbox"]').click()
         tab.wait_for_selector('#tabs .tab.on[data-t="mailbox"]')
         assert tab.input_value("#tab-search") == "", "switching tabs clears the search"
+        told = tab.evaluate("""() => { const r = [...document.querySelectorAll('#mailbox .pr-row, #mailbox .ap-row')]
+            .find(r => r.querySelector('.fb-extra')); const s = r.querySelector('.fb');
+            ST.feedback[s.dataset.fp] = {told: 'zebrafish notes', told_id: 'f1'}; fbPaint();
+            return r.querySelector('.fb-extra').textContent }""")
+        assert "zebrafish notes" in told
+        tab.locator("#tab-search").fill("zebrafish")
+        assert shown(tab, "#mailbox .pr-row, #mailbox .ap-row") == [], "what you told Assistant isn't searched"
+        tab.locator("#tab-search").fill("")
+        news = '#mailbox details[data-group="gmail-news"] .ap-all'
+        many = text(tab, news)
+        tab.locator("#tab-search").fill("g-plain")
+        assert many != "Approve all 1" and text(tab, news) == "Approve all 1", "Approve all counts only the rows shown"
+        tab.locator(news).click()
+        assert wait_for(lambda: json.loads((wq.data / "decisions.json").read_text()).get("g-plain", {}).get("decision") == "approve")
+        decided = json.loads((wq.data / "decisions.json").read_text())
+        assert all(k not in decided for k in ("g-err", "g-undone")), "rows the search hid stay undecided"
+        tab.locator("#tab-search").fill("")
+        tab.dispatch_event("#tab-search", "input")
         section = '#mailbox details[data-group="gmail-shop"]'
         assert not tab.evaluate(f"document.querySelector('{section}').open"), "the seed's shopping group starts closed"
         tab.locator("#tab-search").press_sequentially("g-shop")
@@ -3004,6 +3040,27 @@ def test_the_why_link_opens_only_on_a_click_and_shows_the_steps_in_order_with_th
             return [...row.children].map(c => c.className.split(' ')[0]).filter(c => ['sf-main', 'fb-extra', 'why-box', 'draft'].includes(c)); }""", box)
         assert order[:4] == ["sf-main", "fb-extra", "why-box", "draft"], order
         no_sideways_scroll(tab)
+        cov.snap()
+        browser.close()
+
+
+def test_escape_in_the_search_clears_it_and_leaves_an_open_why_block_open(site, wq):
+    keys = why_seed(wq)
+    link, box = why_link(keys["row"]), why_box(keys["row"])
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_context(viewport={"width": 1280, "height": 900}).new_page()
+        cov = Coverage(tab)
+        tab.goto(site + "#open-list")
+        tab.locator(link).click()
+        tab.wait_for_selector(f"{box} .why-steps li")
+        tab.locator("#tab-search").fill("change 3")
+        tab.press("#tab-search", "Escape")
+        assert tab.input_value("#tab-search") == ""
+        assert tab.locator(box).count() == 1, "the Why block stays open"
+        tab.locator(f"{box} .why-steps li").first.click()
+        tab.keyboard.press("Escape")
+        tab.wait_for_selector(box, state="detached")
         cov.snap()
         browser.close()
 

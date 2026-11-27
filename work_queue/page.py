@@ -503,7 +503,7 @@ def render(snap: dict) -> tuple[str, dict]:
 SEARCH = ('<div class="tab-search" id="tab-search-bar"><label for="tab-search">Search this tab <kbd aria-hidden="true">/</kbd>'
           '</label><input id="tab-search" type="search" placeholder="Words on this tab" aria-keyshortcuts="/" '
           'oninput="filterTab(this.value)" onkeydown="tabSearchKey(event)"><span class="meta" id="tab-search-empty" '
-          'role="status" hidden>Nothing on this tab matches. Press Escape to clear the search.</span></div>')
+          'role="status" hidden>Nothing on this tab matches. Press Escape in the box to clear the search.</span></div>')
 
 
 PAGE_FB = ('<span class="fb" data-fk="page" data-fp="page" data-fkey=""></span><span class="meta fb-promise">Assistant keeps what '
@@ -813,7 +813,7 @@ function renderAp(){let approved=0;const MS=mailSearch();
   else if(d==='keep')s='Kept';else if(d==='undo')s=kind==='gmail'?'Will restore':'Will reopen';
   r.querySelector('.ap-status').textContent=s;if(d==='approve'&&!settled&&kind!=='mail'&&!GONE.has(k))approved++});
  renderMq(MS);
- document.querySelectorAll('.ap-group').forEach(g=>{const left=g.querySelectorAll('.ap-row:not(.applied):not(.approved):not(.kept):not(.em-gone)').length;const b=g.querySelector('.ap-all');b.textContent=left?'Approve all '+left:'All decided';b.disabled=!left});
+ document.querySelectorAll('.ap-group').forEach(g=>{const left=g.querySelectorAll('.ap-row:not(.applied):not(.approved):not(.kept):not(.em-gone):not(.q-miss)').length;const b=g.querySelector('.ap-all');b.textContent=left?'Approve all '+left:'All decided';b.disabled=!left});
  const undo=Object.entries(ST.decisions).filter(([k,v])=>v.decision==='undo'&&(ST.applied[k]||{}).status==='done').length,run=!!ST.status.running,bar=$('ap-apply');
  if(!bar)return;$('ap-count').textContent=API?(approved+' approved'+(undo?', '+undo+' to reopen':'')):'Approvals need the Work queue server';
  bar.disabled=!API||run||!(approved+undo);bar.textContent=run?'Working…':'Apply approvals';
@@ -828,9 +828,9 @@ async function sendFrom(b,r,note){b.disabled=true;b.textContent='Sending...';
 function queueTodo(b,note){return sendFrom(b,b.closest('.sf-row'),note)}
 function startSend(b,note){const k=b.closest('li').dataset.key;
  return sendFrom(b,[...document.querySelectorAll('.sf-lane .sf-row')].find(r=>r.dataset.key===k),note)}
-function agPicks(){return [...document.querySelectorAll('.ag-row:not([hidden]) .ag-pick:checked')].map(c=>c.closest('.ag-row'))}
+function agPicks(){return [...document.querySelectorAll('.ag-row:not([hidden]):not(.q-miss) .ag-pick:checked')].map(c=>c.closest('.ag-row'))}
 function agCount(){const b=$('ag-go');if(!b)return;const n=agPicks().length;b.textContent='Send '+n+' to agents';b.disabled=!API||!n||sending}
-function agAll(c){document.querySelectorAll('.ag-pick').forEach(p=>p.checked=c.checked);agCount()}
+function agAll(c){document.querySelectorAll('.ag-pick').forEach(p=>p.checked=c.checked&&!p.closest('.q-miss'));agCount()}
 async function agSend(){const rows=agPicks(),n=rows.length,hands=$('ag-hands').checked,msg=$('ag-msg');if(!n)return;
  if(!confirm('Start '+n+' agent'+(n>1?'s':'')+'? '+(hands?'Hands-off: each one finishes the work and posts, files, and opens PRs without asking you.':'Each one takes a first pass and leaves drafts for you to send.')))return;
  sending=true;agCount();const bad=[];let ok=0;
@@ -857,7 +857,7 @@ function reloadIfIdle(){if(Object.keys(WHY).length)return toast('The refresh fin
  if(asked.some(u=>u.tell&&(u.words||'').trim()))return toast('The refresh finished. Send or cancel what you are telling Assistant, then reload to see the new rows.');
  location.reload()}
 async function decide(keys,decision){try{ST.decisions=(await api('/api/decide',{method:'POST',body:JSON.stringify({keys,decision})})).decisions;renderAp();flushLost()}catch(e){$('ap-msg').textContent='Not saved: '+e.message}}
-function approveGroup(b){const keys=[...b.closest('.ap-group').querySelectorAll('.ap-row:not(.applied):not(.approved):not(.kept):not(.em-gone)')].map(r=>r.dataset.key);decide(keys,'approve')}
+function approveGroup(b){const keys=[...b.closest('.ap-group').querySelectorAll('.ap-row:not(.applied):not(.approved):not(.kept):not(.em-gone):not(.q-miss)')].map(r=>r.dataset.key);decide(keys,'approve')}
 async function applyNow(){try{await api('/api/apply',{method:'POST',body:'{}'});ST.status={running:true};renderAp();setTimeout(refresh,1500)}catch(e){$('ap-msg').textContent='Not started: '+e.message}}
 async function refreshNow(){try{await api('/api/refresh',{method:'POST',body:'{}'});ST.refresh={running:true};renderRefresh();polling=true;setTimeout(refresh,2500)}catch(e){$('refresh-msg').textContent='Not started: '+e.message}}
 const FB=!!document.querySelector('.fb[data-fk="page"]'),FBX=new Map(),FBR={row:[['not_important','Not important'],['wrong_order','Wrong order'],['not_mine','Not mine'],['already_done','Already done']],
@@ -958,7 +958,7 @@ function whyPaint(){document.querySelectorAll('.fb').forEach(s=>{const h=FBX.get
   const head=document.createElement('h4'),body=document.createElement('div'),c=button('Close','btn ghost why-close',()=>whyClose(s));
   head.className='why-head';head.tabIndex=-1;head.textContent='Why is this here?';c.type='button';box.append(head,body,c);h.x.after(box)}
  const sig=JSON.stringify([u.status,u.data]);if(box.dataset.sig!==sig){box.dataset.sig=sig;whyFill(box.children[1],u)}})}
-document.addEventListener('keydown',ev=>{if(ev.key!=='Escape'||!Object.keys(WHY).length)return;
+document.addEventListener('keydown',ev=>{if(ev.key!=='Escape'||!Object.keys(WHY).length||ev.target.id==='tab-search')return;  // Escape in the search clears only the search
  if(document.querySelector('.compose,.fb-tell')||Object.values(FBUI).some(u=>u.pop||u.tell))return;  // a note box or the reasons close first
  const s=[...document.querySelectorAll('.fb')].filter(f=>{const u=WHY[f.dataset.fp];return u&&u.where===fbWhere(f)}).sort((a,b)=>WHY[b.dataset.fp].n-WHY[a.dataset.fp].n)[0];
  if(s)whyClose(s)},true);
@@ -978,7 +978,7 @@ function fbSendTell(s){const u=FBUI[s.dataset.fp],words=(u.words||'').trim();if(
 async function fbDraft(b){const s=b.closest('.sf-row').querySelector('.draft-fb .fb');
  try{await fbPost({key:s.dataset.fkey,kind:'draft',signal:'used_draft'})}catch(e){toast('Copied. Assistant couldn’t record that you used the draft.')}}
 function renderWorking(){const box=$('working');if(!box)return;const ol=box.querySelector('.working-list');ol.textContent='';
- Object.values(ST.queued).filter(q=>q.status!=='done'&&q.status!=='blocked').sort((a,b)=>b.id.localeCompare(a.id,undefined,{numeric:true}))
+ Object.values(ST.queued).filter(q=>q.status==='open'||q.status==='in-progress').sort((a,b)=>b.id.localeCompare(a.id,undefined,{numeric:true}))
   .forEach(q=>{const li=document.createElement('li'),top=document.createElement('div'),t=document.createElement('span');
    t.className='sf-title';t.textContent=q.title+' ('+q.id+')';top.append(t);
    if(q.workspace)top.append(button('Open workspace','btn',b=>openWs(b,q.id)));
@@ -996,14 +996,15 @@ function steps(q){const ol=document.createElement('ol'),d=new Date(q.started),kn
   else li.textContent=label;ol.append(li)});
  return ol}
 const Q_ITEMS='.start-list > li, .ready-list > li, .ready-cleared > li, .sf-row, .pr-row, .ap-row, .ag-row',Q_HIT=Q_ITEMS.split(', ').map(x=>x+':not(.q-miss)').join(', ');
-function searchText(el){const c=el.cloneNode(true);c.querySelectorAll('button, textarea, input, .compose, .task-progress, .fb, .why-box').forEach(x=>x.remove());return c.textContent.toLowerCase()}
+function searchText(el){const c=el.cloneNode(true);c.querySelectorAll('button, textarea, input, .compose, .task-progress, .fb, .fb-extra, .why-box').forEach(x=>x.remove());return c.textContent.toLowerCase()}
+const hits=c=>[...c.querySelectorAll(Q_HIT)].some(el=>getComputedStyle(el).display!=='none');  // a snoozed or hidden match doesn't count
 function filterTab(v){const q=v.trim().toLowerCase();
  document.querySelectorAll(Q_ITEMS).forEach(el=>el.classList.toggle('q-miss',!!q&&!searchText(el).includes(q)));
- document.querySelectorAll('.sf-lane, .sf-group, .ready, .ap-group, .mb-sec').forEach(c=>c.classList.toggle('q-miss',!!q&&!c.querySelector(Q_HIT)));
- document.querySelectorAll('details').forEach(d=>{if(q&&d.querySelector(Q_HIT)){if(!('qWas' in d.dataset))d.dataset.qWas=d.open?'1':'';d.open=true}
+ document.querySelectorAll('.sf-lane, .sf-group, .ready, .ap-group, .mb-sec').forEach(c=>c.classList.toggle('q-miss',!!q&&!hits(c)));
+ document.querySelectorAll('details').forEach(d=>{if(q&&hits(d)){if(!('qWas' in d.dataset))d.dataset.qWas=d.open?'1':'';d.open=true}
   else if('qWas' in d.dataset){d.open=d.dataset.qWas==='1';delete d.dataset.qWas}});
- $('tab-search-empty').hidden=!q||[...document.querySelectorAll(Q_HIT)].some(el=>el.offsetParent!==null)}
-function clearSearch(){const s=$('tab-search');if(s.value){s.value='';filterTab('')}}
+ $('tab-search-empty').hidden=!q||[...document.querySelectorAll(Q_HIT)].some(el=>el.offsetParent!==null);agCount();renderAp()}
+function clearSearch(){const s=$('tab-search');if(s&&s.value){s.value='';filterTab('')}}
 function tabSearchKey(ev){if(ev.key==='Escape'){clearSearch();ev.target.blur()}}
 document.addEventListener('keydown',ev=>{const s=$('tab-search');if(ev.key!=='/'||ev.metaKey||ev.ctrlKey||ev.altKey||!s)return;
  if(ev.target.closest('input, textarea, select, [contenteditable]'))return;ev.preventDefault();s.focus()});

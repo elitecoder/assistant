@@ -321,7 +321,7 @@ here item or a Ready for you result. At 320 wide a row can gain a line.
 ### With agents
 
 **With agents** sits under Ready for you and lists each TODO you sent from the
-page that isn't done or blocked yet, newest first. Each one shows its steps:
+page that's open or in progress, newest first. Deferred work isn't listed. Each one shows its steps:
 **Queued → Started → PR open → Done**. The steps show only what the TODO store
 records. **Started** means Assistant launched a session for it, not that the
 session is still working. **PR open** links to the pull request when the TODO
@@ -331,9 +331,11 @@ finishes, it moves to Ready for you.
 ### Search this tab
 
 Press `/` to search the tab you're on, or type in **Search this tab**. The
-search matches the words on each row, not its button labels. It hides groups
-with no match and opens collapsed sections that have one. Press Escape, or
-switch tabs, to clear it. A refresh keeps it.
+search matches the words on each row, not its button labels or what you told
+Assistant about it. It hides groups with no shown match and opens collapsed
+sections that have one. **Select all** on Send to agents and **Approve all**
+take only the rows the search shows. Press Escape in the box, or switch tabs, to
+clear it. A refresh keeps it.
 
 ### Ready for you
 

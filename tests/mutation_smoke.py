@@ -2955,7 +2955,7 @@ CHECKS = (
         'work_queue/server.py',
         '"result": result_of(item) if status == "done" else "",',
         '"result": result_of(item),',
-        'tests/test_work_queue_actions.py::test_state_lists_each_sent_rows_todo_with_its_result_reason_finish_time_and_workspace',
+        'tests/test_work_queue_actions.py::test_state_lists_each_sent_rows_todo_with_its_result_reason_finish_time_workspace_start_and_pr',
     ),
     (
         'Open workspace refuses a reused workspace ref',
