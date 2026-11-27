@@ -16,6 +16,7 @@
 // (operator rule: never send Slack messages on the user's behalf).
 //
 // Tokens come from the environment (launcher sources ~/.zprofile); never hardcoded.
+import './safe-output-boot.js' // must stay first: it installs the secret-redacting output wrappers
 import boltPkg from '@slack/bolt'
 import { WebClient } from '@slack/web-api'
 import fs from 'fs'
@@ -23,13 +24,20 @@ import os from 'os'
 import path from 'path'
 import crypto from 'crypto'
 import { addTodo, MACHINE, TODO_PATH } from './todo-store.js'
+import { describeOwner, handleReaction, resolveOwner } from './capture.js'
+import { makeModeReader } from './mode.js'
 
 const { App } = boltPkg
 
 // --- config from env -------------------------------------------------------
 const BOT_TOKEN = process.env.SLACK_BOT_TOKEN // xoxb- — authorizes the app, reads threads, reacts back
 const APP_TOKEN = process.env.SLACK_APP_TOKEN // xapp- — Socket Mode websocket (scope connections:write)
-const ONLY_REACTOR = process.env.SLACK_USER_ID // optional: only THIS user's reactions create todos
+// The owner: only their reactions start work. SLACK_USER_ID, else the Slack user id the channel setup saved.
+const OWNER = resolveOwner(process.env, os.homedir())
+// Before the owner rule the reactor took every member's reaction only when SLACK_USER_ID was absent or empty; any other
+// value, a mistyped one too, limited it to that exact string. Pro mode goes back no further than that.
+const OPEN_BEFORE_OWNER_RULE = !process.env.SLACK_USER_ID
+const currentMode = makeModeReader({ home: os.homedir() })
 const EMOJIS = new Set(
   (process.env.TODO_EMOJI ?? 'mukuls2')
     .split(',')
@@ -70,8 +78,6 @@ async function userName(uid) {
   userNameCache.set(uid, name)
   return name
 }
-
-const clean = (t) => (t ?? '').replace(/\s+/g, ' ').trim()
 
 // --- Keel M5 wave-2: slack-events connector feed --------------------------
 // The Python slack-events connector (bin/connectors/slack-events.py) is a
@@ -200,92 +206,27 @@ app.event('message', async ({ event }) => {
   spoolEvent(event)
 })
 
-async function buildTodo(messages, link) {
-  const root = clean(messages[0]?.text ?? '')
-  const title = root.length > 80 ? root.slice(0, 78) + '…' : root || '(no text)'
-  const lines = []
-  for (const m of messages) {
-    const body = clean(m.text ?? '')
-    if (body) lines.push(`*${await userName(m.user)}:* ${body}`)
-  }
-  const detail = `Captured from Slack thread on ${MACHINE}.\n\n${lines.join('\n')}\n\n${link}`.trim()
-  return { title, detail }
-}
-
 // --- event handler ---------------------------------------------------------
-app.event('reaction_added', async ({ event }) => {
-  const reaction = (event.reaction ?? '').split('::')[0] // strip skin tone
-  if (!EMOJIS.has(reaction)) return // routed to a different machine/emoji
-  if (ONLY_REACTOR && event.user !== ONLY_REACTOR) return // someone else reacted
-  if (event.item?.type !== 'message') return
-
-  const channel = event.item.channel
-  const ts = event.item.ts
-
-  // Resolve thread root, then pull the whole thread. Reads use the bot token —
-  // the bot is a member of `channel` (it just received a bot event there).
-  let threadTs = ts
-  try {
-    const hist = await bot.conversations.history({ channel, latest: ts, oldest: ts, inclusive: true, limit: 1 })
-    threadTs = hist.messages?.[0]?.thread_ts ?? ts
-  } catch (e) {
-    console.error(`[reactor] history lookup failed (${channel}/${ts}): ${e.data?.error ?? e.message}`)
-  }
-
-  let messages = []
-  try {
-    const rep = await bot.conversations.replies({ channel, ts: threadTs, limit: 200 })
-    messages = rep.messages ?? []
-  } catch (e) {
-    console.error(`[reactor] replies fetch failed (${channel}/${threadTs}): ${e.data?.error ?? e.message}`)
-    return
-  }
-  if (messages.length === 0) return
-
-  let link = ''
-  try {
-    link = (await bot.chat.getPermalink({ channel, message_ts: threadTs })).permalink ?? ''
-  } catch {
-    /* permalink optional */
-  }
-
-  const { title, detail } = await buildTodo(messages, link)
-  const source = `slack-react:${channel}:${threadTs}`
-  let result
-  try {
-    result = addTodo({ title, detail, url: link, source, priority: TODO_PRIORITY, autoDispatch: TODO_AUTODISPATCH })
-  } catch (e) {
-    console.error(`[reactor] todo write failed: ${e.message}`)
-    return
-  }
-
-  console.error(
-    `[${new Date().toISOString()}] :${reaction}: → ${result.id} ` +
-      `(${result.created ? 'new' : 'existing'}) on ${MACHINE}: ${title}`,
-  )
-
-  // Feedback = a reaction only. Never a message.
-  try {
-    await bot.reactions.add({ channel, timestamp: ts, name: 'white_check_mark' })
-  } catch (e) {
-    if (e.data?.error !== 'already_reacted') {
-      console.error(`[reactor] react-back failed: ${e.data?.error ?? e.message}`)
-    }
-  }
-})
+app.event('reaction_added', ({ event }) =>
+  handleReaction(event, {
+    bot, userName, addTodo, owner: OWNER, openBeforeOwnerRule: OPEN_BEFORE_OWNER_RULE, mode: currentMode, emojis: EMOJIS, machine: MACHINE, priority: TODO_PRIORITY,
+    autoDispatchOn: TODO_AUTODISPATCH,
+  }),
+)
 
 // --- boot ------------------------------------------------------------------
 ;(async () => {
   try {
     const auth = await bot.auth.test()
     BOT_USER_ID = auth.user_id ?? null
+    const everyone = !OWNER.id && OPEN_BEFORE_OWNER_RULE && (await currentMode()) === 'pro'
     console.error(
       `slack-reactor up (Socket Mode)\n` +
         `  machine:  ${MACHINE}\n` +
         `  team:     ${auth.team}\n` +
         `  bot:      ${auth.user} (${auth.user_id})\n` +
         `  emoji(s): ${[...EMOJIS].join(', ')}\n` +
-        `  reactor:  ${ONLY_REACTOR ?? 'anyone in the bot\'s channels'}\n` +
+        `  ${describeOwner(OWNER, everyone)}\n` +
         `  priority: ${TODO_PRIORITY}  autoDispatch=${TODO_AUTODISPATCH}\n` +
         `  todo:     ${TODO_PATH}\n` +
         `  NOTE: bot only sees reactions in channels it has been /invite-d to.`,

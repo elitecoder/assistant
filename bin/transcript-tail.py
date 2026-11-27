@@ -23,6 +23,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import agent_session  # noqa: E402
 import cmux_sessions  # noqa: E402
 
 WORLD = os.path.expanduser("~/.claude/cache/world.json")
@@ -67,18 +68,8 @@ def read_tail(path, n_bytes):
             d = json.loads(line)
         except Exception:
             continue
-        msg = d.get("message")
-        if not isinstance(msg, dict):
-            continue
-        role = msg.get("role")
-        content = msg.get("content")
-        if isinstance(content, list):
-            text_parts = [c.get("text", "") for c in content if isinstance(c, dict) and c.get("type") == "text"]
-            text = "\n".join(text_parts)
-        elif isinstance(content, str):
-            text = content
-        else:
-            text = ""
+        role = agent_session.message_role(d)
+        text = agent_session.record_text(d)
         if role == "user":
             # Only count user messages that have actual TEXT content. Tool
             # results land as user messages with type=tool_result and no
@@ -100,7 +91,9 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--ws", default="")
     p.add_argument("--closed-cwd", default="")
-    p.add_argument("--bytes", type=int, default=12000)
+    p.add_argument("--bytes", type=int, default=None,
+                   help="tail size; default 12000, or 400000 for a Copilot log, whose "
+                        "single records can pass 30 KB")
     args = p.parse_args()
 
     path = None
@@ -114,7 +107,9 @@ def main():
                           "tried_cwd": args.closed_cwd}))
         sys.exit(1)
 
-    last_user, last_assistant = read_tail(path, args.bytes)
+    size = args.bytes or (400000 if agent_session.agent_from_transcript(path) == agent_session.COPILOT
+                          else 12000)
+    last_user, last_assistant = read_tail(path, size)
     print(json.dumps({
         "transcript_path": path,
         "last_user": last_user,

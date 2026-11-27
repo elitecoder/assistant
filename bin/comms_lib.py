@@ -15,11 +15,14 @@ import json
 import os
 import re as _re
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+import agent_session
 
 
 # --------------------------------------------------------------------------- paths
@@ -382,9 +385,10 @@ def fmt_lesson_proposal(entry: dict[str, Any]) -> str:
     pid = str(entry.get("id") or entry.get("ts") or "?")
     seen = f" (seen {count}×)" if count else ""
     head = f"*Lesson proposal*{seen} — reply `y` to add, `n` to drop"
+    when = f"*when* {escape_mrkdwn(trigger)}\n" if trigger else ""
     body = (
         f"{head}\n"
-        f"*when* {escape_mrkdwn(trigger)}\n"
+        f"{when}"
         f"*rule* {escape_mrkdwn(rule)}\n"
         f"_target={escape_mrkdwn(str(target))} · id=`{escape_mrkdwn(pid)}`_"
     )
@@ -696,7 +700,7 @@ def read_context_tokens(transcript_path: str | Path) -> int | None:
     p = Path(transcript_path)
     if not p.exists():
         return None
-    last: dict[str, Any] | None = None
+    last = None
     with open(p) as f:
         for line in f:
             line = line.strip()
@@ -706,17 +710,9 @@ def read_context_tokens(transcript_path: str | Path) -> int | None:
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            msg = rec.get("message")
-            if not isinstance(msg, dict):
-                continue
-            usage = msg.get("usage")
-            if isinstance(usage, dict):
-                last = usage
-    if last is None:
-        return None
-    return (int(last.get("input_tokens") or 0)
-            + int(last.get("cache_creation_input_tokens") or 0)
-            + int(last.get("cache_read_input_tokens") or 0))
+            if agent_session.usage_block(rec) is not None:
+                last = rec
+    return agent_session.context_tokens(last)
 
 
 def context_fraction(tokens: int | None, window: int = CONTEXT_WINDOW_TOKENS) -> float:
@@ -756,15 +752,30 @@ def load_bedrock_env(home: Path | None = None) -> dict[str, str]:
 
 # --------------------------------------------------------------------------- subprocess
 
+_last = threading.local()
+
+
+def last_run() -> tuple[int, str] | None:
+    """(exit status, stderr) of the command run_cmd last ran on this thread since clear_last_run, or None. For a
+    caller that must tell a time-out from a refusal and gets back only a parsed answer."""
+    return getattr(_last, "result", None)
+
+
+def clear_last_run() -> None:
+    _last.result = None
+
+
 def run_cmd(argv: list[str], timeout: int = 30) -> tuple[int, str, str]:
     """Run a command, return (rc, stdout, stderr). Never raises on non-zero."""
     try:
         p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-        return p.returncode, p.stdout, p.stderr
+        result = p.returncode, p.stdout, p.stderr
     except subprocess.TimeoutExpired as e:
-        return -1, e.stdout or "", f"timeout after {timeout}s"
+        result = -1, e.stdout or "", f"timeout after {timeout}s"
     except FileNotFoundError as e:
-        return -1, "", str(e)
+        result = -1, "", str(e)
+    _last.result = result[0], result[2]
+    return result
 
 
 def sidebar_numbers(paths: Paths) -> dict[str, int]:

@@ -18,7 +18,7 @@ Run `./bin/assistant-doctor.py` at any point for a preflight health check.
 |---|---|---|
 | macOS (Apple-Silicon or Intel) | LaunchAgents | — |
 | `git`, `python3` ≥ 3.11 | daemons + installer | `python3 --version` |
-| [`claude` CLI](https://claude.ai/code) | pulse dispatch + warm comms session | `command -v claude` |
+| A coding agent: [`claude` CLI](https://claude.ai/code) (default), [GitHub Copilot CLI](https://github.com/features/copilot/cli), or Factory `droid` | task sessions, Slack replies, background model jobs | `command -v claude copilot droid` |
 | `cmux.app` | Assistant drives Claude in cmux workspaces | install cmux.app, or set `CMUX_BIN` |
 | repo access | clone the private repo | your GitHub SSH key |
 | `uv` (optional) | faster venvs | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
@@ -94,8 +94,8 @@ their own token setup (below) — never auto-loaded even with `--with-all`.
 ### CORE — the always-on set (loaded by `install.sh --apply`)
 
 `install.sh --apply` already **(re)loaded** the always-on set: the pulse
-orchestrator (every ~5 min it observes your cmux workspaces and acts on what's
-safe — merge, cleanup, nudge) plus its independent companion agents — the
+orchestrator (every ~5 min it dispatches autoDispatch TODOs and clears stale
+cards) plus its independent companion agents — the
 dashboard page renderer, the todo server, the session-context watcher, the
 workspace watcher, and the world scanner. These are separate LaunchAgents;
 loading one does **not** load the others (the installer loads each). Verify:
@@ -104,6 +104,12 @@ loading one does **not** load the others (the installer loads each). Verify:
 launchctl list | grep com.assistant
 stat -f '%Sm' ~/.claude/cache/world.json   # should refresh within ~30s
 ```
+
+The Observer is off by default. It's the model that checks each workspace so
+the pulse can merge, clean up, or nudge it. To turn it on, set
+`{"observer": {"enabled": true}}` in `~/.assistant/config.json` and run the
+pulse with `ASSISTANT_WATCHER=1`. See the
+[Observer settings](docs/configuration.md#observer).
 
 If any is missing (e.g. you skipped `--apply`), load it directly and idempotently:
 
@@ -158,13 +164,54 @@ enforced with no API call — it can post nowhere else. See
 ### OPTIONAL — Slack emoji → todo capture
 
 React with your machine's emoji on any Slack thread to capture it as a `/todo`.
-Needs `SLACK_APP_TOKEN` + `SLACK_BOT_TOKEN` in `~/.zprofile`, then:
+Needs `SLACK_APP_TOKEN` + `SLACK_BOT_TOKEN` in `~/.zprofile`, and `SLACK_USER_ID` set to
+your own Slack user id (in Slack: your profile, the three dots, Copy member ID). The Slack
+channel setup also saves one, if its target is your own user id. Without it, what you react
+to is saved as an **Ask me** task and never starts by itself (in Pro mode, when it is not set
+at all, a reaction from anyone in the channel starts a task, as it did before; set it to
+restrict that to you). Then:
 
 ```bash
 launchctl load ~/Library/LaunchAgents/com.assistant.slack-reactor.plist
 ```
 
-See [slack-reactor/README.md](slack-reactor/README.md).
+**If the reactor ran any earlier version, rotate your Slack bot token now: its
+log file holds the old one.** The fix stops new leaks; it doesn't clean old
+lines.
+
+1. In the Slack app's settings, under OAuth & Permissions, reinstall the app
+   to get a new bot token.
+2. If the old log also shows an `xapp-` token, regenerate the app-level token
+   under Basic Information, App-Level Tokens.
+3. Update `SLACK_BOT_TOKEN` (and `SLACK_APP_TOKEN`) in `~/.zprofile`.
+4. Restart the reactor with this command:
+   `launchctl kickstart -k gui/$(id -u)/com.assistant.slack-reactor`
+5. Confirm the old token no longer works. Call `auth.test` with it, for
+   example with this command, and expect `invalid_auth` or `token_revoked`:
+   `curl -s -X POST -H "Authorization: Bearer <old token>" https://slack.com/api/auth.test`
+6. Delete or empty `~/.assistant/logs/slack-reactor.launchd.err`, and any copy
+   of it in a backup.
+
+After that, the reactor and the Python services replace token-shaped text in what
+they log, and in their crash output, with `<redacted>`. That is pattern matching,
+not a guarantee: scripts that only `print` are not covered, nor is a token split
+across two writes. See [slack-reactor/README.md](slack-reactor/README.md).
+
+### PRO MODE — the Work queue
+
+`./install.sh --apply --pro` loads the Work queue server
+(`com.assistant.work-queue`) at `http://127.0.0.1:8851/`, and `--no-pro`
+unloads it. The dashboard's Pro mode switch loads and unloads it the same way,
+and the server exits on its own within seconds once Pro mode is off. From a terminal, the installer asks whether to link each source you
+haven't linked yet. Link or check them yourself anytime:
+
+```bash
+./bin/work-queue-setup.py status
+./bin/work-queue-setup.py link gmail      # or slack, calendar, outlook, github
+./bin/work-queue-setup.py check
+```
+
+See [docs/work-queue.md](docs/work-queue.md).
 
 ### OPTIONAL — cross-machine memory
 
@@ -178,9 +225,20 @@ unless you are the owner with that repo's SSH access.
 
 - **Nothing happens after loading pulse** → `./bin/assistant-doctor.py` (core
   checks); tail `~/.assistant/logs/assistant-pulse.launchd.err`.
+- **A log file is huge** → every five minutes the Assistant trims logs past
+  20 MB to their last 5 MB and deletes the older lines; there is no backup.
+  The first time, it shows a card and waits 24 hours. To change the limits or
+  turn trimming off, add a `logs` entry alongside your existing keys in
+  `~/.assistant/config.json`, such as `{"mode": "pro", "logs": {"cap_mb": 0}}`,
+  and check the file with `python3 -m json.tool ~/.assistant/config.json`; see
+  [Configuration](docs/configuration.md).
 - **Comms pings but never replies** → almost always a missing Slack scope or the
   warm-session `claude` binary. `./bin/assistant-doctor.py --only slack` names it.
 - **A daemon won't launch** → check the plist rendered correctly:
   `grep -o '__[A-Z]*__' ~/Library/LaunchAgents/com.assistant.*.plist` should
   return nothing (any surviving `__TOKEN__` means the installer didn't substitute).
+- **The Work queue page doesn't load** → read
+  `~/.assistant/logs/work-queue.launchd.err`. The server stays stopped when
+  Pro mode is off or when another process holds its port. After you free the
+  port, run `launchctl kickstart -k gui/$UID/com.assistant.work-queue`.
 - **Re-run the installer** anytime — it's idempotent and backs up anything it replaces.

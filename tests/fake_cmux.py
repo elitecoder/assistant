@@ -4,6 +4,10 @@
 answers `sessions list` with the given records in cmux 0.64.25's JSON shape and
 logs each argv to `cmux-argv.jsonl` beside it. Point `CMUX_BIN` at the returned
 path so bin/cmux_sessions.py runs it as a real subprocess.
+
+`install_windowed(directory, windows, key=...)` writes one that serves
+`list-windows` and per-window `list-workspaces` instead, for the comms daemon's
+workspace checks.
 """
 
 from __future__ import annotations
@@ -76,3 +80,48 @@ def calls(directory: Path) -> list[list[str]]:
     if not log.exists():
         return []
     return [json.loads(line) for line in log.read_text().splitlines()]
+
+
+WINDOWED_SCRIPT = """#!{python}
+import json, pathlib, sys
+here = pathlib.Path(__file__).resolve().parent
+args = sys.argv[1:]
+with open(here / "cmux-argv.jsonl", "a") as log:
+    log.write(json.dumps(args) + "\\n")
+state = json.loads((here / "cmux-windows.json").read_text())
+windows = state["windows"]
+if args == ["list-windows", "--json"]:
+    print(json.dumps([{{"id": w, "index": i, "key": w == state["key"]}}
+                      for i, w in enumerate(windows)]))
+elif args[:1] == ["list-workspaces"]:
+    window = args[2] if args[1:2] == ["--window"] else state["key"]
+    if window in state["failing"] or window not in windows:
+        sys.stderr.write("Error: Window not found\\n")
+        sys.exit(1)
+    sys.stdout.write(windows[window])
+elif args[:1] == ["tree"]:
+    sys.stderr.write(state["tree_err"])
+    sys.exit(state["tree_rc"])
+elif args[:1] == ["close-workspace"]:
+    print("OK " + args[2])
+else:
+    sys.exit(2)
+"""
+
+
+def install_windowed(directory: Path, windows: dict[str, str], *, key: str, failing=(),
+                     tree_rc: int = 1,
+                     tree_err: str = "Error: Failed to connect to socket (errno 61)") -> Path:
+    """Write a `cmux` that serves `list-workspaces` per window, from `windows`
+    ({window id: listing text}). A bare `list-workspaces` answers for the `key`
+    window only, as cmux does for a caller-less process such as the comms
+    daemon. Windows in `failing` refuse to list. `tree` exits `tree_rc` with
+    `tree_err`, and `close-workspace` succeeds. Logs each argv like `install`."""
+    directory.mkdir(parents=True, exist_ok=True)
+    cli = directory / "cmux"
+    cli.write_text(WINDOWED_SCRIPT.format(python=sys.executable))
+    cli.chmod(0o755)
+    (directory / "cmux-windows.json").write_text(json.dumps({
+        "windows": windows, "key": key, "failing": list(failing),
+        "tree_rc": tree_rc, "tree_err": tree_err}))
+    return cli

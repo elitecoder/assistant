@@ -34,8 +34,8 @@
     "name": "propose_lesson",
     "description": "Record a lesson proposal for the user to confirm",
     "args": [
-      {"name": "trigger", "type": "string", "required": true, "help": "one-line trigger the rule fires on"},
-      {"name": "rule", "type": "string", "required": true, "help": "one-paragraph rule body"},
+      {"name": "trigger", "type": "string", "required": false, "default": "", "help": "optional bolded line above the rule; omit it when the rule says when it applies"},
+      {"name": "rule", "type": "string", "required": true, "help": "one-paragraph rule: when it applies and what to do"},
       {"name": "target", "type": "string", "required": false, "default": "assistant", "choices": ["assistant", "claude"], "help": "lesson store"},
       {"name": "scope", "type": "string", "required": false, "default": "general", "help": "sub-domain within the target"},
       {"name": "source", "type": "string", "required": false, "default": "manual", "help": "manual|extractor"}

@@ -534,6 +534,36 @@ def test_merge_session_state_joins_by_title_cwd(home, monkeypatch):
     assert "by-title:Repo Work" not in reg.by_uuid
 
 
+def test_crash_resume_replays_the_binding_without_the_environment_cmux_kept(home, monkeypatch):
+    monkeypatch.setenv("HOME", str(WW.HOME))
+    calls = []
+
+    def run(cmd, timeout=10):
+        calls.append(cmd)
+        if "new-workspace" in cmd:
+            return 0, "OK workspace:9", ""
+        return 0, json.dumps({"workspaces": [
+            {"id": "LIVE", "ref": 3, "title": "Copilot Work", "current_directory": "/work"}]}), ""
+
+    monkeypatch.setattr(WW, "run", run)
+    session = {"windows": [{"tabManager": {"workspaces": [{
+        "customTitle": "Copilot Work", "currentDirectory": "/work",
+        "panels": [{"terminal": {"resumeBinding": {
+            "command": "claude --resume abc", "cwd": "/work", "checkpointId": "abc",
+            "environment": {"ANTHROPIC_BASE_URL": "http://localhost:4000",
+                            "ANTHROPIC_AUTH_TOKEN": "sekrit"}}}}]}]}}]}
+    WW.CMUX_SESSION_STATE.parent.mkdir(parents=True)
+    WW.CMUX_SESSION_STATE.write_text(json.dumps(session))
+    reg = WW.WorkspaceRegistry()
+    reg.refresh()
+    expected = "claude --resume abc"
+    meta = reg.snapshot("LIVE")
+    assert meta["resume_command"] == expected
+    WW.resume_workspace(meta, WW.ResumeGovernor())
+    spawn = next(c for c in calls if "new-workspace" in c)
+    assert spawn[spawn.index("--command") + 1] == expected
+
+
 def test_merge_session_state_synthetic_by_title_when_no_live_match(home, monkeypatch):
     # RPC returns no workspaces, so session-state has nothing to join to.
     monkeypatch.setattr(WW, "run",
@@ -853,9 +883,35 @@ def test_handle_close_uuid_from_payload_nested(home, monkeypatch):
 
 # --------------------------------------------------------------------------- stream()
 
-class _FakeProc:
+class _ErrPipe:
+    """Just enough of a text pipe for the stderr drain."""
+
     def __init__(self, lines):
+        self._lines = list(lines)
+        self.closed = False
+
+    def readline(self, limit=-1):
+        return self._lines.pop(0) if self._lines else ""
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeProc:
+    def __init__(self, lines, err_lines=(), rc=0, hang=False):
         self.stdout = iter(lines)
+        self.stderr = _ErrPipe(err_lines)
+        self._rc = rc
+        self._hang = hang
+        self.killed = False
+
+    def wait(self, timeout=None):
+        if self._hang and not self.killed:
+            raise subprocess.TimeoutExpired("cmux", timeout)
+        return self._rc
+
+    def kill(self):
+        self.killed = True
 
 
 def test_stream_dispatches_handlers(home, monkeypatch):
@@ -908,7 +964,7 @@ def test_main_returns_0_on_keyboard_interrupt(home, monkeypatch):
     monkeypatch.setattr(WW, "WorkspaceRegistry", lambda: type("R", (), {"refresh": lambda self: None})())
     monkeypatch.setattr(WW, "ResumeGovernor", lambda: object())
 
-    def interrupt(reg, gov):
+    def interrupt(reg, gov, on_stable=None):
         raise KeyboardInterrupt
     monkeypatch.setattr(WW, "stream", interrupt)
     assert WW.main() == 0
@@ -923,12 +979,325 @@ def test_main_retries_on_stream_crash_then_exits(home, monkeypatch):
     monkeypatch.setattr(WW.time, "sleep", lambda s: slept.append(s))
     calls = {"n": 0}
 
-    def flaky(reg, gov):
+    def flaky(reg, gov, on_stable=None):
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("socket dropped")
         raise KeyboardInterrupt
     monkeypatch.setattr(WW, "stream", flaky)
     assert WW.main() == 0
-    assert slept == [5]            # the retry path slept once for 5s
+    assert slept == [2]            # the retry path backed off 2s
     assert calls["n"] == 2
+
+
+
+def test_crash_resume_gives_a_copilot_session_the_users_rules(home, monkeypatch, tmp_path):
+    user = tmp_path / "user"
+    (user / ".claude").mkdir(parents=True)
+    (user / ".claude" / "CLAUDE.md").write_text("# rules\n")
+    (user / ".assistant" / "comms").mkdir(parents=True)
+    (user / ".assistant" / "comms" / "config.json").write_text('{"llm": {"provider": "copilot"}}')
+    monkeypatch.setenv("HOME", str(user))
+    captured = {}
+    monkeypatch.setattr(WW, "run", lambda cmd, timeout=10: captured.setdefault("argv", cmd)
+                        and (0, "created workspace:7 (U2)\n", ""))
+    saved = "cd /w && '/x/@github/copilot-darwin-arm64/copilot' '--resume' 's1' '--allow-all'"
+    WW.resume_workspace({"uuid": "U1", "title": "T", "resume_command": saved, "cwd": "/w",
+                         "cause": "crash"}, WW.ResumeGovernor())
+    argv = captured["argv"]
+    rules = user / ".assistant" / "copilot-instructions"
+    assert argv[argv.index("--command") + 1] == saved.replace(
+        "&& ", f"&& COPILOT_CUSTOM_INSTRUCTIONS_DIRS={rules} ", 1)
+
+
+# --------------------------------------------------------------------------- retry back-off
+
+class _Clock:
+    """Fake time module for main(): sleeping just advances the clock."""
+
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+class _Records:
+    def __init__(self):
+        self.lines = []
+
+    def info(self, msg, *a):
+        self.lines.append(msg % a)
+
+    warning = info
+
+    def exception(self, msg, *a):
+        self.lines.append(msg % a)
+
+
+def _drive_main(monkeypatch, stream_fn, until, clock=None):
+    clock = clock or _Clock()
+    records = _Records()
+    monkeypatch.setattr(WW, "time", clock)
+    monkeypatch.setattr(WW, "log", records)
+    monkeypatch.setattr(WW, "WorkspaceRegistry", lambda: type("R", (), {"refresh": lambda self: None})())
+    monkeypatch.setattr(WW, "ResumeGovernor", lambda: object())
+    calls = {"n": 0}
+
+    def wrapped(reg, gov, on_stable=None):
+        if clock.now >= until or calls["n"] > 1000:
+            raise KeyboardInterrupt
+        calls["n"] += 1
+        began = clock.now
+        text = stream_fn(clock, calls["n"])
+        return text, clock.now - began
+    monkeypatch.setattr(WW, "stream", wrapped)
+    assert WW.main() == 0
+    return clock, records, calls["n"]
+
+
+def test_a_stream_that_always_ends_at_once_is_retried_with_bounded_attempts_and_lines(home, monkeypatch):
+    refused = "exit 1: Error: Connection to cmux was denied."
+    clock, records, attempts = _drive_main(monkeypatch, lambda c, n: refused, until=3600)
+    # Doubling from 2s to a 30-second ceiling: about 120 quiet attempts an hour.
+    assert 100 < attempts < 140
+    assert max(clock.sleeps) == WW.BACKOFF_MAX_SEC == 30
+    assert clock.sleeps[:5] == [2, 4, 8, 16, 30]
+    # A handful of lines, not one per attempt; the first names the cause.
+    assert len(records.lines) <= 12
+    assert any("Connection to cmux was denied" in line for line in records.lines)
+    assert any("still failing" in line for line in records.lines)
+
+
+def test_a_failure_repeated_at_the_ceiling_logs_about_once_an_hour():
+    policy = WW.RetryPolicy()
+    logged = [policy.failed("same")[1] for _ in range(400)]
+    assert len([m for m in logged[:5] if m]) == 5       # first line, then each step
+    assert len([m for m in logged[5:] if m]) == 3       # attempts 120, 240, 360
+
+
+def test_a_different_failure_is_logged_at_once():
+    policy = WW.RetryPolicy()
+    policy.failed("a")
+    _, message = policy.failed("b")
+    assert message.startswith("event stream ended: b")
+
+
+def test_failures_that_differ_only_in_digits_are_one_failure_and_the_text_is_kept():
+    policy = WW.RetryPolicy()
+    _, first = policy.failed("exit 1: socket 4521 refused at 10:31:02")
+    delay, second = policy.failed("exit 1: socket 4977 refused at 10:31:05")
+    assert first.startswith("event stream ended: exit 1: socket 4521")
+    assert "still failing (2 attempts): exit 1: socket 4977 refused at 10:31:05" in second
+    assert policy.attempts == 2
+    _, other = policy.failed("exit 1: no such socket")
+    assert other.startswith("event stream ended: exit 1: no such socket")
+
+
+def test_a_stream_that_stayed_up_resets_the_back_off_and_says_it_recovered(home, monkeypatch):
+    def fn(clock, n):
+        if n == 4:
+            clock.now += 120          # this one stayed up two minutes
+        return "exit 0: no error output"
+    clock, records, attempts = _drive_main(monkeypatch, fn, until=150)
+    # 2, 4, 8, then the long stream resets the delay to the first step.
+    assert clock.sleeps[:6] == [2, 4, 8, 2, 2, 4]   # the long stream isn't a failure
+    assert [l for l in records.lines if "recovered" in l] == [
+        "event stream recovered after 3 failed attempts"]
+
+
+def test_a_long_stream_with_no_earlier_failure_logs_no_recovery(home, monkeypatch):
+    def fn(clock, n):
+        clock.now += 120
+        return "exit 0: no error output"
+    clock, records, attempts = _drive_main(monkeypatch, fn, until=300)
+    assert not [l for l in records.lines if "recovered" in l]
+
+
+def test_a_crashing_stream_logs_its_traceback_once(home, monkeypatch):
+    def fn(clock, n):
+        raise RuntimeError("socket dropped")
+    clock, records, attempts = _drive_main(monkeypatch, fn, until=3600)
+    assert sum(1 for line in records.lines if line == "stream crashed") == 1
+    assert attempts < 140
+
+
+def test_ctrl_c_during_the_wait_exits_cleanly(home, monkeypatch):
+    records = _Records()
+    monkeypatch.setattr(WW, "log", records)
+    monkeypatch.setattr(WW, "WorkspaceRegistry", lambda: type("R", (), {"refresh": lambda self: None})())
+    monkeypatch.setattr(WW, "ResumeGovernor", lambda: object())
+    monkeypatch.setattr(WW, "stream", lambda reg, gov, on_stable=None: ("exit 1: nope", 0))
+
+    def interrupted(seconds):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(WW.time, "sleep", interrupted)
+    assert WW.main() == 0
+    assert "interrupted, exiting" in records.lines
+
+
+def test_stream_says_so_through_on_stable_when_it_stays_up(home, monkeypatch):
+    gate = __import__("threading").Event()
+
+    def stdout():
+        gate.wait(5)
+        return
+        yield
+    proc = _FakeProc([])
+    proc.stdout = stdout()
+    monkeypatch.setattr(WW.subprocess, "Popen", lambda *a, **k: proc)
+    monkeypatch.setattr(WW, "STABLE_STREAM_SEC", 0.05)
+    called = []
+
+    def on_stable():
+        called.append(1)
+        gate.set()
+    WW.stream(WW.WorkspaceRegistry(), WW.ResumeGovernor(), on_stable=on_stable)
+    assert called == [1]
+
+
+def test_stream_cancels_the_stable_timer_when_the_stream_ends_early(home, monkeypatch):
+    monkeypatch.setattr(WW.subprocess, "Popen", lambda *a, **k: _FakeProc([]))
+    monkeypatch.setattr(WW, "STABLE_STREAM_SEC", 0.05)
+    called = []
+    WW.stream(WW.WorkspaceRegistry(), WW.ResumeGovernor(), on_stable=lambda: called.append(1))
+    time.sleep(0.2)
+    assert called == []
+
+
+def test_stream_returns_the_childs_last_error_line_and_exit_code(home, monkeypatch):
+    proc = _FakeProc([], err_lines=["Error: first\n", "\n", "Error: Connection to cmux was denied.\n"], rc=1)
+    monkeypatch.setattr(WW.subprocess, "Popen", lambda *a, **k: proc)
+    out, _ = WW.stream(WW.WorkspaceRegistry(), WW.ResumeGovernor())
+    assert out == "exit 1: Error: Connection to cmux was denied."
+
+
+def test_stream_pipes_the_childs_stderr_instead_of_inheriting_it(home, monkeypatch):
+    seen = {}
+
+    def popen(cmd, **kw):
+        seen.update(kw)
+        return _FakeProc([])
+    monkeypatch.setattr(WW.subprocess, "Popen", popen)
+    assert WW.stream(WW.WorkspaceRegistry(), WW.ResumeGovernor())[0] == "exit 0: no error output"
+    assert seen["stderr"] == subprocess.PIPE
+    assert seen["errors"] == "replace"
+
+
+def test_stream_kills_a_child_that_closed_stdout_but_lives(home, monkeypatch):
+    proc = _FakeProc([], rc=-9, hang=True)
+    monkeypatch.setattr(WW.subprocess, "Popen", lambda *a, **k: proc)
+    assert WW.stream(WW.WorkspaceRegistry(), WW.ResumeGovernor())[0].startswith("exit -9")
+    assert proc.killed
+
+
+# --------------------------------------------------------------------------- stderr drain on a real pipe
+
+def _child(code):
+    import sys
+    return subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE)
+
+
+def _drained(code):
+    child = _child(code)
+    tail = WW._StderrTail(child.stderr)
+    child.wait(timeout=20)
+    return tail, child
+
+
+def test_the_drain_survives_invalid_utf8_and_reports_the_last_line():
+    tail, child = _drained(
+        "import sys; sys.stderr.buffer.write(b'first\\n\\xff\\xfe bad bytes\\nlast line \\xc3\\n'); "
+        "sys.stderr.flush()")
+    assert tail.finish() == "last line \ufffd"
+    assert child.returncode == 0
+
+
+def test_the_drain_reads_a_megabyte_line_without_a_newline_in_bounded_pieces():
+    tail, child = _drained(
+        "import sys; sys.stderr.write('Error: ' + 'x' * (1 << 20)); sys.stderr.flush()")
+    assert child.returncode == 0            # the child was never blocked on a full pipe
+    out = tail.finish()
+    assert out.startswith("Error: xxx") and len(out) == WW.STDERR_LINE_MAX
+
+
+def test_the_drain_keeps_only_the_last_nonempty_line_of_many():
+    tail, _ = _drained(
+        "import sys\nfor i in range(5000): sys.stderr.write('line %d\\n\\n' % i)")
+    assert tail.finish() == "line 4999"
+
+
+def test_finish_leaves_no_thread_or_descriptor_behind():
+    tail, child = _drained("import sys; sys.stderr.write('bye\\n')")
+    assert tail.finish() == "bye"
+    assert not tail._thread.is_alive()
+    assert child.stderr.closed
+    tail.finish()                            # closing twice is harmless
+
+
+def test_the_drain_stops_when_the_pipe_is_closed_under_it():
+    class Broken:
+        def readline(self, limit):
+            raise ValueError("I/O operation on closed file")
+
+        def close(self):
+            raise OSError("already gone")
+    assert WW._StderrTail(Broken()).finish() == ""
+
+
+def test_the_drain_accepts_text_pipes_too():
+    assert WW._StderrTail(_ErrPipe(["Error: x\n", "\n"])).finish() == "Error: x"
+
+
+def test_a_pipe_held_open_by_a_grandchild_does_not_hang_finish():
+    import sys
+    child = subprocess.Popen(
+        [sys.executable, "-c",
+         "import subprocess, sys; g = subprocess.Popen(['sleep', '20'], stdout=subprocess.DEVNULL); "
+         "print(g.pid, flush=True); sys.stderr.write('bye\\n')"],
+        stdout=subprocess.PIPE, text=True, stderr=subprocess.PIPE)
+    tail = WW._StderrTail(child.stderr)
+    grandchild = int(child.stdout.readline())
+    child.wait(timeout=20)
+    began = time.monotonic()
+    try:
+        assert tail.finish() == "bye"
+        assert time.monotonic() - began < 5       # about the 1-second join, not 20
+        assert tail._thread.is_alive()            # still draining; the daemon thread owns the pipe
+    finally:
+        os.kill(grandchild, 9)
+
+
+def test_a_stream_that_died_just_short_of_a_minute_is_not_counted_as_stable(home, monkeypatch):
+    # The up-to-5-second wait after the output ends must not count as uptime.
+    clock = _Clock()
+    records = _Records()
+    monkeypatch.setattr(WW, "time", clock)
+    monkeypatch.setattr(WW, "log", records)
+    monkeypatch.setattr(WW, "WorkspaceRegistry", lambda: type("R", (), {"refresh": lambda self: None})())
+    monkeypatch.setattr(WW, "ResumeGovernor", lambda: object())
+    runs = []
+
+    def fake(reg, gov, on_stable=None):
+        if len(runs) >= 3:
+            raise KeyboardInterrupt
+        runs.append(1)
+        clock.now += 66           # 56 seconds of output plus a 10-second wait and join
+        return "exit 1: x", 56
+    monkeypatch.setattr(WW, "stream", fake)
+    assert WW.main() == 0
+    assert clock.sleeps == [2, 4, 8]
+    assert not [l for l in records.lines if "recovered" in l]
+
+
+def test_stream_reports_how_long_the_output_lasted_not_the_wait_after(home, monkeypatch):
+    ticks = iter([100.0, 140.0, 999.0, 999.0, 999.0])
+    monkeypatch.setattr(WW, "time", type("T", (), {"monotonic": staticmethod(lambda: next(ticks))}))
+    monkeypatch.setattr(WW.subprocess, "Popen", lambda *a, **k: _FakeProc([]))
+    assert WW.stream(WW.WorkspaceRegistry(), WW.ResumeGovernor())[1] == 40.0

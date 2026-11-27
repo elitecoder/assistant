@@ -8,11 +8,17 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels that pull request's older runs, so they don't all wait for a Mac.
+# Each run on main has a group of its own, so none is cancelled or held back: each push's changes get checked.
+concurrency:
+  group: quality-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   changed-code-coverage:
-    name: Tests and 100% new-code coverage
+    name: Tests and coverage
     runs-on: macos-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -25,14 +31,19 @@ jobs:
       - name: Install development tools
         run: |
           uv venv --python 3.13
+          uv python install 3.11
           uv pip install pytest==9.1.1 pytest-cov==7.1.0 coverage==7.16.1 playwright==1.63.0
           npm --prefix tests ci --no-audit --no-fund
           uv run --no-sync python -m playwright install chromium
-      - name: Run tests with Python coverage
+      - name: Run tests with Python and Work queue page coverage
         run: |
           mkdir -p "$RUNNER_TEMP/assistant-coverage"
-          uv run --no-sync python tests/run_python_coverage.py \
+          WQ_BROWSER_COVERAGE="$RUNNER_TEMP/assistant-coverage/work-queue/browser-v8.json" \
+            uv run --no-sync python tests/run_python_coverage.py \
             --output-dir "$RUNNER_TEMP/assistant-coverage" --pytest-args -q
+          node tests/browser_coverage.cjs \
+            "$RUNNER_TEMP/assistant-coverage/work-queue/browser-v8.json" \
+            "$RUNNER_TEMP/assistant-coverage/work-queue/istanbul.json"
       - name: Exercise the dashboard in a browser
         run: |
           uv run --no-sync python tests/drive_dashboard_overview.py \
@@ -41,6 +52,12 @@ jobs:
           node tests/browser_coverage.cjs \
             "$RUNNER_TEMP/assistant-coverage/browser/browser-v8.json" \
             "$RUNNER_TEMP/assistant-coverage/browser/istanbul.json"
+      - name: Measure the Slack reactor's Node tests
+        run: |
+          node --test --experimental-test-coverage \
+            --test-reporter=spec --test-reporter-destination=stdout \
+            --test-reporter=lcov --test-reporter-destination="$RUNNER_TEMP/assistant-coverage/reactor.lcov" \
+            slack-reactor/test/*.test.js
       - name: Require complete new-code coverage
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -55,11 +72,13 @@ jobs:
           uv run --no-sync python tests/check_change_coverage.py --base "$BASE" \
             --python-report "$RUNNER_TEMP/assistant-coverage/python.json" \
             --browser-report "$RUNNER_TEMP/assistant-coverage/browser/istanbul.json" \
+            --work-queue-browser-report "$RUNNER_TEMP/assistant-coverage/work-queue/istanbul.json" \
+            --reactor-lcov "$RUNNER_TEMP/assistant-coverage/reactor.lcov" \
             --output "$RUNNER_TEMP/assistant-coverage/changed-code.json"
-      - name: Prove critical regression tests catch broken behavior
+      - name: Prove the Mac-only regression tests catch broken behavior
         run: |
-          uv run --no-sync python tests/mutation_smoke.py \
-            --output "$RUNNER_TEMP/assistant-coverage/mutations.json"
+          uv run --no-sync python tests/mutation_smoke.py --mac-only --workers 3 \
+            --output "$RUNNER_TEMP/assistant-coverage/mutations-mac-only.json"
       - name: Keep validation evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -67,3 +86,60 @@ jobs:
           name: assistant-quality-evidence
           path: ${{ runner.temp }}/assistant-coverage
           if-no-files-found: warn
+
+  # The mutation checks run in four shards at once. Shard i of n runs every n-th
+  # check from the i-th, so the shards together run every check exactly once.
+  # They run on Linux, leaving out the checks whose tests need a Mac; the
+  # coverage job runs those. Each shard runs four checks at once, one per core of
+  # a Linux runner, and every check has its own copy of the sources and its own home.
+  mutations:
+    name: Mutation checks (shard ${{ matrix.shard }} of 4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+      - name: Install development tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q zsh
+          uv venv --python 3.13
+          uv python install 3.11
+          uv pip install pytest==9.1.1 coverage==7.16.1 playwright==1.63.0
+          uv run --no-sync python -m playwright install --with-deps chromium
+      - name: Prove critical regression tests catch broken behavior
+        run: |
+          mkdir -p "$RUNNER_TEMP/assistant-mutations"
+          uv run --no-sync python tests/mutation_smoke.py --shard "${{ matrix.shard }}/4" --workers 4 \
+            --output "$RUNNER_TEMP/assistant-mutations/mutations-${{ matrix.shard }}.json"
+      - name: Keep validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: assistant-mutation-evidence-${{ matrix.shard }}
+          path: ${{ runner.temp }}/assistant-mutations
+          if-no-files-found: warn
+
+  # The check branch protection requires. It passes only when the tests, the
+  # coverage gate, and every mutation shard passed; a skipped or cancelled job fails it.
+  quality-gate:
+    name: Tests and 100% new-code coverage
+    if: always()
+    needs: [changed-code-coverage, mutations]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every quality job to pass
+        env:
+          COVERAGE: ${{ needs.changed-code-coverage.result }}
+          MUTATIONS: ${{ needs.mutations.result }}
+        run: |
+          echo "Tests and coverage: $COVERAGE. Mutation checks: $MUTATIONS."
+          test "$COVERAGE" = success && test "$MUTATIONS" = success

@@ -233,7 +233,17 @@ def step1_ci_route(pr):
     }
 
 
-def step2_send_and_verify(ws_ref, slash_command):
+def _pro_mode():
+    """Whether this is Pro mode. Anything that goes wrong asking is the default mode."""
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(_BIN), "src"))
+        from assistant import mode  # noqa: PLC0415
+        return mode.is_pro()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def step2_send_and_verify(ws_ref, slash_command, authorized_by="tap", pro=None):
     """Returns (ok, observed_last_user_text).
 
     Delegates the actual send to bin/cmux-send.py — the single sanctioned
@@ -242,23 +252,33 @@ def step2_send_and_verify(ws_ref, slash_command):
     distinguishes "cmux returned OK but claude never ingested" from "claude
     actually saw it".
     """
+    if pro is None:
+        pro = _pro_mode()  # asked once per run (by `main`); the default mode sends exactly what it always did
+    argv = [
+        CMUX_SEND,
+        "--ws", ws_ref,
+        "--text", slash_command,
+        "--enter",
+        "--caller", "merge-pr-dispatch.py",
+    ]
+    if pro:
+        # What allowed the typing: the pulse's standing Pro-mode setting, or a person running this by hand.
+        argv += ["--source", "merge", "--auth-kind", authorized_by, "--auth-ref", "merge"]
     send = subprocess.run(
-        [
-            CMUX_SEND,
-            "--ws", ws_ref,
-            "--text", slash_command,
-            "--enter",
-            "--caller", "merge-pr-dispatch.py",
-        ],
-        capture_output=True, text=True, timeout=20,
+        argv,
+        capture_output=True, text=True, timeout=45 if pro else 20,  # cmux-send.py's Pro worst case is about 33 s
     )
     try:
         send_record = json.loads(send.stdout)
     except Exception:
         return False, f"cmux_send_bad_output: {send.stdout[:200]}{send.stderr[:200]}"
     outcome = send_record.get("outcome", "")
+    if pro and send.returncode == 5:  # cmux-send.py: no answer in time, so the text may have been typed
+        return False, ("may_have_been_typed: cmux didn't answer in time, so the command may already be in the "
+                       "session. Check it before sending it again")
     if send.returncode != 0:
-        return False, f"cmux_send_exit_{send.returncode}_outcome={outcome}: {send_record.get('rpc_send_text',{}).get('body','')[:200]}"
+        why = (send_record.get("refused") or {}).get("reason") or send_record.get("rpc_send_text", {}).get("body", "")
+        return False, f"cmux_send_exit_{send.returncode}_outcome={outcome}: {why[:200]}"
 
     # Pre-check: did the transcript actually grow? cmux-send already
     # waited 2.5s post-send. If size_delta is 0, the keystrokes did not
@@ -273,7 +293,7 @@ def step2_send_and_verify(ws_ref, slash_command):
     # body verbatim and can be 30-50KB on its own; smaller budgets read
     # mid-line and silently fail to parse.
     tail = subprocess.run(
-        ["python3", TRANSCRIPT_TAIL, "--ws", ws_ref, "--bytes", "200000"],
+        [sys.executable, TRANSCRIPT_TAIL, "--ws", ws_ref, "--bytes", "200000"],
         capture_output=True, text=True, timeout=10,
     )
     if tail.returncode != 0:
@@ -316,6 +336,7 @@ def step2_send_and_verify(ws_ref, slash_command):
 
 
 def main():
+    pro = _pro_mode()  # asked once, before the options are read
     p = argparse.ArgumentParser()
     p.add_argument("--ws", required=True, help="workspace:N")
     p.add_argument("--pr", type=int, required=True)
@@ -323,6 +344,9 @@ def main():
                    help="Dispatcher claims the workspace transcript shows full local G3 + unit suite green")
     p.add_argument("--e2e-attested", action="store_true",
                    help="Dispatcher claims the workspace transcript shows pnpm e2e:squirrel passed (required for Squirrel PRs)")
+    if pro:  # the default mode has the options this script always had, so its errors and `--help` are unchanged
+        p.add_argument("--authorized-by", choices=("tap", "standing"), default="tap",
+                       help="what allowed the typing: a person running this (default) or the pulse's standing setting")
     args = p.parse_args()
 
     if not re.fullmatch(r"workspace:\d+", args.ws):
@@ -377,7 +401,7 @@ def main():
     # Step 2 — send + verify
     slash = f"/{skill} {args.pr}"
     out["step2"] = {"slash_command": slash, "ws": args.ws}
-    submitted, observed = step2_send_and_verify(args.ws, slash)
+    submitted, observed = step2_send_and_verify(args.ws, slash, getattr(args, "authorized_by", "tap"), pro)
     out["step2"]["submitted"] = submitted
     out["step2"]["observed_last_user_text"] = observed
 
@@ -386,8 +410,10 @@ def main():
         out["awaiting_card"] = {
             "key": f"assistant:merge-pr-stuck:{args.pr}:send-unverified",
             "tier": "T2",
-            "title": f"PR #{args.pr}: {slash} did not submit into {args.ws}",
-            "detail": f"cmux send returned 0 but the JSONL transcript's last_user.text does not match. Observed: {observed[:200]}",
+            "title": (f"PR #{args.pr}: {slash} may already be in {args.ws}" if observed.startswith("may_have_been_typed")
+                      else f"PR #{args.pr}: {slash} did not submit into {args.ws}"),
+            "detail": (observed.split(": ", 1)[1] if observed.startswith("may_have_been_typed") else
+                       f"cmux send returned 0 but the JSONL transcript's last_user.text does not match. Observed: {observed[:200]}"),
         }
         print(json.dumps(out, indent=2))
         sys.exit(2)

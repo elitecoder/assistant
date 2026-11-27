@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 from pathlib import Path
 
 import agent_session as ag
@@ -119,17 +120,29 @@ def test_warm_launch_pinned_model_skips_the_backend_prefix(monkeypatch):
 def test_warm_launch_finds_claude_on_path_so_cmux_wraps_it(monkeypatch):
     # The pane's login shell must resolve `claude` through PATH (cmux's shim) — a
     # hardcoded ~/.local/bin/claude skips cmux's wrapper and its session hooks.
-    monkeypatch.setattr(cs, "CLAUDE_BIN", None)
+    monkeypatch.delenv("CLAUDE_BIN", raising=False)
     cmd = cs._warm_launch(ag.CLAUDE)
     assert " command claude --model " in f" {cmd}"
     assert ".local/bin/claude" not in cmd
 
 
 def test_warm_launch_honors_an_explicit_claude_bin(monkeypatch):
-    monkeypatch.setattr(cs, "CLAUDE_BIN", "/opt/agents/claude code")
+    monkeypatch.setenv("CLAUDE_BIN", "/opt/agents/claude code")
     cmd = cs._warm_launch(ag.CLAUDE)
     assert "'/opt/agents/claude code' --model " in cmd
     assert "command claude" not in cmd
+
+
+def test_warm_launch_starts_copilot_with_its_own_scope(monkeypatch, tmp_path):
+    monkeypatch.setattr(cs, "HOME", tmp_path)
+    monkeypatch.delenv("COPILOT_BIN", raising=False)
+    monkeypatch.setenv("COPILOT_MODEL", "gpt-6.1-sol")
+    cmd = cs._warm_launch(ag.COPILOT)
+    assert cmd.startswith("command copilot --allow-all --no-ask-user --model gpt-6.1-sol ")
+    assert f"--add-dir {cs.REPO_ROOT}" in cmd and "--add-dir /tmp" in cmd
+    argv = shlex.split(cmd)
+    assert not any(os.path.basename(a) == "claude" for a in argv)
+    assert "--dangerously-skip-permissions" not in argv and "CLAUDE_CODE_USE_BEDROCK" not in cmd
 
 
 def test_resolve_warm_model_and_backend_respects_env(monkeypatch):
@@ -846,6 +859,16 @@ def test_instance_tag_and_title_differ_per_comms_home(tmp_path):
     assert cs.warm_workspace_title(paths_a) != cs.warm_workspace_title(paths_b)
 
 
+def _one_window(listing: str):
+    """A run_cmd stand-in for a cmux with one window that lists `listing`."""
+    def run(cmd, timeout=10):
+        if cmd[1:] == ["list-windows", "--json"]:
+            return 0, '[{"id": "W1", "index": 0, "key": true}]', ""
+        assert cmd[1:] == ["list-workspaces", "--window", "W1"], cmd
+        return 0, listing, ""
+    return run
+
+
 def test_list_warm_workspaces_filters_to_this_instance(tmp_path, monkeypatch):
     """The real (unmocked) scan must return only THIS instance's tagged warm
     workspaces from the machine-wide list-workspaces output — never a second
@@ -861,7 +884,7 @@ def test_list_warm_workspaces_filters_to_this_instance(tmp_path, monkeypatch):
         f"workspace:2  {title_b}\n"
         f"workspace:9  some user work\n"
     )
-    monkeypatch.setattr(cl, "run_cmd", lambda cmd, timeout=10: (0, listing, ""))
+    monkeypatch.setattr(cl, "run_cmd", _one_window(listing))
     assert cs.list_warm_workspaces(paths_a) == ["workspace:1"]
     assert cs.list_warm_workspaces(paths_b) == ["workspace:2"]
 
@@ -897,7 +920,7 @@ def test_reconcile_sweeps_own_orphan_but_never_another_instance(tmp_path, monkey
     closed: list[str] = []
     monkeypatch.setattr(cs, "close_own_workspace",
                         lambda paths, ws, log=lambda m: None: closed.append(ws))
-    monkeypatch.setattr(cl, "run_cmd", lambda cmd, timeout=10: (0, listing, ""))
+    monkeypatch.setattr(cl, "run_cmd", _one_window(listing))
 
     cs.reconcile_warm_workspaces(paths_a, keep="workspace:3")
 

@@ -49,6 +49,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import select
 import signal
 import subprocess
@@ -58,9 +59,12 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import agent_session  # noqa: E402
+from assistant.redact import install_crash_hooks, redact  # noqa: E402
 import comms_lib  # noqa: E402
 import comms_session  # noqa: E402
+session_effects = comms_session.session_effects  # Pro mode's ledger, loaded only when Pro mode needs it
 
 
 def _load_doctor():
@@ -111,6 +115,8 @@ PENDING_RETRY_MAX_SEC = 1800.0
 PENDING_MAX_AGE_SEC = float(os.environ.get("COMMS_PENDING_MAX_AGE_SEC", str(3 * 3600)))
 RESTART_NOTICE = ("My chat session isn't responding right now. I'll answer as soon "
                   "as it's back.")
+UNRECORDED_NOTICE = ("I can't save my record of what I type into the session, so I haven't passed your message on "
+                     "yet. I'll try again every few minutes. Check that the disk isn't full.")
 RESTART_NOTICE_AFTER_SEC = float(os.environ.get("COMMS_RESTART_NOTICE_AFTER_SEC", "60"))
 
 # At most this many action updates go out per ledger pass; the rest collapse
@@ -175,6 +181,14 @@ def _target(paths: comms_lib.Paths) -> str:
         return ""
 
 
+def _safe_target(paths: comms_lib.Paths) -> str:
+    """The default send target, or "" when there is no config or it isn't JSON (Pro mode's owner rule never crashes)."""
+    try:
+        return _target(paths)
+    except ValueError:
+        return ""
+
+
 def utc_iso() -> str:
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -183,7 +197,7 @@ def utc_iso() -> str:
 def log(msg: str) -> None:
     paths = comms_lib.Paths.from_env()
     paths.comms_dir.mkdir(parents=True, exist_ok=True)
-    line = f"[{utc_iso()}] {msg}"
+    line = f"[{utc_iso()}] {redact(msg)}"
     with open(paths.comms_dir / "comms-listen.log", "a") as f:
         f.write(line + "\n")
     print(line, file=sys.stderr, flush=True)
@@ -278,8 +292,14 @@ def _warm_session(paths: comms_lib.Paths, *, respawn_on_stale: bool = False,
                 # there could race an active reply.
                 if replace_ws and replace_ws == sess["ws_ref"]:
                     why = "didn't accept the typed message"
+                elif respawn_on_stale and not comms_session.warm_session_agent_is_current(sess):
+                    why = (f"agent changed ({sess.get('agent') or 'claude'} → "
+                           f"{comms_session.picked_warm_agent()})")
                 elif respawn_on_stale and not comms_session.warm_session_model_is_current(paths, sess):
                     why = f"model stale ({sess.get('model')!r} — backend changed since spawn)"
+                elif respawn_on_stale and not comms_session.warm_session_alias_is_current(sess):
+                    why = (f"claude alias changed ({sess.get('alias') or 'claude'} → "
+                           f"{comms_session.agent_session.claude_alias()})")
                 else:
                     return sess, SESSION_ALIVE
             else:
@@ -304,6 +324,109 @@ def ensure_warm_session(paths: comms_lib.Paths, *, respawn_on_stale: bool = Fals
     """The live warm-session record, spawning one if none is alive (see
     _warm_session)."""
     return _warm_session(paths, respawn_on_stale=respawn_on_stale)[0]
+
+
+USER_ID = re.compile(r"[UW][A-Z0-9]{2,}")  # a member id; W... is an Enterprise Grid one
+IGNORED_REPLY_SEC = 86400  # at most one "I didn't act on this" reply a day, for each author in each conversation
+
+
+def owner_id(paths: comms_lib.Paths, env: dict | None = None) -> str:
+    """The owner's Slack member id: SLACK_USER_ID, else `slack.owner` in ~/.assistant/config.json, else `slack.target`
+    when that is a member id (a direct message); each only when it has the shape of an id. A SLACK_USER_ID of any
+    other shape is skipped, not taken to mean "nobody" (the Slack reactor does take it so, because there an unknown
+    owner starts nothing): here an unknown owner means every message in a channel is typed, so a typo must not throw
+    away an owner the config names. Empty when none of the three names one, which includes a config that can't be
+    read while SLACK_USER_ID names nobody."""
+    found = ((env or {}).get("SLACK_USER_ID") or os.environ.get("SLACK_USER_ID") or "").strip()
+    if USER_ID.fullmatch(found):
+        return found
+    try:
+        configured = str(json.loads(paths.config.read_text()).get("slack", {}).get("owner") or "").strip()
+    except (OSError, ValueError, AttributeError):
+        configured = ""
+    if USER_ID.fullmatch(configured):
+        return configured
+    target = _safe_target(paths)
+    return target if USER_ID.fullmatch(target) else ""
+
+
+def notice_channel(paths: comms_lib.Paths, conversation: str) -> str:
+    """Where a notice about a message in this conversation may go. slack-send.py only sends to the configured target;
+    with a member id as the target, a message comes in on that person's direct-message conversation (D...), so a
+    notice for it goes to the target, which is the same conversation."""
+    target = _safe_target(paths)
+    return target if conversation.startswith("D") and USER_ID.fullmatch(target) else conversation
+
+
+TYPED = ("owner", "dm", "unknown-owner")  # whose messages are typed into the warm session
+
+
+def classify_author(paths: comms_lib.Paths, rec: dict, env: dict | None = None) -> tuple[str, str]:
+    """(who wrote this message, the owner's id): `owner`, `dm` (a direct-message conversation holds only the owner),
+    `unknown-owner` (a channel, and no way to tell which member is the owner), `other` or `no-author`. The first
+    three are typed into the session (TYPED). The owner rule needs an owner to compare against: where there is none,
+    every message in the channel is typed, as all of them were before the rule existed. Refusing them all stopped the
+    owner's own, in a setup that had worked until then."""
+    owner, author = owner_id(paths, env), str(rec.get("author") or "")
+    if not owner and not _safe_target(paths).startswith("D"):
+        return "unknown-owner", ""
+    if not author:
+        return "no-author", owner
+    return (("owner" if author == owner else "other") if owner else "dm"), owner
+
+
+def typed_for(paths: comms_lib.Paths, rec: dict, env: dict | None = None) -> bool:
+    """Whether this message may be typed into the warm session: its owner's, or any message where Assistant can't
+    tell who the owner is. Logs one plain sentence when the answer is no."""
+    who, owner = classify_author(paths, rec, env)
+    if who in TYPED:
+        return True
+    where = f"Slack message {rec.get('msg_ts')} in {rec.get('channel')}"
+    if who == "other":
+        log(f"{where} was written by {rec.get('author')}, not by you ({owner}), so Assistant kept it as received and "
+            f"did not type it into the session.")
+    else:
+        log(f"{where} has no author, so Assistant did not type it into the session.")
+    return False
+
+
+OTHER_MEMBER_REPLY = (
+    "I only take instructions from <@{owner}>, so I haven't acted on this message. If that isn't you, SLACK_USER_ID "
+    "is set to the wrong member ID: put your own in ~/.zprofile and run "
+    "`launchctl kickstart -k gui/$UID/com.assistant.assistant-comms`.")
+
+
+def _once_a_day(paths: comms_lib.Paths, name: str) -> bool:
+    """True when it is time to send the reply this marker stands for. The marker is written before the send, and
+    when it can't be written nothing is sent: a send that can't be recorded would repeat on every message."""
+    marker = paths.comms_dir / f"ignored-{re.sub(r'[^A-Za-z0-9]', '-', name)[:80]}.json"
+    try:
+        if time.time() - json.loads(marker.read_text()).get("ts", 0) < IGNORED_REPLY_SEC:
+            return False
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({"ts": time.time()}))
+    except OSError:
+        log(f"Assistant could not write {marker.name}, so it did not send its reply about the ignored message.")
+        return False
+    return True
+
+
+def tell_ignored(paths: comms_lib.Paths, rec: dict, env: dict | None = None) -> None:
+    """Say so, in the thread of the message, when someone other than the owner wrote a message and it wasn't acted
+    on. At most once a day for each author in each conversation."""
+    who, owner = classify_author(paths, rec, env)
+    channel, ts = str(rec.get("channel") or ""), rec.get("msg_ts")
+    if who != "other" or not _once_a_day(paths, f"author-{channel}-{rec.get('author')}"):
+        return
+    text = OTHER_MEMBER_REPLY.format(owner=owner)
+    rc, _out, err = cli(_send_args(text, "reply", notice_channel(paths, channel), None,
+                                   reply_to=str(ts) if ts else None),
+                        timeout=30, env=env)
+    if rc != 0:
+        log(f"Assistant's reply about the ignored message {ts} did not send (rc={rc}): {err.strip()[:160]}")
 
 
 def feed_text(recs: list[dict], channel: str) -> str:
@@ -362,14 +485,50 @@ def reply_to_message(paths: comms_lib.Paths, sess: dict,
         if bound and comms_session.transcript_has_submission(bound, marker):
             hit = bound
         else:
-            hit = comms_session.find_submission(project_dir, marker, since)
+            hit = comms_session.find_submission(
+                project_dir, marker, since, agent=agent, cwd=sess["cwd"])
         if hit:
             found.append(hit)
         return hit is not None
 
     t0 = time.time()
-    delivered = comms_session.submit(paths, sess["surface_ref"], feed_text(recs, channel),
-                                     marker, confirmed)
+    # Each message is its own typing, begun before the batch is typed, and the owner's own message (as of its time)
+    # is what allowed it. A message time Slack didn't write (it always has this shape) is recorded without its
+    # time, as "now". Raises session_effects.Refused, naming the message it was for.
+    def allowed(rec):
+        stamp = str(rec.get("msg_ts"))
+        real = re.fullmatch(r"[0-9]{10}\.[0-9]{6}", stamp) is not None
+        return {"ref": f"slack:{stamp}"[:100], "anchor": float(stamp) if real else None,
+                "slack_ts": stamp if real else ""}
+
+    ts = str(recs[-1].get("msg_ts"))
+    older = [allowed(r) for r in recs[:-1] if allowed(r)["slack_ts"]]
+    ws, surface, feed = sess["ws_ref"], sess["surface_ref"], feed_text(recs, channel)
+    try:
+        with comms_session.typing_scope(paths, ws, surface, "slack-message", kind="tap", batch=older,
+                                        **allowed(recs[-1])):
+            delivered = comms_session.submit(paths, surface, feed, marker, confirmed, agent=agent)
+    except session_effects.Refused as refusal:
+        if refusal.code not in ("unknown", "done") or getattr(refusal, "slack_ts", None) != allowed(recs[-1])["slack_ts"]:
+            raise
+        # Typed already. Its text is never typed twice, but when it is still sitting in the box, unsubmitted, only
+        # its Enter is pressed again (its own typing, with its own record); and when it has landed since, that is all.
+        if confirmed():
+            delivered = True
+        elif comms_session.message_in_box(paths, surface, marker, agent):
+            try:
+                with comms_session.typing_scope(paths, ws, surface, "submit", kind="tap", ref=allowed(recs[-1])["ref"],
+                                                slack_ts=allowed(recs[-1])["slack_ts"]) as keys:
+                    delivered = comms_session.submit(paths, surface, feed, marker, confirmed, agent=agent,
+                                                     retype=False)
+            except session_effects.Refused as again:
+                if again.code != "loop":
+                    raise
+                raise refusal from None  # Enter pressed enough times: it is "couldn't confirm", not silence
+            if not delivered and not keys.sent:
+                raise refusal  # the box no longer shows it (someone is typing there): nothing was pressed
+        else:
+            raise
     log(f"reply channel={channel} msg={recs[-1].get('msg_ts')} n={len(recs)} "
         f"submitted={delivered} wall_ms={int((time.time() - t0) * 1000)}")
     if not delivered:
@@ -460,7 +619,7 @@ def _restart_notice_path(paths: comms_lib.Paths, channel: str) -> Path:
     return paths.comms_dir / f"restart-notice-{safe}.json"
 
 
-def _notify_restart_once(paths: comms_lib.Paths, channel: str, env: dict | None) -> None:
+def _notify_restart_once(paths: comms_lib.Paths, channel: str, env: dict | None, text: str | None = None) -> None:
     """Tell the user, once per outage per channel, that their message is
     waiting. The marker is written before sending, so a failing send can't
     repeat every retry; it's cleared once nothing is left waiting."""
@@ -469,7 +628,9 @@ def _notify_restart_once(paths: comms_lib.Paths, channel: str, env: dict | None)
         return
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(json.dumps({"ts": time.time()}))
-    rc, _out, err = cli(_send_args(RESTART_NOTICE, "reply", channel, None), timeout=30, env=env)
+    rc, _out, err = cli(_send_args(text or RESTART_NOTICE, "reply",
+                                   notice_channel(paths, channel) if session_effects.active() else channel, None),
+                        timeout=30, env=env)
     log(f"restart notice sent to {channel}" if rc == 0
         else f"restart notice rc={rc} err={err.strip()[:160]}")
 
@@ -478,19 +639,34 @@ def _deliver_pending(paths: comms_lib.Paths, channel: str, env: dict | None) -> 
     """Try to hand this channel's queued messages to the warm session. Returns
     True when nothing is left waiting."""
     now = time.time()
+    pro = session_effects.active()  # asked once: the default mode queues, types and notifies exactly as it always did
     fresh, expired = split_pending(read_pending(paths), channel, now, PENDING_MAX_AGE_SEC)
     if expired:
         for r in expired:
             log(f"inbound msg={r.get('msg_ts')} still undelivered after "
                 f"{comms_lib.fmt_age(int(message_age_sec(r, now)))} — giving up on it")
         remove_pending(paths, [r.get("msg_ts") for r in expired])
+        for r in expired if pro else ():
+            _tell_dropped(paths, r, env, DROPPED_EXPIRED)
+    # The owner rule applies again here (Pro mode): a message queued before this was checked, or by another version,
+    # may not be the owner's.
+    foreign = [r for r in fresh if classify_author(paths, r, env)[0] not in TYPED] if pro else []
+    if foreign:
+        remove_pending(paths, [r.get("msg_ts") for r in foreign])
+        for r in foreign:
+            typed_for(paths, r, env)
+            tell_ignored(paths, r, env)  # the same notice a new ignored message gets, once a day
+        fresh = [r for r in fresh if r not in foreign]
     if not fresh:
         _restart_notice_path(paths, channel).unlink(missing_ok=True)
         return True
     sess, how = _warm_session(paths, respawn_on_stale=True)
     delivered = False
     if sess and how != SESSION_UNREACHABLE:
-        delivered, fed = reply_to_message(paths, sess, fresh)
+        try:
+            delivered, fed = reply_to_message(paths, sess, fresh)
+        except session_effects.Refused as refusal:
+            return _refused_delivery(paths, channel, fresh, refusal, env, now)
         # Replace an existing session that didn't take the message. One that was
         # just spawned (here or by a clear) is left for the next, backed-off
         # try, so a Claude that can't accept input costs one spawn per retry.
@@ -503,6 +679,61 @@ def _deliver_pending(paths: comms_lib.Paths, channel: str, env: dict | None) -> 
     log(f"inbound: {len(fresh)} message(s) waiting for the warm session (session={how})")
     if message_age_sec(fresh[0], now) >= RESTART_NOTICE_AFTER_SEC:
         _notify_restart_once(paths, channel, env)
+    return False
+
+
+# A message that was typed (or may have been) is never typed again, and one that can't be described never will be:
+# both leave the queue. One that couldn't be recorded, or is waiting on another try, stays for the next one.
+_FINAL_REFUSALS = ("done", "unknown", "invalid", "unauthorized")
+
+
+def _clock(ts) -> str:
+    try:
+        return time.strftime("%H:%M", time.localtime(float(ts)))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return "earlier"
+
+
+def _tell_dropped(paths: comms_lib.Paths, rec: dict, env: dict | None, text: str) -> None:
+    """Tell the owner, in the message's own thread, that it left the queue without being confirmed. Once: a message
+    leaves the queue once."""
+    ts = rec.get("msg_ts")
+    rc, _out, err = cli(_send_args(text.format(at=_clock(ts)), "reply",
+                                   notice_channel(paths, str(rec.get("channel") or "")), None,
+                                   reply_to=str(ts) if ts else None), timeout=30, env=env)
+    if rc != 0:
+        log(f"Assistant's note that your message {ts} was dropped did not send (rc={rc}): {err.strip()[:160]}")
+
+
+DROPPED_UNCONFIRMED = ("I couldn't confirm your message (sent {at}) reached the session, and I won't type it twice. "
+                       "Check the session, or send it again.")
+DROPPED_UNTYPED = ("I couldn't pass your message (sent {at}) on to the session, and I've stopped trying. "
+                   "Check the session, or send it again.")
+DROPPED_EXPIRED = ("I couldn't deliver your message (sent {at}) to the session in time, so I've stopped trying. "
+                   "Send it again when the session is back.")
+
+
+def _refused_delivery(paths: comms_lib.Paths, channel: str, fresh: list[dict], refusal, env: dict | None,
+                      now: float) -> bool:
+    """What to do with queued messages Assistant refused to type. True when nothing is left waiting. The warm
+    session is not replaced: it did nothing wrong. A message that was typed (or may have been), or that can't be
+    described, is never typed again: it leaves the queue and its author is told. One that couldn't be recorded, or
+    is waiting for a clock or a loop to pass, stays for the next try, and its author still gets the "back soon" note."""
+    culprit = getattr(refusal, "slack_ts", None)
+    if refusal.code in _FINAL_REFUSALS:
+        gone = [r for r in fresh if not culprit or str(r.get("msg_ts")) == culprit] or fresh
+        remove_pending(paths, [r.get("msg_ts") for r in gone])
+        for rec in gone:
+            log(f"Slack message {rec.get('msg_ts')} in {channel}: your message was dropped, and won't be typed "
+                f"again. {refusal.short}")
+            _tell_dropped(paths, rec, env, DROPPED_UNCONFIRMED if refusal.code in ("done", "unknown")
+                          else DROPPED_UNTYPED)
+        fresh = [r for r in fresh if r not in gone]
+        if not fresh:
+            return True
+    log(f"Slack message {fresh[-1].get('msg_ts')} in {channel} is waiting and will be tried again. {refusal.short}")
+    if message_age_sec(fresh[0], now) >= RESTART_NOTICE_AFTER_SEC:
+        _notify_restart_once(paths, channel, env, UNRECORDED_NOTICE if refusal.code == "unrecorded" else None)
     return False
 
 
@@ -616,6 +847,9 @@ def inbound_loop(stop: threading.Event, env: dict) -> None:
         # On disk before the worker sees it: the slack cursor has already moved
         # past this message, and the worker may be busy for minutes.
         _record_inbound(rec)
+        if session_effects.active() and not typed_for(paths, rec, env):  # Pro mode: only the owner's are typed
+            tell_ignored(paths, rec, env)
+            continue  # recorded as received
         add_pending(paths, rec)
         worker_for(channel_id).put(True)
 
@@ -1173,6 +1407,7 @@ def _announce_misconfig_once(paths: comms_lib.Paths, key: str, summary: str, env
 
 
 def main() -> int:
+    install_crash_hooks()  # an uncaught error prints a redacted traceback
     paths = comms_lib.Paths.from_env()
     if not paths.config.exists():
         log(f"no config at {paths.config} — run assistant-comms-setup.sh first")

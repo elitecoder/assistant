@@ -8,6 +8,7 @@ emission, back-off respect) is straight Python and runs in <2s.
 from __future__ import annotations
 
 import importlib.util
+import contextlib
 import io
 import json
 import os
@@ -368,6 +369,43 @@ class ExecuteVerdictTests(unittest.TestCase):
         self.assertEqual(action["kind"], "merge-dispatched")
         self.assertTrue(self.mod.assistant_merged_workspace("workspace:99"))
 
+    def test_ready_for_merge_on_copilot_leaves_a_card_and_sends_nothing(self):
+        awaiting, calls = [], []
+        ws = {**self._ws(), "pr_refs": ["1234"]}
+        with mock.patch.object(self.mod, "run_merge_pr_dispatch",
+                               lambda *a, **k: calls.append(a) or {"outcome": "submitted"}):
+            action = self.mod.execute_verdict(
+                ws, {"verdict": "ready_for_merge", "summary": "s", "next": "n"}, awaiting,
+                copilot=True)
+        self.assertEqual(calls, [])
+        self.assertEqual(action["kind"], "emit-card")
+        self.assertEqual(awaiting[0]["key"], "workspace:99:merge-needs-claude:1234")
+        self.assertIn("runs Copilot, which has no /merge-when-ready", awaiting[0]["detail"])
+        self.assertFalse(self.mod.assistant_merged_workspace("workspace:99"))
+
+    def test_runs_copilot_reads_the_observed_session(self):
+        session = lambda provider: {"agent_provider": "copilot", "observation_identity": {
+            "observed_sessions": [{"surface_id": "S", "provider": provider, "session_id": "s"}]}}
+        self.assertTrue(self.mod.runs_copilot(session("copilot")))
+        self.assertFalse(self.mod.runs_copilot(session("claude")), "the session outranks the screen")
+        self.assertFalse(self.mod.runs_copilot(session("droid")))
+        self.assertFalse(self.mod.runs_copilot(session("factory")))
+        self.assertFalse(self.mod.runs_copilot(None))
+
+    def test_runs_copilot_falls_back_to_the_screen_without_a_session(self):
+        self.assertTrue(self.mod.runs_copilot({"agent_provider": "copilot",
+                                               "observation_identity": {"observed_sessions": []}}))
+        self.assertFalse(self.mod.runs_copilot({"agent_provider": "claude"}))
+
+    def test_a_carried_ready_copilot_verdict_re_emits_its_card(self):
+        ws = {**self._ws(), "pr_refs": ["1234"]}
+        verdict = {"verdict": "ready_for_merge", "summary": "s", "next": "n"}
+        fresh, carried = [], []
+        self.mod.execute_verdict(ws, verdict, fresh, copilot=True)
+        action = self.mod.execute_verdict(ws, verdict, carried, carry=True, copilot=True)
+        self.assertEqual(action["kind"], "emit-card")
+        self.assertEqual(carried, fresh)
+
     def test_ready_for_merge_does_not_record_on_failure(self):
         # If the mechanical dispatch fails, do NOT poison the merge ledger.
         ws = {**self._ws(), "pr_refs": ["1234"]}
@@ -468,9 +506,11 @@ class CountActiveTests(unittest.TestCase):
 
     def test_counts_working_status(self):
         meta = [
-            {"ctx": {"agent_status": "working", "last_turn_age_sec": 9999}},
+            {"ctx": {"agent_status": "working", "last_turn_age_sec": 3000}},
             {"ctx": {"agent_status": "idle", "last_turn_age_sec": 100}},  # young → active
             {"ctx": {"agent_status": "idle", "last_turn_age_sec": 9999}},  # old → not active
+            # A tool call open for more than two hours is a session waiting on someone.
+            {"ctx": {"agent_status": "working", "last_turn_age_sec": 9999}},
         ]
         self.assertEqual(self.mod.count_active(meta), 2)
 
@@ -814,6 +854,203 @@ class WriteHeartbeatTests(unittest.TestCase):
         self.assertFalse((self._tmp / ".assistant/heartbeat.json.tmp").exists())
 
 
+class CapLogsTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp_obj = TemporaryDirectory()
+        self._tmp = fixture_home(Path(self._tmp_obj.name))
+        self.mod = load_pulse(self._tmp)
+
+    def tearDown(self):
+        self._tmp_obj.cleanup()
+
+    MB = 1024 * 1024
+
+    def _summary(self, **kw):
+        return {"capped": [], "freed": 0, "keep": 5 * self.MB, "problem": None,
+                "announce": False, "notice": None, **kw}
+
+    def test_the_log_line_says_what_happened_to_the_old_lines(self):
+        names = ["a.log", "b.out", "c.err", "d.log", "e.log"]
+        with mock.patch.object(self.mod.logcap, "cap_logs",
+                               return_value=self._summary(capped=names, freed=2560 * self.MB)) as cap, \
+                self.assertLogs(self.mod.log, "INFO") as seen:
+            self.mod.cap_logs_safely()
+        cap.assert_called_once_with(self.mod.ASSISTANT_DIR, self.mod.HOME / ".claude")
+        self.assertEqual(seen.output, [
+            "INFO:" + self.mod.log.name + ":log cap: trimmed 5 logs, deleted 2,560 MB of older lines "
+            "(each now keeps its last 5 MB; no backup): a.log, b.out, c.err, d.log, e.log"])
+
+    def test_one_trimmed_log_is_not_pluralised_and_nothing_trimmed_logs_nothing(self):
+        with mock.patch.object(self.mod.logcap, "cap_logs",
+                               return_value=self._summary(capped=["a.log"], freed=20 * self.MB)), \
+                self.assertLogs(self.mod.log, "INFO") as seen:
+            self.mod.cap_logs_safely()
+        self.assertIn("trimmed 1 log, deleted 20 MB of older lines", seen.output[0])
+        with mock.patch.object(self.mod.logcap, "cap_logs", return_value=self._summary()), \
+                self.assertNoLogs(self.mod.log, "INFO"):
+            self.assertEqual(self.mod.cap_logs_safely(), [])
+
+    def test_an_unusable_setting_is_logged_once_with_its_reason(self):
+        reason = 'logs.cap_mb in config.json is "0" in quotes, not a number'
+        with mock.patch.object(self.mod.logcap, "cap_logs",
+                               return_value=self._summary(problem=reason, announce=True)), \
+                self.assertLogs(self.mod.log, "WARNING") as seen:
+            self.mod.cap_logs_safely()
+        self.assertEqual(seen.output, ["WARNING:" + self.mod.log.name + ":log cap: " + reason
+                                       + "; trimming is off until that is fixed"])
+        with mock.patch.object(self.mod.logcap, "cap_logs",
+                               return_value=self._summary(problem=reason, announce=False)), \
+                self.assertNoLogs(self.mod.log, "WARNING"):
+            self.mod.cap_logs_safely()
+
+    def test_the_notice_card_says_plainly_what_will_be_deleted_and_how_to_opt_out(self):
+        from datetime import datetime, timedelta
+        trim_at = (datetime.now() + timedelta(days=1)).replace(hour=14, minute=5, second=0).timestamp()
+        card = self.mod.log_trim_card({"trim_at": trim_at, "cap": 20 * self.MB, "keep": 5 * self.MB,
+                                       "names": ["a", "b", "c", "d", "e"], "bytes": 2560 * self.MB})
+        self.assertEqual(card, {
+            "key": "log-trim-notice", "tier": "T3",
+            "title": "Log trimming starts tomorrow at 14:05",
+            "detail": '5 logs are over 20 MB (2,560 MB in all) and will be cut to their last 5 MB '
+                      'each; the older lines are deleted and there is no backup. To keep them, add '
+                      '"logs": {"cap_mb": 0} to ~/.assistant/config.json, alongside your existing '
+                      'keys. To trim now, add "logs": {"cap_mb": 20}.'})
+
+    def test_the_notice_card_says_today_and_one_log_when_that_is_so(self):
+        from datetime import datetime
+        card = self.mod.log_trim_card({"trim_at": datetime.now().timestamp(), "cap": 20 * self.MB,
+                                       "keep": 5 * self.MB, "names": ["a"], "bytes": 30 * self.MB})
+        self.assertTrue(card["title"].startswith("Log trimming starts today at "))
+        self.assertTrue(card["detail"].startswith("1 log is over 20 MB (30 MB in all)"))
+
+    def test_the_notice_comes_back_from_cap_logs_safely_as_a_card(self):
+        notice = {"trim_at": time.time(), "cap": 20 * self.MB, "keep": 5 * self.MB,
+                  "names": ["a"], "bytes": 30 * self.MB, "saved": True}
+        with mock.patch.object(self.mod.logcap, "cap_logs", return_value=self._summary(notice=notice)):
+            cards = self.mod.cap_logs_safely()
+        self.assertEqual([c["key"] for c in cards], ["log-trim-notice"])
+
+    def test_a_start_time_that_cannot_be_saved_shows_text_with_no_deadline(self):
+        notice = {"trim_at": time.time(), "cap": 20 * self.MB, "keep": 5 * self.MB,
+                  "names": ["a"], "bytes": 30 * self.MB, "saved": False}
+        self.assertEqual(self.mod.log_trim_card(notice), {
+            "key": "log-trim-notice", "tier": "T3", "title": "Log trimming is waiting",
+            "detail": "Assistant can't save ~/.assistant/log-cap-state.json, so it won't trim "
+                      "anything. Check that the folder can be written to."})
+
+    def test_an_unusable_setting_comes_back_as_its_own_card_with_a_fix(self):
+        cases = {
+            'logs.cap_mb in ~/.assistant/config.json is "20" in quotes, not a number':
+                "Write it without quotes, or remove the logs entry to use the defaults.",
+            "~/.assistant/config.json isn't valid JSON":
+                "Check the file with python3 -m json.tool ~/.assistant/config.json.",
+            "~/.assistant/config.json can't be read (Is a directory)":
+                "Check the file with python3 -m json.tool ~/.assistant/config.json.",
+            "logs.cap_mb in ~/.assistant/config.json is -5, not a number of 0 or more":
+                "Fix it, or remove the logs entry to use the defaults.",
+        }
+        for problem, fix in cases.items():
+            with mock.patch.object(self.mod.logcap, "cap_logs",
+                                   return_value=self._summary(problem=problem, announce=False)):
+                cards = self.mod.cap_logs_safely()
+            self.assertEqual(cards, [{
+                "key": "log-trim-problem", "tier": "T3", "title": "Log trimming is off",
+                "detail": f"Trimming stays off until this is fixed: {problem}. {fix}"}])
+
+    def test_the_pulse_keeps_the_problem_card_until_the_setting_is_fixed(self):
+        config = self._tmp / ".assistant" / "config.json"
+        _, cards = self._pulse_state({"logs": {"cap_mb": "20"}})
+        self.assertEqual([c["key"] for c in cards], ["log-trim-problem"])
+        _, again = self._pulse_state({"logs": {"cap_mb": "20"}})          # the log line is once a day; the card isn't
+        self.assertEqual([c["key"] for c in again], ["log-trim-problem"])
+        _, fixed = self._pulse_state({"logs": {"cap_mb": 20}})
+        self.assertEqual(fixed, [])
+
+    def _pulse_state(self, config):
+        """Run a pulse with a 30 MB log and `config` for config.json; return the awaiting cards."""
+        big = self._tmp / ".assistant" / "logs" / "world-scanner.out"
+        big.parent.mkdir(parents=True, exist_ok=True)
+        big.write_bytes(b"scan line\n" * (3 * 1024 * 1024))
+        (self._tmp / ".assistant" / "config.json").write_text(json.dumps(config))
+        sent = []
+
+        def run(cmd, input_text=None, **kw):
+            if input_text:
+                sent.append(json.loads(input_text))
+            return (0, "", "")
+        with self._patched(run={"side_effect": run}):
+            sys.argv = ["pulse.py"]
+            self.assertEqual(self.mod.main(), 0)
+        return big, [c for c in sent[-1]["awaiting_input"] if c["key"].startswith("log-trim")]
+
+    def test_the_pulse_shows_the_notice_card_while_it_waits_then_it_goes_away(self):
+        big, cards = self._pulse_state({"mode": "pro"})
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(big.stat().st_size, 30 * self.MB)             # nothing trimmed yet
+        # Once trimming has started the card is gone.
+        state = self._tmp / ".assistant" / "log-cap-state.json"
+        state.write_text(json.dumps({"first_over": time.time() - 90000}))
+        big, cards = self._pulse_state({"mode": "pro"})
+        self.assertEqual(cards, [])
+        self.assertLessEqual(big.stat().st_size, 5 * self.MB)
+
+    def test_an_explicit_logs_entry_means_no_card(self):
+        big, cards = self._pulse_state({"logs": {"cap_mb": 20}})
+        self.assertEqual(cards, [])
+        self.assertLessEqual(big.stat().st_size, 5 * self.MB)
+
+    def test_a_failing_capper_never_stops_the_pulse(self):
+        with mock.patch.object(self.mod.logcap, "cap_logs", side_effect=RuntimeError("boom")):
+            self.mod.cap_logs_safely()
+
+    def _patched(self, **extra):
+        stack = contextlib.ExitStack()
+        stack.enter_context(mock.patch.object(self.mod, "pick_ws_batch", return_value={
+            "to_reclassify": [], "reuse_cached": [], "backed_off": [], "total_ws": 0}))
+        stack.enter_context(mock.patch.object(self.mod, "purge_stale_awaiting"))
+        stack.enter_context(mock.patch.object(self.mod, "pick_open_todos", return_value={"bucket_b": []}))
+        stack.enter_context(mock.patch.object(self.mod, "run", return_value=(0, "", "")))
+        for name, kwargs in extra.items():
+            stack.enter_context(mock.patch.object(self.mod, name, **kwargs))
+        return stack
+
+    def test_the_pulse_trims_an_oversized_log_before_its_first_step(self):
+        big = self._tmp / ".assistant" / "logs" / "world-scanner.out"
+        big.parent.mkdir(parents=True, exist_ok=True)
+        big.write_bytes(b"scan line\n" * (3 * 1024 * 1024))     # 30 MB
+        (self._tmp / ".assistant" / "config.json").write_text('{"logs": {}}')
+        sizes = []
+        with self._patched(self_update_pulse={"side_effect": lambda idx: sizes.append(big.stat().st_size)}):
+            sys.argv = ["pulse.py"]
+            self.assertEqual(self.mod.main(), 0)
+        self.assertEqual(len(sizes), 1)
+        self.assertLessEqual(sizes[0], 5 * 1024 * 1024)       # already trimmed at step 0
+
+    def test_the_pulse_still_trims_when_a_later_step_raises(self):
+        big = self._tmp / ".assistant" / "logs" / "a.log"
+        big.parent.mkdir(parents=True, exist_ok=True)
+        big.write_bytes(b"x" * (21 * 1024 * 1024))
+        (self._tmp / ".assistant" / "config.json").write_text('{"logs": {}}')
+        with self._patched(drain_inbox={"side_effect": RuntimeError("late failure")}):
+            sys.argv = ["pulse.py"]
+            with self.assertRaises(RuntimeError):
+                self.mod.main()
+        self.assertEqual(big.stat().st_size, 0)           # one unbroken line: nothing to keep
+
+    def test_a_dry_run_does_not_trim(self):
+        with self._patched(), mock.patch.object(self.mod, "cap_logs_safely") as cap, \
+                mock.patch("sys.stdout", io.StringIO()):
+            sys.argv = ["pulse.py", "--dry-run"]
+            self.assertEqual(self.mod.main(), 0)
+        cap.assert_not_called()
+
+    def test_the_pulse_completes_when_the_capper_raises(self):
+        with self._patched(), mock.patch.object(self.mod.logcap, "cap_logs", side_effect=RuntimeError("boom")):
+            sys.argv = ["pulse.py"]
+            self.assertEqual(self.mod.main(), 0)
+        self.assertTrue((self._tmp / ".assistant/heartbeat.json").exists())
+
+
 class HelperSubprocessWrapperTests(unittest.TestCase):
     """purge-stale-awaiting / pick-ws-batch / build-ctx / cmux-send /
     save-summary / pick-open-todos / dispatch-todo. These are 1:1
@@ -849,18 +1086,19 @@ class HelperSubprocessWrapperTests(unittest.TestCase):
         with mock.patch.object(self.mod, "run", return_value=(1, "", "fail")):
             out = self.mod.pick_ws_batch()
         self.assertEqual(out, {"to_reclassify": [], "reuse_cached": [],
-                               "backed_off": [], "total_ws": 0})
+                               "backed_off": [], "total_ws": 0, "unavailable": True})
 
     def test_pick_ws_batch_returns_default_on_bad_json(self):
         with mock.patch.object(self.mod, "run",
                                return_value=(0, "not json", "")):
             out = self.mod.pick_ws_batch()
         self.assertEqual(out["total_ws"], 0)
+        self.assertTrue(out["unavailable"])
 
     def test_build_ctx_parses_json(self):
         payload = {"ws_ref": "workspace:1", "transcript_path": None,
                    "agent_status": "idle", "last_turn_age_sec": 30,
-                   "cwd_dirty": False, "cwd_unpushed": False, "is_protected": False,
+                   "is_protected": False,
                    "title": "t", "cwd": "/"}
         with mock.patch.object(self.mod, "run",
                                return_value=(0, json.dumps(payload), "")):
@@ -1204,7 +1442,15 @@ class MainPipelineTests(unittest.TestCase):
     def setUp(self):
         self._tmp_obj = TemporaryDirectory()
         self._tmp = fixture_home(Path(self._tmp_obj.name))
+        # These tests drive the Observer, which is off by default; opt in.
+        (self._tmp / ".assistant/config.json").write_text(
+            json.dumps({"observer": {"enabled": True}}))
         self.mod = load_pulse(self._tmp)
+        # The Observer's contexts are the busy count here; the mechanical scan
+        # has its own tests (test_busy_session_cap.py).
+        scan = mock.patch.object(self.mod, "scan_busy_ws", return_value=set())
+        scan.start()
+        self.addCleanup(scan.stop)
 
     def tearDown(self):
         self._tmp_obj.cleanup()
@@ -1223,7 +1469,7 @@ class MainPipelineTests(unittest.TestCase):
             with mock.patch.object(self.mod, "build_ctx", return_value={
                     "ws_ref": "workspace:1", "transcript_path": None,
                     "agent_status": "idle", "last_turn_age_sec": 0,
-                    "cwd_dirty": False, "cwd_unpushed": False, "is_protected": False,
+                    "is_protected": False,
                     "title": "t", "cwd": "/"}):
                 with mock.patch.object(self.mod, "call_observer_batch") as obs_mock:
                     with mock.patch.object(self.mod, "pick_open_todos",
@@ -1250,7 +1496,7 @@ class MainPipelineTests(unittest.TestCase):
                 with mock.patch.object(self.mod, "build_ctx", return_value={
                         "ws_ref": "workspace:1", "transcript_path": None,
                         "agent_status": "idle", "last_turn_age_sec": 0,
-                        "cwd_dirty": False, "cwd_unpushed": False, "is_protected": False,
+                        "is_protected": False,
                         "title": "t", "cwd": "/"}):
                     with mock.patch.object(
                             self.mod, "call_observer_batch",
@@ -1268,6 +1514,63 @@ class MainPipelineTests(unittest.TestCase):
         # Heartbeat written.
         hb = json.loads((self._tmp / ".assistant/heartbeat.json").read_text())
         self.assertEqual(hb["model"], "python-mechanical")
+
+    def test_a_ready_copilot_workspace_gets_a_card_not_a_merge_dispatch(self):
+        dispatched = {}
+        for provider in ("copilot", "claude", "droid"):
+            calls = []
+            with mock.patch.object(self.mod, "pick_ws_batch", return_value={
+                    "to_reclassify": [{"ref": "workspace:1", "title": "t", "cwd": "/",
+                                       "pr_refs": ["77"]}],
+                    "reuse_cached": [], "backed_off": [], "total_ws": 1}), \
+                    mock.patch.object(self.mod, "purge_stale_awaiting"), \
+                    mock.patch.object(self.mod, "build_ctx", return_value={
+                        "ws_ref": "workspace:1", "transcript_path": None,
+                        "agent_status": "idle", "last_turn_age_sec": 0,
+                        "is_protected": False,
+                        "title": "t", "cwd": "/", "observation_identity": {
+                            "workspace_id": "W1", "observed_sessions": [
+                                {"surface_id": "S1", "provider": provider, "session_id": "s"}]}}), \
+                    mock.patch.object(self.mod, "call_observer_batch", return_value=({
+                        "workspace:1": {"ws_ref": "workspace:1", "verdict": "ready_for_merge",
+                                        "summary": "s", "next": "n"}}, {})), \
+                    mock.patch.object(self.mod, "save_summary"), \
+                    mock.patch.object(self.mod, "pick_open_todos", return_value={"bucket_b": []}), \
+                    mock.patch.object(self.mod, "run", return_value=(0, "", "")), \
+                    mock.patch.object(self.mod, "run_merge_pr_dispatch",
+                                      lambda *a, **k: calls.append(a) or {"outcome": "submitted"}):
+                self.assertEqual(self._run_main([]), 0)
+            dispatched[provider] = calls
+        self.assertEqual(dispatched, {"copilot": [], "claude": [("workspace:1", "77")],
+                                      "droid": [("workspace:1", "77")]})
+
+    def test_a_carried_copilot_verdict_still_knows_the_workspace_runs_copilot(self):
+        seen = []
+        real = self.mod.execute_verdict
+
+        def spy(ws, verdict, awaiting, carry=False, copilot=False):
+            seen.append((carry, copilot))
+            return real(ws, verdict, awaiting, carry=carry, copilot=copilot)
+
+        prior = {"verdict": "ready_for_merge", "summary": "s", "next": "n",
+                 "obs_input_hash": "same", "carry_count": 0}
+        with mock.patch.object(self.mod, "pick_ws_batch", return_value={
+                "to_reclassify": [{"ref": "workspace:1", "title": "t", "cwd": "/",
+                                   "pr_refs": ["77"]}],
+                "reuse_cached": [], "backed_off": [], "total_ws": 1}), \
+                mock.patch.object(self.mod, "purge_stale_awaiting"), \
+                mock.patch.object(self.mod, "build_ctx", return_value={
+                    "ws_ref": "workspace:1", "transcript_path": None, "agent_provider": "copilot",
+                    "agent_status": "idle", "last_turn_age_sec": 0, "title": "t", "cwd": "/"}), \
+                mock.patch.object(self.mod, "obs_input_hash", return_value="same"), \
+                mock.patch.object(self.mod, "load_prior_summary", return_value=prior), \
+                mock.patch.object(self.mod, "call_observer_batch", return_value=({}, {})), \
+                mock.patch.object(self.mod, "save_summary"), \
+                mock.patch.object(self.mod, "pick_open_todos", return_value={"bucket_b": []}), \
+                mock.patch.object(self.mod, "run", return_value=(0, "", "")), \
+                mock.patch.object(self.mod, "execute_verdict", spy):
+            self.assertEqual(self._run_main([]), 0)
+        self.assertEqual(seen, [(True, True)])
 
     def test_drains_inbox_and_records_count(self):
         # Drop two inbox files; main should delete both.
@@ -1315,7 +1618,7 @@ class MainPipelineTests(unittest.TestCase):
                 mock.patch.object(self.mod, "build_ctx", return_value={
                     "ws_ref": "workspace:1", "transcript_path": None,
                     "agent_status": "idle", "last_turn_age_sec": 0,
-                    "cwd_dirty": False, "cwd_unpushed": False, "is_protected": False,
+                    "is_protected": False,
                     "title": "t", "cwd": "/"}), \
                 mock.patch.object(self.mod, "call_observer_batch") as observe, \
                 mock.patch.object(self.mod, "run_observer_audit", return_value={}) as audit, \
@@ -1340,7 +1643,7 @@ class MainPipelineTests(unittest.TestCase):
                 with mock.patch.object(self.mod, "build_ctx", return_value={
                         "ws_ref": "workspace:1", "transcript_path": None,
                         "agent_status": "idle", "last_turn_age_sec": 0,
-                        "cwd_dirty": False, "cwd_unpushed": False, "is_protected": False,
+                        "is_protected": False,
                         "title": "t", "cwd": "/"}):
                     # Observer returns empty dict — no verdict for ws:1.
                     with mock.patch.object(self.mod, "call_observer_batch",
@@ -1372,7 +1675,7 @@ class MainPipelineTests(unittest.TestCase):
                 with mock.patch.object(self.mod, "build_ctx", return_value={
                         "ws_ref": "workspace:1", "transcript_path": None,
                         "agent_status": "working", "last_turn_age_sec": 0,
-                        "cwd_dirty": False, "cwd_unpushed": False, "is_protected": False,
+                        "is_protected": False,
                         "title": "t", "cwd": "/"}):
                     with mock.patch.object(self.mod, "call_observer_batch",
                                            return_value=({"workspace:1": {
@@ -1447,7 +1750,7 @@ class MainPipelineTests(unittest.TestCase):
 
     CTX_WS1 = {"ws_ref": "workspace:1", "transcript_path": None,
                "agent_status": "idle", "last_turn_age_sec": 0,
-               "cwd_dirty": False, "cwd_unpushed": False, "is_protected": False,
+               "is_protected": False,
                "title": "t", "cwd": "/"}
 
     def _metrics_records(self):

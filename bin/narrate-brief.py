@@ -61,8 +61,6 @@ def narrator_runs_dir() -> Path:
 DEFAULT_MODEL = (os.environ.get("NARRATOR_MODEL")
                  or os.environ.get("OBSERVER_MODEL")
                  or model_tiers.model_for("balanced"))
-DEFAULT_CLAUDE_BIN = os.environ.get(
-    "CLAUDE_BIN", str(Path.home() / ".local/bin/claude"))
 # The narrator reads inline brief facts only (no transcripts, no repo) — the
 # short triage/strategist leash, never the Observer's.
 NARRATOR_TIMEOUT_SEC = int(os.environ.get("NARRATOR_TIMEOUT_SEC", "180"))
@@ -174,7 +172,8 @@ def _meter(out: str, rc: int, prompt_len: int, wall_ms: int,
         metering.append_cost_row(
             caller="narrator", model=model, usage=usage,
             wall_ms=wall_ms, status="failed" if failed else "ok",
-            provider=provider)
+            provider=provider,
+            error=metering.failure_reason(rc) if failed else None)
     except Exception as e:  # noqa: BLE001 — metering must never break the pulse
         log.warning("narrator metering capture failed (ignored): %s", e)
     return usage
@@ -184,19 +183,27 @@ def _spawn(prompt: str, run_dir: Path, out_name: str) -> tuple[int, str, str]:
     """Spawn ONE narrator subprocess. The model writes `out_name` into run_dir;
     stdout is the CLI JSON envelope (metering only). Archives
     prompt/stdout/stderr/meta like the Strategist/Observer runs."""
-    run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "prompt.md").write_text(prompt)
     if str(BIN) not in sys.path:
         sys.path.insert(0, str(BIN))
+    import metering  # noqa: PLC0415
     import llm_runner  # noqa: PLC0415
     route = llm_runner.load_route_config(
         llm_runner.config_path(home=_home()), "narrator")
     provider = llm_runner.select_provider(route, [str(run_dir)])
     model = route.model_for(DEFAULT_MODEL)
+    # A changed model or provider lifts the pause at once.
+    paused = metering.paused_note("narrator", provider, model)
+    if paused:
+        # Before the run folder exists, so a paused job leaves nothing behind.
+        # 75 is "try again later"; the callers treat any non-zero exit as no output.
+        log.info("narrator skipped: %s", paused)
+        return 75, "", paused
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "prompt.md").write_text(prompt)
     result = llm_runner.invoke(
         provider=provider, prompt=prompt, model=model, run_dir=run_dir,
         timeout=NARRATOR_TIMEOUT_SEC, run=run,
-        claude_bin=DEFAULT_CLAUDE_BIN, droid_bin=route.droid_bin,
+        droid_bin=route.droid_bin,
         reasoning_effort=route.reasoning_effort, local_url=route.local_url,
         disable_tools=True, tag="assistant-narrator")
     if result.result_text:

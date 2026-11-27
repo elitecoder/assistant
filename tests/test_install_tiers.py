@@ -123,3 +123,10 @@ def test_token_gated_daemons_never_auto_load_even_with_all():
     assert "would reload com.assistant.assistant-comms" not in out
     assert "would reload com.assistant.slack-reactor" not in out
     assert "assistant-comms.plist — token-gated" in out
+
+
+def test_install_says_the_observer_is_off_by_default_and_how_to_turn_it_on():
+    out = _dryrun()
+    assert "The Observer is off by default" in out
+    assert 'set {"observer": {"enabled": true}} in ~/.assistant/config.json' in out
+    assert "with ASSISTANT_WATCHER=1" in out

@@ -1,14 +1,20 @@
 """Keep installer tests away from the host's services."""
 
 import os
+import pwd
 import shutil
 import sys
 from pathlib import Path
 
 
+def real_home() -> Path:
+    """The home folder of the person running the tests, whatever HOME says (the test run moves HOME)."""
+    return Path(pwd.getpwuid(os.getuid()).pw_dir).resolve()
+
+
 def installer_env(home: Path) -> dict[str, str]:
     home = home.resolve()
-    if home == Path.home().resolve():
+    if home in (real_home(), Path.home().resolve()):
         raise ValueError("Installer tests require an isolated HOME")
     stubbin = home / "stubbin"
     stubbin.mkdir(parents=True)
@@ -33,11 +39,12 @@ def installer_env(home: Path) -> dict[str, str]:
     )
     cmux.chmod(0o755)
     bash_env = home / "installer-test.bash"
-    # install.sh calls cmux by absolute path when installing Factory hooks.
+    # The fixed app path is recorded in fixed-cmux.log, then forwarded.
     bash_env.write_text(
         '/bin/launchctl() { "$ASSISTANT_TEST_LAUNCHCTL" "$@"; }\n'
         '/usr/bin/launchctl() { "$ASSISTANT_TEST_LAUNCHCTL" "$@"; }\n'
         '/Applications/cmux.app/Contents/Resources/bin/cmux() {\n'
+        '  printf "%s\\n" "$*" >> "$HOME/fixed-cmux.log"\n'
         '  "$CMUX_BIN" "$@"\n'
         '}\n'
         'mktemp() {\n'

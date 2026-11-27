@@ -18,6 +18,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from html import escape as e
 from pathlib import Path
@@ -27,10 +28,16 @@ HOME = Path(os.environ["HOME"])
 REPO = Path(__file__).resolve().parents[1]  # repo root (src/ for the connector base)
 if str(REPO / "src") not in sys.path:
     sys.path.insert(0, str(REPO / "src"))
+sys.path.insert(0, str(REPO / "bin"))  # loaded by path (tests/drive_dashboard_overview.py)
+sys.path.insert(1, str(REPO))
 
+import agent_session  # noqa: E402
+from assistant import apitoken
 from assistant import brief as brief_store
+from assistant import failwatch
 from assistant import mode
 from assistant import session_guidance
+from work_queue import config as work_queue_config
 
 WORLD_PATH = HOME / ".claude/cache/world.json"
 ASSISTANT_STATE = HOME / ".claude/cache/assistant-state.json"
@@ -234,7 +241,17 @@ def render_decisions(world):
     rows = rows[:FEED_LIMIT]
 
     if not rows:
-        return f'<div class="empty">No decisions in the last {ACTIVITY_HOURS}h. (ledger: {LEDGER_PATH})</div>', 0
+        note = ""
+        if not mode.job_settings()["decisions"]:
+            try:
+                still_open = bool(brief_store.read_current_queue())
+            except (OSError, ValueError, TypeError, OverflowError):
+                still_open = False
+            if still_open:
+                note = ('<p class="job-off" data-job="decisions"><strong>Decisions are off.</strong> '
+                        'Older ones still open are under Awaiting your input.</p>')
+        return (f'<div class="empty">No decisions in the last {ACTIVITY_HOURS}h. (ledger: {LEDGER_PATH})</div>'
+                + note), 0
 
     # Render
     out = ['<div class="feed">']
@@ -373,6 +390,93 @@ def render_mode_switch(pro: bool, error: str | None = None) -> str:
             '<span class="meta" id="mode-status" role="status"></span></div>')
 
 
+def render_observer_setting() -> str:
+    """Settings line that says whether the Observer is on and how to change it."""
+    if mode.observer_enabled():
+        return ('<p class="observer-setting" data-observer="on"><strong>The Observer is on.</strong> '
+                'It checks each changed workspace when the pulse runs with '
+                '<code>ASSISTANT_WATCHER=1</code>. To turn it off, set <code>"enabled"</code> to '
+                '<code>false</code> in <code>~/.assistant/config.json</code>.</p>')
+    return ('<p class="observer-setting" data-observer="off"><strong>The Observer is off.</strong> '
+            "It's off by default, so no model checks your workspaces and each keeps its last "
+            'verdict. To turn it on, set <code>{"observer": {"enabled": true}}</code> in '
+            '<code>~/.assistant/config.json</code> and run the pulse with '
+            '<code>ASSISTANT_WATCHER=1</code>.</p>')
+
+
+# Plain-words copy for the three jobs that are off until someone turns them on:
+# the name with its verb, what it did, "it" or "them" for the sentence after,
+# and what to expect once it is on.
+JOB_COPY = {
+    "decisions": ("Decisions are", "Assistant no longer turns GitHub and session events into a decision list.",
+                  "them", "New ones appear from Assistant's next check."),
+    "brief": ("The morning brief is", "Assistant no longer saves a brief each morning.",
+              "it", "A new one is saved each morning, at the first check after {wake}."),
+    "planner": ("The goals planner is", "Assistant no longer plans next steps for your goals or records their progress.",
+                "it", "It plans a next step for a stalled goal at Assistant's next check."),
+}
+
+
+def _wake_label() -> str:
+    hour = brief_store.wake_hour()
+    return f"{hour % 12 or 12} {'AM' if hour < 12 else 'PM'}"
+
+
+def _job_turn_on(job: str) -> str:
+    return (f'add <code>"jobs": {{"{job}": true}}</code> to <code>~/.assistant/config.json</code>, '
+            f'next to <code>"mode"</code>. Write <code>true</code> without quotes. '
+            f"It takes effect at Assistant's next check")
+
+
+# Short notices for the Notifications tab; the steps live under Settings.
+SEE_SETTINGS = "under Settings and background services"
+
+
+def decisions_off_notice(open_ones: bool) -> str:
+    if open_ones:
+        body = ("<strong>Decisions are off.</strong> No new ones are being created; these were made "
+                f"earlier. How to turn them on is {SEE_SETTINGS}.")
+    else:
+        body = ("<strong>Decisions are off.</strong> Nothing new is listed here, and Completed actions "
+                f"and Other updates get no new entries. How to turn them on is {SEE_SETTINGS}.")
+    return f'<p class="job-off" data-job="decisions">{body}</p>'
+
+
+def brief_off_notice() -> str:
+    return ('<p class="job-off" data-job="brief"><strong>The morning brief is off.</strong> This tab is a '
+            'live summary of your open notifications; no copy is saved each morning. '
+            f'How to turn it on is {SEE_SETTINGS}.</p>')
+
+
+def render_job_settings() -> str:
+    """One settings line per opt-in job: name, on or off, and the setting."""
+    settings = mode.job_settings()
+    lines = []
+    for job in mode.JOBS:
+        name, did, pronoun, expect = JOB_COPY[job]
+        ignored = mode.ignored_job_value(job)
+        if settings[job]:
+            lines.append(f'<p class="job-setting" data-job="{job}" data-state="on"><strong>{name} on.</strong> '
+                         f'{expect.format(wake=_wake_label())} To turn {pronoun} off, set <code>"{job}"</code> to '
+                         f'<code>false</code> under <code>"jobs"</code> in <code>~/.assistant/config.json</code>.</p>')
+        elif ignored is not None:
+            lines.append(f'<p class="job-setting" data-job="{job}" data-state="off" data-ignored="true">'
+                         f'<strong>{name} off.</strong> <code>"{job}"</code> is set to <code>{e(ignored)}</code> '
+                         f'in <code>~/.assistant/config.json</code>. Only <code>true</code> or <code>false</code> '
+                         f'without quotes is read, so {name[0].lower() + name[1:]} off.</p>')
+        else:
+            lines.append(f'<p class="job-setting" data-job="{job}" data-state="off"><strong>{name} off.</strong> '
+                         f'{did} To turn {pronoun} on, {_job_turn_on(job)}.</p>')
+    return "".join(lines)
+
+
+def no_workspace_summaries() -> str:
+    if mode.observer_enabled():
+        return '<div class="muted">No observer summaries yet — waiting for first pulse.</div>'
+    return ('<div class="muted">No workspace summaries. The Observer is off, so none are written. '
+            'Settings and background services says how to turn it on.</div>')
+
+
 def render_restart_alert() -> str:
     """A top-of-page alert while an update couldn't restart a service."""
     try:
@@ -384,6 +488,147 @@ def render_restart_alert() -> str:
             f'<span class="pulse-text">An update couldn\'t restart {e(", ".join(labels))}, so it '
             'still runs old code. The hourly update retries; run ./install.sh --apply to '
             'retry now.</span></div>')
+
+
+FAILURE_NAMES = {
+    "self-update": "Self-update",
+    "dashboard-render": "Refreshing this page",
+    "model:lessons": "Lesson extraction",
+    "model:strategist": "The strategist",
+    "model:narrator": "The morning brief",
+    "model:observer-audit": "The Observer audit",
+    "model:triage": "Triage",
+    "model:work_queue": "The Work queue refresh",
+    "model:slack_focus": "The Slack tab refresh",
+}
+MERGE_CHECK = "ready-for-merge:"
+FAILURE_LINES_SHOWN = 2
+# Model jobs that can't know their model before the call, so a fix to the
+# model can't lift their pause by itself.
+PAUSE_NEEDS_RESET = ("model:observer-audit",)
+
+
+def _failure_time(ts: float, now: float) -> str:
+    """Local time: just the clock today, the weekday within the week, and the
+    date as well once it is more than 6 days away."""
+    when, today = datetime.fromtimestamp(ts), datetime.fromtimestamp(now)
+    days = abs((when.date() - today.date()).days)
+    if days == 0:
+        return when.strftime("%H:%M")
+    return when.strftime("%A %H:%M" if days <= 6 else "%A %-d %B %H:%M")
+
+
+def _clean_error(sample: str) -> str:
+    """The saved error, shortened for a person: JSON blocks removed, at most 100 characters."""
+    text = str(sample)
+    while True:
+        shorter = re.sub(r"\{[^{}]*\}", "", text)
+        if shorter == text:
+            break
+        text = shorter
+    text = " ".join(text.split()).rstrip(" .:")
+    if len(text) > 100:
+        text = text[:99].rstrip() + "…"
+    return text or "no details were given"
+
+
+def _merge_check_line(rows: list[dict], world: dict) -> str:
+    """One line for every session flagged ready to merge with no pull request.
+    Sessions are named only when every one of them has a title, so the line
+    never reads as if only the named ones were affected."""
+    titles = {}
+    for w in world.get("workspaces", []) or []:
+        if not isinstance(w, dict):
+            continue
+        ref = w.get("ws_ref") or w.get("ref") or w.get("workspace_ref")
+        if ref and w.get("title"):
+            titles[ref] = " ".join(str(w["title"]).split())[:60]
+    refs = [r["component"][len(MERGE_CHECK):] for r in rows]
+    n = len(rows)
+    sessions = f"{n} session{'s' if n != 1 else ''}"
+    if n <= 3 and all(ref in titles for ref in refs):
+        sessions += f" ({', '.join(titles[ref] for ref in refs)})"
+    lack = "it has no" if n == 1 else "neither has a" if n == 2 else "none of them has a"
+    return (f"Assistant has flagged {sessions} as ready to merge, but {lack} pull request linked. "
+            f"Open {'the session' if n == 1 else 'each session'} and link its pull request, "
+            "or tell it the work isn't ready.")
+
+
+def _failure_line(row: dict, now: float) -> tuple[int, str]:
+    """(weight, html) for one repeating failure."""
+    component = str(row.get("component", ""))
+    name = FAILURE_NAMES.get(component) or f"A background job ({component.rsplit(':', 1)[-1]})"
+    streak = int(row["streak"])
+    since = _failure_time(float(row.get("streak_first_ts") or row["first_ts"]), now)
+    html = e(f"{name} has failed {streak} times in a row since {since}. "
+             f"The error was: {_clean_error(row.get('sample', ''))}.")
+    until = failwatch.pause_in_force(row, now)
+    if until and component == "self-update":
+        # sys.executable is the interpreter the services run under: it is the
+        # one rendering this page.
+        command = f"{shlex.quote(sys.executable)} {shlex.quote(str(REPO / 'bin/self_update.py'))} --force"
+        html += (e(f" It tries again by itself at {_failure_time(until, now)}, or as soon as the branch "
+                   "or remote it updates from changes. To try now, run ")
+                 + f"<code>{e(command)}</code>" + e(" in a terminal."))
+    elif until:
+        html += e(f" It tries again at {_failure_time(until, now)}. "
+                  "You don't need to do anything unless it keeps failing.")
+        if component in PAUSE_NEEDS_RESET:
+            html += e(" If you've fixed the cause, delete ~/.assistant/failures.json "
+                      "and it tries again at its next run.")
+    return streak, html
+
+
+def render_failure_alerts(now: float | None = None, world: dict | None = None) -> str:
+    """One top-of-page box for failures that keep happening the same way: what
+    failed, how many times in a row, since when, the error, and what happens
+    next. Merge checks with no pull request share one line. Two lines show; the
+    rest are in a closed <details>. Never raises: a bad row is left out, and on
+    any other error the page simply has no box."""
+    try:
+        now = datetime.now().timestamp() if now is None else now
+        merge, items = [], []
+        for row in failwatch.repeated(now=now, limit=200):
+            try:
+                if str(row.get("component", "")).startswith(MERGE_CHECK):
+                    merge.append({**row, "streak": int(row["streak"])})
+                else:
+                    items.append(_failure_line(row, now))
+            except Exception:  # noqa: BLE001 — a corrupt row is skipped, the rest still show
+                continue
+        if merge:
+            items.append((sum(r["streak"] for r in merge),
+                          e(_merge_check_line(merge, world if isinstance(world, dict) else {}))))
+        if not items:
+            return ""
+        items.sort(key=lambda item: -item[0])
+        shown = "<br>".join(html for _, html in items[:FAILURE_LINES_SHOWN])
+        rest = items[FAILURE_LINES_SHOWN:]
+        if rest:
+            # The key lets the page reopen this after its 15-second refresh, like its other folds.
+            shown += ('<details data-context-key="repeated-failures"><summary>'
+                      + e(f"and {len(rest)} more that keep repeating") + "</summary>"
+                      + "<br>".join(html for _, html in rest) + "</details>")
+        return ('<div class="pulse-health pulse-bad" role="alert" data-failure="repeated">'
+                f'<span class="pulse-dot"></span><span class="pulse-text">{shown}</span></div>')
+    except Exception:  # noqa: BLE001 — the failure box must never take the page down
+        return ""
+
+
+def render_log_trim_notice() -> str:
+    """Top-of-page notices about log trimming: the 24-hour notice before the
+    first trim, or why trimming is off or waiting. They sit above the tab bar so
+    they show on every tab in both modes; the same cards also stay in the
+    Awaiting input list. Amber, not the red error style."""
+    cards = load_assistant_state().get("awaiting_input") or []
+    bars = []
+    for card in cards:
+        if isinstance(card, dict) and card.get("key") in ("log-trim-notice", "log-trim-problem"):
+            bars.append('<div class="pulse-health pulse-warn log-trim-notice" role="status">'
+                        '<span class="pulse-dot"></span>'
+                        f'<span class="pulse-text"><strong>{e(card.get("title") or "Log trimming")}</strong> '
+                        f'{e(card.get("detail") or "")}</span></div>')
+    return "".join(bars)
 
 
 def render_metering_stats():
@@ -601,12 +846,14 @@ def _render_brief_tab_inner():
     date_str = brief.get("date") or saved_date
     built_at = _local_hhmm(brief.get("epoch")) if live else ""
     current = False
+    log_missing = False
     try:
         queue = brief_store.read_current_queue()
         current = True
         queue_notice = (f"Built {built_at} from your current notifications."
                         if live else "This list uses your saved notifications, read when the page was built.")
     except (OSError, ValueError, TypeError, OverflowError) as exc:
+        log_missing = isinstance(exc, FileNotFoundError)
         queue = saved.get("queue") or []
         queue_notice = (
             f"Current notifications unavailable ({exc}). "
@@ -629,6 +876,8 @@ def _render_brief_tab_inner():
     source_label = " · ".join(sources) or "No notification groups"
     count_label = (f"{source_label} · {alert_count} raw alerts"
                    if counts_available else "Notification counts unavailable")
+    brief_off = not mode.job_settings()["brief"]
+    brief_off_html = brief_off_notice() if brief_off else ""
     brief = {**brief, "queue": queue,
              "counts": {**(brief.get("counts") or {}), "open_decisions": len(queue)}}
     receipts = brief.get("handled_overnight") or []
@@ -675,6 +924,10 @@ def _render_brief_tab_inner():
         f'<div class="stat brief-trend"><div class="v">{alert_count}'
         f'{spark}</div>'
         f'<div class="k">Individual alerts · daily totals</div></div>')
+    # Nothing expires for going unseen while the brief is off.
+    unseen_tile = "" if brief_off else (
+        f'<div class="stat"><div class="v">{int(health.get("expired_unseen_24h") or 0)}</div>'
+        '<div class="k">Expired unseen · 24h</div></div>')
     stats = f"""
 <div class="stats">
   <div class="stat"><div class="v">{topic_count}</div><div class="k">Notification groups · not workspaces</div></div>
@@ -682,7 +935,7 @@ def _render_brief_tab_inner():
   <div class="stat"><div class="v">{len(receipts)}</div><div class="k">Handled overnight</div></div>
   <div class="stat"><div class="v">{sum(len(v) for v in digest.values())}</div><div class="k">FYI digest rows</div></div>
   <div class="stat"><div class="v">{int(interrupts.get('delivered_24h') or 0)} / {int(interrupts.get('denied_24h') or 0)}</div><div class="k">Interrupts delivered / denied</div></div>
-  <div class="stat"><div class="v">{int(health.get('expired_unseen_24h') or 0)}</div><div class="k">Expired unseen · 24h</div></div>
+  {unseen_tile}
 </div>"""
 
     # ─── 1. decision queue ───
@@ -777,6 +1030,11 @@ def _render_brief_tab_inner():
     else:
         queue_html = ('<div class="empty">No open notifications in the current log.</div>'
                       if current else '<div class="empty">The current list is unavailable, so its count is unknown.</div>')
+    if not mode.job_settings()["decisions"]:
+        # With decisions off the log may never have been created; say so
+        # instead of calling a log that was never written unavailable.
+        notice = decisions_off_notice(bool(queue))
+        queue_html = notice if not queue and (current or log_missing) else notice + queue_html
 
     # ─── 2. handled overnight ───
     if receipts:
@@ -931,6 +1189,8 @@ def _render_brief_tab_inner():
 
     seen = (BRIEF_DIR / f"brief-{saved_date}.seen.json").exists()
     seen_note = "seen" if seen else "unseen — viewing this tab records it"
+    if brief_off:
+        seen_note = "No copy is saved each morning"
 
     # ─── editorial header: eyebrow · good morning · voice summary ───
     summary_txt = (f"{count_label}. "
@@ -938,12 +1198,24 @@ def _render_brief_tab_inner():
     voice_tag = '<span class="voice-tag">notification summary</span>'
     summary_html = (
         f'<p class="brief-summary template-voice">{e(summary_txt)}{voice_tag}</p>')
+    eyebrow = f"Brief · built {built_at}" if built_at else f"Brief · saved {date_str}"
+    if brief_off:
+        eyebrow = (f"Live summary · updated {built_at}" if built_at
+                   else f"Last saved brief · {date_str}" if date_str else "Live summary unavailable")
     header_html = (
-        f'<div class="brief-eyebrow">{e(f"Brief · built {built_at}" if built_at else f"Brief · saved {date_str}")}</div>'
+        f'<div class="brief-eyebrow">{e(eyebrow)}</div>'
         '<h1 class="brief-hello">Notifications, separate from your sessions</h1>'
         f'{summary_html}')
 
-    date_attribute = f' data-brief-date="{e(saved_date)}"' if saved else ""
+    # With the brief off, viewing the tab records nothing, so the page doesn't
+    # send the "seen" signal.
+    footer_label = "Built" if live else "Summary saved"
+    if brief_off:
+        footer_label = "Live summary built" if live else "Last saved brief from"
+    stamp = brief.get("ts") or "?"
+    if brief_off and not live and not brief.get("ts"):
+        footer_label, stamp = "Live summary unavailable", ""
+    date_attribute = f' data-brief-date="{e(saved_date)}"' if saved and not brief_off else ""
     html = f"""
 <div class="brief-root"{date_attribute}>
 {header_html}
@@ -952,6 +1224,7 @@ def _render_brief_tab_inner():
 <button class="btn" onclick="showTab('overview')">Back to sessions</button>
 <p class="snapshot-status" data-current-queue="{str(current).lower()}">{e(queue_notice)}</p>
 <p class="meta">{e(snapshot_notice)} {e(focus_notice)}</p>
+{brief_off_html}
 {stats}
 
 <div class="section">
@@ -975,7 +1248,7 @@ def _render_brief_tab_inner():
   {budget_note}
 </div>
 
-<div class="brief-footer">{e("Built" if live else "Summary saved")} {e(brief.get('ts') or '?')}. {e(seen_note)}.</div>
+<div class="brief-footer">{e((footer_label + " " + stamp).strip())}. {e(seen_note)}.</div>
 <details class="brief-footer"><summary>Technical details</summary>
 <p>The brief rebuilds every time the page updates. To save today's copy, run <code>python3 bin/build-morning-brief.py</code>.</p>
 </details>
@@ -1029,6 +1302,76 @@ def render_decisions_tab(world):
 """, awaiting_n if fresh else None
 
 
+def last_activity(transcript_path: str | None, max_chars: int = 200) -> str | None:
+    """Return the most recent assistant TEXT turn from the transcript.
+    Skips tool_use blocks entirely — the user cares what the agent is
+    SAYING, not which tool it's invoking. None if no transcript or no
+    text turn found.
+
+    Reads only the tail (~32KB) — agents can emit many tool_uses between
+    text turns. Copilot can log hundreds of KB of model events after its last
+    reply, so its tail is ~256KB, then ~4MB when that holds no reply."""
+    if not transcript_path or not os.path.exists(transcript_path):
+        return None
+    copilot = agent_session.agent_from_transcript(transcript_path) == agent_session.COPILOT
+    for window in ((262144, 4194304) if copilot else (32768,)):
+        try:
+            size = os.path.getsize(transcript_path)
+            with open(transcript_path, "rb") as f:
+                f.seek(max(0, size - window))
+                tail = f.read().decode("utf-8", errors="replace")
+        except Exception:
+            return None
+        text = _last_assistant_text(tail, max_chars)
+        if text or size <= window:
+            return text
+    return None
+
+
+def _last_assistant_text(tail: str, max_chars: int) -> str | None:
+    for line in reversed(tail.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except Exception:
+            continue
+        if agent_session.record_role(d) != "assistant":
+            continue
+        content = agent_session.record_content(d) or []
+        if isinstance(content, str):
+            text = " ".join(content.split()).strip()
+            if text:
+                return (text[:max_chars - 1] + "…"
+                        if len(text) > max_chars else text)
+        if not isinstance(content, list):
+            continue
+        for c in reversed(content):
+            if not isinstance(c, dict):
+                continue
+            if c.get("type") != "text":
+                continue
+            text = (c.get("text", "") or "").strip()
+            if not text:
+                continue
+            text = " ".join(text.split())  # collapse whitespace
+            if len(text) > max_chars:
+                text = text[:max_chars - 1] + "…"
+            return text
+    return None
+
+
+def session_agent_status(sess: dict | None) -> str | None:
+    """"working" when the last assistant turn was a tool_use or a tool call
+    is still in flight (Copilot's tool requests carry no text), "idle"
+    otherwise, None with no session."""
+    if not sess:
+        return None
+    text = (sess.get("last_assistant") or {}).get("text", "") or ""
+    return "working" if text.startswith("[tool_use:") or sess.get("pending_tool_use") is True else "idle"
+
+
 def render_workspaces_tab():
     """Read ~/.assistant/observer-summaries/<ws>.json (one file per workspace,
     written each pulse by the Assistant) and render a row per workspace with
@@ -1040,7 +1383,7 @@ def render_workspaces_tab():
     happen here."""
     summaries_dir = HOME / ".assistant/observer-summaries"
     if not summaries_dir.exists():
-        return '<div class="muted">No observer summaries yet — waiting for first pulse.</div>', 0
+        return no_workspace_summaries(), 0
 
     # Read the back-off list — those workspaces should NOT appear as rows
     # in the Workspaces tab (the Assistant ignores them, so the dashboard
@@ -1100,61 +1443,6 @@ def render_workspaces_tab():
                 return s
         return None
 
-    def last_activity(transcript_path: str | None, max_chars: int = 200) -> str | None:
-        """Return the most recent assistant TEXT turn from the transcript.
-        Skips tool_use blocks entirely — the user cares what the agent is
-        SAYING, not which tool it's invoking. None if no transcript or no
-        text turn found.
-
-        Reads only the tail (~32KB) — agents can emit many tool_uses
-        between text turns, so we need a bigger window than the 12KB
-        used for tool_use scanning."""
-        if not transcript_path or not os.path.exists(transcript_path):
-            return None
-        try:
-            size = os.path.getsize(transcript_path)
-            with open(transcript_path, "rb") as f:
-                f.seek(max(0, size - 32768))
-                tail = f.read().decode("utf-8", errors="replace")
-        except Exception:
-            return None
-        for line in reversed(tail.splitlines()):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                d = json.loads(line)
-            except Exception:
-                continue
-            msg = d.get("message", {})
-            if not isinstance(msg, dict):
-                continue
-            if not (d.get("type") == "assistant"
-                    or (d.get("type") == "message"
-                        and msg.get("role") == "assistant")):
-                continue
-            content = msg.get("content", [])
-            if isinstance(content, str):
-                text = " ".join(content.split()).strip()
-                if text:
-                    return (text[:max_chars - 1] + "…"
-                            if len(text) > max_chars else text)
-            if not isinstance(content, list):
-                continue
-            for c in reversed(content):
-                if not isinstance(c, dict):
-                    continue
-                if c.get("type") != "text":
-                    continue
-                text = (c.get("text", "") or "").strip()
-                if not text:
-                    continue
-                text = " ".join(text.split())  # collapse whitespace
-                if len(text) > max_chars:
-                    text = text[:max_chars - 1] + "…"
-                return text
-        return None
-
     rows = []
     now = utc_now().timestamp()
     for jf in sorted(summaries_dir.glob("*.json")):
@@ -1189,11 +1477,7 @@ def render_workspaces_tab():
         # Live signals from the workspace's session (if found).
         sess = session_for_ws(cwd)
         last_turn_age = sess.get("last_turn_age_sec") if sess else None
-        # Working = last assistant turn was a tool_use (still in flight).
-        last_assistant_text = (sess or {}).get("last_assistant", {}).get("text", "") or ""
-        agent_status = "working" if last_assistant_text.startswith("[tool_use:") else "idle"
-        if not sess:
-            agent_status = None  # unknown
+        agent_status = session_agent_status(sess)
 
         pr_refs = data.get("pr_refs") or []
 
@@ -1212,7 +1496,7 @@ def render_workspaces_tab():
     rows.sort(key=lambda r: -(r.get("ts") or 0))
 
     if not rows:
-        return '<div class="muted">No observer summaries yet — waiting for first pulse.</div>', 0
+        return no_workspace_summaries(), 0
 
     def fmt_age(s):
         if s is None:
@@ -1467,17 +1751,23 @@ def render_todos_tab(world):
         bucket.sort(key=lambda i: order.get(i.get("status", "open"), 99))
         rows = []
         for it in bucket:
+            pro = mode.is_pro()  # Pro mode: a blocked task's reason is a tooltip, a parked task has no dispatched pill
             src = it.get("source", "")
             url = it.get("url", "")
             url_html = f' <a href="{e(url)}" class="alt-link">[link]</a>' if url else ""
             status = it.get("status", "open")
-            status_pill = f'<span class="pill status-{status}">{e(status)}</span>'
+            # A blocked task's reason is its status pill's tooltip, so a parked task says why it is blocked.
+            reason_tip = (f' title="{e(it.get("statusReason") or "")}"'
+                          if pro and status == "blocked" and it.get("statusReason") else "")
+            status_pill = f'<span class="pill status-{status}"{reason_tip}>{e(status)}</span>'
             td_id = it.get("id", "") or ""
             ad_flag = it.get("autoDispatch")
             # AUTO pill = "this should be auto-dispatched"; once dispatchedAt is set
             # the TODO has already been picked up by a workspace. Show DISPATCHED instead.
             if ad_flag:
-                if it.get("dispatchedAt"):
+                if pro and it.get("parkedBy"):
+                    ad = ""  # parked: a session was started but nothing was typed into it, so it wasn't dispatched
+                elif it.get("dispatchedAt"):
                     ad = ' <span class="pill status-in-progress" title="dispatched at ' + e(it.get("dispatchedAt", "")) + ' to ' + e(it.get("dispatchedWs", "?")) + '">dispatched</span>'
                 else:
                     ad = ' <span class="pill auto-dispatch">auto</span>'
@@ -1555,14 +1845,32 @@ def render_todos_tab(world):
     return _dispatch_cap_notice() + "".join(sections), p0_p1
 
 
+# Held at the cap; paused because the pulse couldn't see which sessions are busy; paused because it couldn't write
+# its record of what it types into sessions.
+DISPATCH_NOTICE_KEYS = ("dispatch-cap-hit", "dispatch-held-no-fleet-view", "dispatch-held-no-record")
+
+
+def _with_code(escaped: str, key: str = "") -> str:
+    """Text between backticks, in a sentence already escaped, shown as code: a command to copy. Escaping comes
+    first, so nothing inside the backticks can be markup. Only the card for a refused typing (Pro mode) has any."""
+    if key != "dispatch-held-no-record":
+        return escaped
+    return re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
+
+
 def _dispatch_cap_notice() -> str:
-    """The pulse's "tasks held back" card, shown on the Tasks tab."""
+    """The pulse's "tasks held back" card, shown on the Tasks tab: held at the
+    cap, or paused because it couldn't see which sessions are busy or couldn't
+    record what it would type."""
     cards = load_assistant_state().get("awaiting_input") or []
-    card = next((c for c in cards if isinstance(c, dict) and c.get("key") == "dispatch-cap-hit"), None)
+    # The card for a refused typing exists in Pro mode only; the default mode shows the two it always did.
+    keys = DISPATCH_NOTICE_KEYS if mode.is_pro() else DISPATCH_NOTICE_KEYS[:2]
+    card = next((c for c in cards if isinstance(c, dict)
+                 and c.get("key") in keys), None)
     if not card:
         return ""
     return (f'<div class="section dispatch-cap"><h2>{e(card.get("title") or "Tasks held back")}</h2>'
-            f'<p class="meta">{e(card.get("detail") or "")}</p></div>')
+            f'<p class="meta">{_with_code(e(card.get("detail") or ""), card.get("key"))}</p></div>')
 
 
 def _cmux_workspaces() -> dict[str, dict]:
@@ -2403,6 +2711,21 @@ def _known_connectors_registry():
         return []
 
 
+def render_work_queue_tab():
+    """Pro mode: a link to the Work queue page and when it last refreshed."""
+    try:
+        port = work_queue_config.port(work_queue_config.load())
+    except (OSError, ValueError) as exc:
+        return f'<div class="empty">The Work queue can\'t read its settings: {e(str(exc))}</div>'
+    state = work_queue_config.read_json(work_queue_config.data_dir() / "refresh-status.json", {})
+    last = f"Last refreshed {state['finished']}." if state.get("finished") else "Not refreshed yet."
+    problem = f" Last refresh problems: {state['error']}" if state.get("error") else ""
+    return (f'<div class="empty">The Work queue merges your linked Slack, email, GitHub, and calendar sources into '
+            f'one list you clear. <a href="http://127.0.0.1:{port}/" target="_blank" rel="noopener noreferrer">'
+            f'Open the Work queue</a><p class="meta">{e(last + problem)} Link a source with '
+            '<code>bin/work-queue-setup.py link &lt;source&gt;</code>.</p></div>')
+
+
 def render_connections_panel(world):
     """The Connections panel (Keel M5): every KNOWN connector + its tri-state,
     so the user sees what they are connected to and what is merely available.
@@ -2625,6 +2948,15 @@ def _render_slack_focus_tab_inner():
     return html, (view["do_first"] if focus else None)
 
 
+def page_token() -> str:
+    """The token to embed in the page. Any trouble with the token file leaves it empty: the page still renders
+    and works over http; only the local-file copy's buttons are refused until the file is fixed."""
+    try:
+        return apitoken.ensure()
+    except Exception:
+        return ""
+
+
 def render():
     if not WORLD_PATH.exists():
         DASHBOARD_HTML.write_text("<h1>world.json not present yet — Scanner hasn't run.</h1>")
@@ -2654,6 +2986,7 @@ def render():
         tabs += [
             ("fleet", f'Background work <span class="tab-count">{fleet_n}</span>', fleet_html),
             ("connections", f'Connected apps <span class="tab-count">{connected_n}</span>', connections_html),
+            ("work-queue", "Work queue", render_work_queue_tab()),
         ]
     tabs += [("slack", f"Slack{slack_count}", slack_html),
              ("todos", f'Tasks <span class="tab-count">{p0_p1}</span>', todos_html)]
@@ -2663,8 +2996,12 @@ def render():
     tab_panels = "\n\n".join(
         f'<div class="tab-panel" data-panel="{name}">\n{panel}\n</div>' for name, _, panel in tabs)
     pulse_health_html = render_pulse_health()
-    mode_html = render_mode_switch(pro, mode.config_error())
-    pulse_alert_html = render_pulse_alert() + render_restart_alert()
+    mode_html = render_mode_switch(pro, mode.config_error()) + render_observer_setting()
+    # These three jobs only run in Pro mode, so default mode doesn't list a
+    # setting that would do nothing there.
+    mode_html += render_job_settings() if pro else ""
+    pulse_alert_html = (render_pulse_alert() + render_restart_alert() + render_log_trim_notice()
+                        + render_failure_alerts(world=world))
     counts = world.get("counts", {})
     snapshot_at = _overview_timestamp(world.get("_meta", {}).get("built_at"))
     rendered_at = utc_now().timestamp()
@@ -3829,6 +4166,13 @@ button:focus-visible, summary:focus-visible, input:focus-visible, a:focus-visibl
 """
 
     js = r"""
+// Every request that changes something goes through here, so each one carries the
+// token the server asks for from a page opened as a local file. The token sits in
+// a meta tag outside the part of the page a refresh swaps.
+function assistantPost(url, init) {
+  const token = document.querySelector('meta[name="assistant-api-token"]').content;
+  return fetch(url, {...init, method: 'POST', headers: {...init.headers, 'X-Assistant-Token': token}});
+}
 function showTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.dataset.panel === name));
@@ -4086,8 +4430,8 @@ async function setMode(value) {
   button.disabled = true;
   status.textContent = 'Switching…';
   try {
-    const response = await fetch('/mode?value=' + encodeURIComponent(value),
-      {method: 'POST', headers: {'X-Assistant-Human': '1'}});
+    const response = await assistantPost('/mode?value=' + encodeURIComponent(value),
+      {headers: {'X-Assistant-Human': '1'}});
     const message = await response.text();
     if (!response.ok) throw new Error(message);
     for (let waited = 0; dashboardRefreshing && waited < 10000; waited += 100) {
@@ -4113,16 +4457,27 @@ async function setMode(value) {
 // sidecar so the unseen-degradation pass knows the brief was looked at.
 // Fired at most once per page load; failures (server down) are swallowed —
 // the signal is best-effort by design. The URL is ABSOLUTE to the todo-server
-// (127.0.0.1:9876) so it reaches the server even when the dashboard is opened
+// (127.0.0.1:9876, see serverUrl) when the page is a local file, so it reaches the server even when the dashboard is opened
 // as a file:// page — a relative fetch resolves to file:///brief/seen and
 // never arrives, silently arming the destructive unseen-TTL (F19).
+// A page opened as a local file has no server of its own, so these two calls name it. Served over
+// http, the same address that served the page is used, so a forwarded port works too.
+function serverUrl(path) {
+  return (location.protocol === 'file:' ? 'http://127.0.0.1:9876' : '') + path;
+}
+function showRefused() {
+  document.getElementById('refresh-error').textContent =
+    "Couldn't refresh. Reload this page, or open http://127.0.0.1:9876.";
+}
 async function briefRefresh() {
   const button = document.getElementById('brief-refresh');
   if (button) { button.disabled = true; button.textContent = 'Refreshing…'; }
+  let refused = false;
   try {
-    await fetch('http://127.0.0.1:9876/brief/refresh', {method: 'POST', mode: 'cors'});
+    refused = !(await assistantPost(serverUrl('/brief/refresh'), {mode: 'cors'})).ok;
   } catch (e) { /* the next page update still rebuilds the brief */ }
   await refreshDashboard(true);
+  if (refused) showRefused();
   const fresh = document.getElementById('brief-refresh');
   if (fresh) { fresh.disabled = false; fresh.textContent = 'Refresh now'; }
 }
@@ -4133,9 +4488,8 @@ function pingBriefSeen() {
   if (!root) return;
   briefSeenSent = true;
   try {
-    fetch('http://127.0.0.1:9876/brief/seen?date='
-            + encodeURIComponent(root.dataset.briefDate),
-          {method: 'POST', mode: 'cors'}).catch(() => {});
+    assistantPost(serverUrl('/brief/seen?date=' + encodeURIComponent(root.dataset.briefDate)),
+          {mode: 'cors'}).then(response => { if (!response.ok) showRefused(); }).catch(() => {});
   } catch (e) { /* best-effort — ignore */ }
 }
 window.addEventListener('DOMContentLoaded', () => {
@@ -4150,8 +4504,8 @@ window.addEventListener('DOMContentLoaded', () => {
 // content when the pull ends. Done and Undo save a check-off the same way.
 let slackFocusPolling = false;
 function slackFocusPost(path, body) {
-  return fetch(path, body === undefined ? {method: 'POST'}
-    : {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  return assistantPost(path, body === undefined ? {}
+    : {headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
 }
 function slackFocusShow(state, message) {
   const button = document.getElementById('sf-refresh');
@@ -4241,7 +4595,7 @@ async function openWs(btn) {
   try {
     const identity = btn.dataset.workspaceId
       ? '?workspace_id=' + encodeURIComponent(btn.dataset.workspaceId) : '';
-    const r = await fetch('/focus/' + ws + identity, {method: 'POST'});
+    const r = await assistantPost('/focus/' + ws + identity, {});
     if (r.ok) {
       btn.classList.remove('busy');
       btn.classList.add('ok');
@@ -4276,7 +4630,7 @@ async function handleDecisionActClick(ev) {
   const originalText = btn.textContent;
   btn.classList.add('busy');
   try {
-    const r = await fetch(url, {method: 'POST'});
+    const r = await assistantPost(url, {});
     const t = await r.text();
     if (r.ok) {
       btn.classList.remove('busy'); btn.classList.add('ok');
@@ -4311,7 +4665,7 @@ async function handleTodoToolsClick(ev) {
     const originalText = btn.textContent;
     btn.classList.add('busy');
     try {
-      const r = await fetch(`/toggle/${id}?flag=autoDispatch&value=${value}`, {method: 'POST'});
+      const r = await assistantPost(`/toggle/${id}?flag=autoDispatch&value=${value}`, {});
       if (r.ok) {
         // Visually move .active to this button immediately so the user sees
         // the absolute-set semantics. The 15s auto-refresh will re-render
@@ -4338,7 +4692,7 @@ async function handleTodoToolsClick(ev) {
 Soft-delete: TODO is moved into the 'removed[]' array of assistant-todo.json (recoverable, but disappears from the dashboard).`)) return;
     btn.classList.add('busy'); btn.textContent = 'Removing…';
     try {
-      const r = await fetch(`/remove/${id}`, {method: 'POST'});
+      const r = await assistantPost(`/remove/${id}`, {});
       const t = await r.text();
       if (r.ok) {
         // Hide the row immediately; auto-refresh will confirm
@@ -4362,7 +4716,7 @@ This sets autoDispatch=true and clears dispatchedAt/dispatchedWs.
 If the TODO was deferred/blocked/done, it will be reopened.`)) return;
     btn.classList.add('busy'); btn.textContent = 'Queueing…';
     try {
-      const r = await fetch(`/dispatch-now/${id}`, {method: 'POST'});
+      const r = await assistantPost(`/dispatch-now/${id}`, {});
       const t = await r.text();
       if (r.ok) {
         btn.classList.remove('busy'); btn.classList.add('ok'); btn.textContent = '✓ queued';
@@ -4398,8 +4752,7 @@ If the TODO was deferred/blocked/done, it will be reopened.`)) return;
     if (!body) { ta.focus(); return; }
     btn.classList.add('busy'); btn.textContent = 'Saving…';
     try {
-      const r = await fetch(`/append-detail/${id}`, {
-        method: 'POST',
+      const r = await assistantPost(`/append-detail/${id}`, {
         headers: {'Content-Type': 'text/plain; charset=utf-8'},
         body: body,
       });
@@ -4428,6 +4781,7 @@ document.addEventListener('click', handleTodoToolsClick);
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>Assistant</title>
+<meta name="assistant-api-token" content="{e(page_token())}">
 <style>{css}</style>
 <script>{js}</script>
 </head><body>
@@ -4464,7 +4818,18 @@ Saved action history: <code>~/.architect/orchestrator-ledger/</code>.</p>
 </main>
 </body></html>
 """
-    DASHBOARD_HTML.write_text(body)
+    # The page now holds the token, so only its owner may read it. A temporary file with the
+    # right mode, then a rename, means it is never readable by others, even before the rename.
+    # mkstemp makes a file of its own name, readable by its owner only, so two renders at once (the page
+    # service every 30 seconds and every change a button makes) never share one.
+    descriptor, temporary = tempfile.mkstemp(prefix=DASHBOARD_HTML.name + ".", suffix=".tmp", dir=DASHBOARD_HTML.parent)
+    try:
+        with os.fdopen(descriptor, "w") as handle:
+            handle.write(body)
+        os.replace(temporary, DASHBOARD_HTML)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
     # Legacy redirect for the old TODO bookmark
     TODO_HTML.write_text(
         '<!doctype html><meta http-equiv="refresh" content="0; url=assistant-dashboard.html#todos">'

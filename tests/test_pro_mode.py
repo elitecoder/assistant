@@ -8,6 +8,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -238,7 +239,8 @@ def test_default_mode_skips_triage_brief_and_planner(home, monkeypatch):
         pulse.run_planner_step(1)
         assert not (tri.called or built.called or planned.called)
         assert not pulse.job_enabled("strategist")
-        set_mode(home, "pro")
+        config(home).write_text(json.dumps({
+            "mode": "pro", "jobs": {"decisions": True, "brief": True, "planner": True}}))
         assert pulse.run_triage_step(1) == {"cards": ["x"]}
         pulse.run_brief_step(1)
         pulse.run_planner_step(1)
@@ -295,9 +297,9 @@ def test_default_mode_triage_housekeeping_never_breaks_the_pulse(home):
     assert "housekeeping failed" in warning.call_args[0][0]
 
 
-def test_the_pulse_reads_the_mode_once(home):
+def test_the_pulse_reads_the_mode_once(home, monkeypatch):
     pulse = load_pulse()
-    set_mode(home, "pro")
+    config(home).write_text(json.dumps({"mode": "pro", "jobs": {"decisions": True}}))
     pulse.PULSE_PRO = False
     assert not pulse.job_enabled("triage")
     pulse.PULSE_PRO = None
@@ -312,6 +314,7 @@ def test_default_mode_still_auto_starts_tasks(tmp_path):
             mock.patch.object(pulse, "purge_stale_awaiting"), \
             mock.patch.object(pulse, "call_observer_batch", return_value=({}, {})), \
             mock.patch.object(pulse, "pick_open_todos", return_value={"bucket_b": [todo]}), \
+            mock.patch.object(pulse, "scan_busy_ws", return_value=set()), \
             mock.patch.object(pulse, "dispatch_todo", return_value=True) as dispatch, \
             mock.patch.object(pulse, "run", return_value=(0, "", "")), \
             mock.patch.object(sys, "argv", ["pulse.py"]):
@@ -343,6 +346,12 @@ def test_default_dashboard_shows_only_default_tabs_and_the_switch(home):
     assert "Pro mode is off." in page and "setMode('pro')" in page
 
 
+def test_dashboard_settings_say_the_observer_is_off_by_default(home):
+    page = render_page(home)
+    settings = page[page.index("Settings and background services"):page.index('<div class="tabs">')]
+    assert "The Observer is off." in settings and "ASSISTANT_WATCHER=1" in settings
+
+
 def test_pro_dashboard_shows_every_tab_and_the_switch(home):
     set_mode(home, "pro")
     page = render_page(home)
@@ -364,12 +373,134 @@ def test_dashboard_shows_an_unreadable_settings_file_and_a_failed_restart(home):
             in page)
 
 
+NOTICE = {"key": "log-trim-notice", "tier": "T3", "title": "Log trimming starts tomorrow at 14:05",
+          "detail": '5 logs are over 20 MB (2,560 MB in all) and will be cut to their last 5 MB each; '
+                    'the older lines are deleted and there is no backup. To keep them, add '
+                    '"logs": {"cap_mb": 0} to ~/.assistant/config.json, alongside your existing keys.'}
+
+
+def _above_the_tabs(page):
+    return page[:page.index('<div class="tabs">')]
+
+
+@pytest.mark.parametrize("pro", [False, True])
+def test_the_log_trim_notice_shows_above_the_tabs_in_both_modes(home, pro):
+    if pro:
+        set_mode(home, "pro")
+    page = render_page(home, {"awaiting_input": [NOTICE]})
+    top = _above_the_tabs(page)
+    bar = top[top.index('<div class="pulse-health pulse-warn log-trim-notice"'):]
+    assert bar.startswith('<div class="pulse-health pulse-warn log-trim-notice" role="status">')
+    assert "<strong>Log trimming starts tomorrow at 14:05</strong>" in bar
+    assert "5 logs are over 20 MB (2,560 MB in all)" in bar
+    assert "&quot;cap_mb&quot;: 0" in bar or '"cap_mb": 0' in bar
+    assert "pulse-bad" not in bar.split("</div>")[0]
+
+
+def test_the_log_trim_notice_is_absent_without_the_card_and_escapes_its_text(home):
+    assert "log-trim-notice" not in render_page(home)
+    assert "log-trim-notice" not in render_page(home, {"awaiting_input": [
+        {"key": "dispatch-cap-hit", "title": "x", "detail": "y"}]})
+    evil = dict(NOTICE, title="<script>alert(1)</script>", detail="a <b>bold</b> & more")
+    top = _above_the_tabs(render_page(home, {"awaiting_input": [evil]}))
+    assert "<script>alert(1)</script>" not in top and "<b>bold</b>" not in top
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in top and "a &lt;b&gt;bold&lt;/b&gt; &amp; more" in top
+
+
+PROBLEM = {"key": "log-trim-problem", "tier": "T3", "title": "Log trimming is off",
+           "detail": 'Trimming stays off until this is fixed: logs.cap_mb in ~/.assistant/config.json is '
+                     '"20" in quotes, not a number. Write it without quotes, or remove the logs entry '
+                     'to use the defaults.'}
+WAITING = {"key": "log-trim-notice", "tier": "T3", "title": "Log trimming is waiting",
+           "detail": "Assistant can't save ~/.assistant/log-cap-state.json, so it won't trim anything. "
+                     "Check that the folder can be written to."}
+
+
+@pytest.mark.parametrize("pro", [False, True])
+@pytest.mark.parametrize("card, plain", [
+    (PROBLEM, 'Log trimming is off Trimming stays off until this is fixed: logs.cap_mb in '
+              '~/.assistant/config.json is "20" in quotes, not a number. Write it without quotes, or '
+              'remove the logs entry to use the defaults.'),
+    (WAITING, "Log trimming is waiting Assistant can't save ~/.assistant/log-cap-state.json, so it "
+              "won't trim anything. Check that the folder can be written to."),
+])
+def test_a_log_trimming_problem_shows_above_the_tabs_in_both_modes(home, pro, card, plain):
+    import html
+    import re
+    if pro:
+        set_mode(home, "pro")
+    top = _above_the_tabs(render_page(home, {"awaiting_input": [card]}))
+    bar = top[top.index('<div class="pulse-health pulse-warn log-trim-notice"'):]
+    bar = bar[:bar.index("</div>")]
+    assert html.unescape(re.sub(r"<[^>]+>", "", bar)) == plain
+    assert "pulse-bad" not in bar
+    assert "starts tomorrow" not in bar                 # no deadline for either message
+
+
+def test_the_problem_and_the_notice_can_show_together_and_go_away_when_fixed(home):
+    top = _above_the_tabs(render_page(home, {"awaiting_input": [NOTICE, PROBLEM]}))
+    assert top.count('log-trim-notice" role="status"') == 2
+    gone = _above_the_tabs(render_page(home, {"awaiting_input": []}))
+    assert "log-trim-notice" not in gone and "Log trimming is off" not in gone
+
+
+def test_a_problem_card_escapes_its_text(home):
+    evil = dict(PROBLEM, title="<i>off</i>", detail="a <script>x</script> & b")
+    top = _above_the_tabs(render_page(home, {"awaiting_input": [evil]}))
+    assert "<script>x</script>" not in top and "<i>off</i>" not in top
+    assert "a &lt;script&gt;x&lt;/script&gt; &amp; b" in top
+
+
+def test_the_problem_card_also_stays_in_the_awaiting_list(home):
+    set_mode(home, "pro")
+    page = render_page(home, {"awaiting_input": [PROBLEM]})
+    assert "Log trimming is off" in page[page.index('<div class="tabs">'):]
+
+
+def test_the_log_trim_notice_also_stays_in_the_awaiting_list(home):
+    set_mode(home, "pro")                  # the Awaiting input tab is a Pro tab
+    page = render_page(home, {"awaiting_input": [NOTICE]})
+    assert "Log trimming starts tomorrow at 14:05" in page[page.index('<div class="tabs">'):]
+
+
 def test_tasks_tab_shows_the_held_back_warning(home):
     page = render_page(home, {"awaiting_input": [{
         "key": "dispatch-cap-hit", "title": "Dispatch capped — 2 TODO(s) waiting",
         "detail": "active=4/4, total=9/12. Holding: td-1, td-2."}]})
     todos = page[page.index('data-panel="todos"'):]
     assert "Dispatch capped — 2 TODO(s) waiting" in todos and "Holding: td-1, td-2." in todos
+
+
+def test_tasks_tab_shows_the_paused_dispatch_warning(home):
+    page = render_page(home, {"awaiting_input": [{
+        "key": "dispatch-held-no-fleet-view", "title": "Dispatch paused — 2 TODO(s) waiting",
+        "detail": "Couldn't tell how many sessions are busy: x. Holding: td-1, td-2."}]})
+    todos = page[page.index('data-panel="todos"'):]
+    assert "Dispatch paused — 2 TODO(s) waiting" in todos and "Holding: td-1, td-2." in todos
+
+
+def test_tasks_tab_shows_the_card_for_dispatch_that_cant_record_what_it_types(home):
+    set_mode(home, "pro")  # the card for a refused typing, and the parked row, are Pro mode's
+    title = "Dispatch paused — can't record what it types (2 TODO(s) waiting)"
+    detail = ("Assistant can't write its record of what it types into your sessions, so it won't start tasks. Check "
+              "that your disk isn't full (`df -h ~`) and that `~/.assistant/effects` can be written to "
+              "(`ls -ld ~/.assistant/effects`). Waiting: td-0 First, td-1 Second. Nothing is lost; the next round "
+              "starts them once the record can be written.")
+    page = render_page(home, {"awaiting_input": [{"key": "dispatch-held-no-record", "title": title, "detail": detail}]})
+    todos = page[page.index('data-panel="todos"'):]
+    import html
+    assert html.escape(title) in todos and "Waiting: td-0 First, td-1 Second." in todos
+    assert "<code>df -h ~</code>" in todos and "<code>~/.assistant/effects</code>" in todos
+    assert "`" not in todos[:todos.index("</p>", todos.index("dispatch-cap"))]  # no literal backticks left in the card
+
+
+def test_a_command_in_backticks_on_the_card_is_code_and_markup_inside_it_is_still_escaped(home):
+    set_mode(home, "pro")  # the card for a refused typing, and the parked row, are Pro mode's
+    detail = "Run `echo <b>x</b> & done` then `ls -ld ~`. A lone ` stays."
+    page = render_page(home, {"awaiting_input": [{"key": "dispatch-held-no-record", "title": "t", "detail": detail}]})
+    todos = page[page.index('data-panel="todos"'):]
+    assert "<code>echo &lt;b&gt;x&lt;/b&gt; &amp; done</code>" in todos and "<code>ls -ld ~</code>" in todos
+    assert "<b>x</b>" not in todos and "A lone ` stays." in todos
 
 
 def test_unpause_hint_points_to_a_command_that_exists_in_each_mode(home):
@@ -653,12 +784,39 @@ def test_the_installer_restarts_a_service_when_any_of_its_code_changes(tmp_path)
     server = "com.assistant.assistant-todo-server"
     log = fake_launchctl(env, running={server})
     run_installer(env, repo=repo)
-    for path in ("src/assistant/mode.py", "bin/connectors/gmail.py", "bin/todo-server.py"):
+    for path in ("src/assistant/mode.py", "bin/connectors/gmail.py", "bin/todo-server.py",
+                 "bin/agent_session.py"):
         log.write_text("")
         with (repo / path).open("a") as f:
             f.write("\n# changed\n")
         run_installer(env, repo=repo)
         assert f"kickstart -k gui/{os.getuid()}/{server}" in log.read_text(), path
+
+
+def test_the_installer_restarts_the_always_on_services_after_a_bin_change(tmp_path):
+    home = tmp_path / "home"
+    (home / ".assistant").mkdir(parents=True)
+    repo = tmp_path / "repo"
+    shutil.copytree(REPO, repo, ignore=shutil.ignore_patterns(".git", ".venv", ".worktrees", "__pycache__"))
+    env = {**installer_env(home), "ASSISTANT_SELF_UPDATE": "1"}
+    always_on = {f"com.assistant.{name}" for name in (
+        "assistant-comms", "workspace-watcher", "slack-reactor", "session-context-watcher",
+        "cmux-ws-numberer")}
+    scheduled = {"com.assistant.assistant-pulse", "com.assistant.world-scanner"}
+    log = fake_launchctl(env, running=always_on | scheduled)
+    run_installer(env, repo=repo)
+    log.write_text("")
+    with (repo / "bin/comms-listen.py").open("a") as f:
+        f.write("\n# changed\n")
+    run_installer(env, repo=repo)
+    kicked = {line.rsplit("/", 1)[1] for line in log.read_text().splitlines() if line.startswith("kickstart")}
+    assert kicked == always_on
+
+    log.write_text("")
+    with (repo / "slack-reactor/src/index.js").open("a") as f:
+        f.write("\n// changed\n")
+    run_installer(env, repo=repo)
+    assert f"kickstart -k gui/{os.getuid()}/com.assistant.slack-reactor" in log.read_text()
 
 
 def test_the_hourly_update_never_starts_workspace_numbers_you_stopped(tmp_path):
@@ -690,3 +848,30 @@ def test_the_hourly_update_never_starts_workspace_numbers_you_stopped(tmp_path):
     log.write_text("")
     run_installer({**env, "ASSISTANT_SELF_UPDATE": "1"})
     assert any(line.startswith("bootstrap") and label in line for line in log.read_text().splitlines())
+
+
+def test_every_list_the_installer_declares_starts_empty():
+    """bash 5 under set -u stops on a list that was declared and never given a value; macOS's bash 3.2 doesn't. This
+    reads declare, local, and typeset lines; the Linux shards also run the installer itself under bash 5."""
+    lines = re.findall(r"^\s*(?:declare|local|typeset)\s+-[a-zA-Z]*[aA][a-zA-Z]*\s+(.+)$",
+                       (REPO / "install.sh").read_text(), re.M)
+    names = [name for line in lines for name in re.findall(r"(\w+)(=\(|\S*)", line.split("#")[0])]
+    assert names and all(start == "=(" for _, start in names), names
+
+
+def test_a_parked_task_row_has_no_dispatched_pill_and_its_reason_is_the_blocked_pills_tooltip(home):
+    set_mode(home, "pro")  # the card for a refused typing, and the parked row, are Pro mode's
+    parked = {"id": "td-1", "title": "Fix it", "priority": "P1", "status": "blocked", "autoDispatch": True,
+              "dispatchedAt": "2026-11-24T10:00:00Z", "dispatchedWs": "workspace:1000010007", "parkedBy": "typing_refused",
+              "statusReason": 'Parked: Assistant started workspace:1000010007 but nothing could be typed into it.'}
+    plain = {"id": "td-2", "title": "Other", "priority": "P1", "status": "in-progress", "autoDispatch": True,
+             "dispatchedAt": "2026-11-24T10:00:00Z", "dispatchedWs": "workspace:1000010008"}
+    (home / ".claude").mkdir(exist_ok=True)
+    (home / ".claude/assistant-todo.json").write_text(json.dumps({"items": [parked, plain]}))
+    page = render_page(home, {})
+    first, second = page.index('data-task-id="td-1"'), page.index('data-task-id="td-2"')
+    row = page[first:second] if first < second else page[first:]  # in-progress rows are listed before blocked ones
+    other = page[second:first] if second < first else page[second:]
+    assert ">dispatched</span>" not in row and ">blocked</span>" in row
+    assert 'title="Parked: Assistant started workspace:1000010007 but nothing could be typed into it."' in row
+    assert ">dispatched</span>" in other  # an ordinary dispatched task still shows it

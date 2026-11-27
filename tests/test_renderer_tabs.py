@@ -961,6 +961,8 @@ class WorkspacesTabRichTests(_Base):
         self.assertIn("backed off", html)
 
     def test_corrupt_summary_skipped(self):
+        (self._tmp / ".assistant/config.json").write_text(
+            json.dumps({"observer": {"enabled": True}}))
         self._write_world({"workspaces": [], "live_sessions": []})
         (self._tmp / ".assistant/observer-summaries/bad.json").write_text("{ corrupt")
         # No open_ws filter (empty workspaces) → corrupt file just skipped; with

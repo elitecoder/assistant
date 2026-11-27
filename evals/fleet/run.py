@@ -23,13 +23,10 @@ for path in (BIN, SRC):
 import llm_runner
 from assistant import model_tiers
 
-CLAUDE_BIN = os.environ.get(
-    "CLAUDE_BIN", str(Path.home() / ".local/bin/claude"))
-DROID_BIN = os.environ.get(
-    "DROID_BIN", str(Path.home() / ".local/bin/droid"))
 CLAUDE_MODEL = os.environ.get(
     "EVAL_CLAUDE_MODEL", model_tiers.model_for("balanced", long_context=True))
 DROID_MODEL = os.environ.get("EVAL_DROID_MODEL", "glm-5.2")
+COPILOT_MODEL = os.environ.get("EVAL_COPILOT_MODEL", "")
 TIMEOUT = int(os.environ.get("EVAL_TIMEOUT_SEC", "240"))
 REPORT = EVAL_DIR / "last-run.json"
 
@@ -38,6 +35,7 @@ def qualification_input_hashes() -> dict[str, str]:
     paths = [
         Path(__file__),
         BIN / "llm_runner.py",
+        BIN / "agent_session.py",
         SRC / "assistant/model_tiers.py",
         REPO / "prompts/triage-batch-prompt.md",
         REPO / "prompts/strategist-draft-prompt.md",
@@ -214,7 +212,8 @@ def score_interactive(_: str, run_dir: Path) -> tuple[bool, str]:
 
 def invoke(provider: str, case: dict, run_dir: Path,
            tools: bool) -> llm_runner.LLMResult:
-    model = DROID_MODEL if provider == "droid" else CLAUDE_MODEL
+    model = {"droid": DROID_MODEL, "copilot": COPILOT_MODEL}.get(
+        provider, CLAUDE_MODEL)
 
     def run_cmd(cmd, *, input_text=None, timeout=None, env=None,
                 merge_bedrock=False):
@@ -226,13 +225,13 @@ def invoke(provider: str, case: dict, run_dir: Path,
     return llm_runner.invoke(
         provider=provider, prompt=case["prompt"], model=model,
         run_dir=run_dir, timeout=TIMEOUT, run=run_cmd,
-        claude_bin=CLAUDE_BIN, droid_bin=DROID_BIN,
         reasoning_effort="high", disable_tools=not tools,
         extra_dirs=[run_dir], tag=f"assistant-fleet-eval-{case['name']}")
 
 
 def run_case(provider: str, case: dict, tools: bool = False) -> dict:
-    model = DROID_MODEL if provider == "droid" else CLAUDE_MODEL
+    model = {"droid": DROID_MODEL, "copilot": COPILOT_MODEL}.get(
+        provider, CLAUDE_MODEL)
     with tempfile.TemporaryDirectory(prefix=f"assistant-{provider}-") as raw:
         run_dir = Path(raw)
         started = time.time()
@@ -264,7 +263,7 @@ def run_case(provider: str, case: dict, tools: bool = False) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--provider", choices=("claude", "droid"),
+    parser.add_argument("--provider", choices=("claude", "copilot", "droid"),
                         default="droid")
     parser.add_argument("--shadow", action="store_true")
     parser.add_argument("--skip-interactive", action="store_true")

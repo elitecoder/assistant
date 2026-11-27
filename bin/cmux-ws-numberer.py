@@ -90,9 +90,44 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
 )
 log = logging.getLogger("cmux-ws-numberer")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from assistant import redact  # noqa: E402
+redact.install()  # no token reaches the numberer log
 
 # Silence the legacy-alias deprecation notices so they never pollute parsed stdout.
 CMUX_ENV = {**os.environ, "CMUX_QUIET": "1"}
+
+
+# While cmux refuses connections every 3-second poll fails the same way. Log the
+# first failure, then one line per interval saying how many repeats it saw and
+# since when, and one line when it works again.
+REPEAT_LOG_INTERVAL = 300.0
+_repeat = {"key": None, "count": 0, "logged_at": 0.0, "since": ""}
+
+
+def _log_list_failure(rc: int, stdout: str, stderr: str) -> None:
+    # Digits are blanked in the comparison so a pid or timestamp in the error
+    # text doesn't make every poll look new; the log keeps the original text.
+    key = re.sub(r"\d+", "#", f"{rc} {stdout[:300]} {stderr[:300]}")
+    now = time.monotonic()
+    if key != _repeat["key"]:
+        _repeat.update(key=key, count=1, logged_at=now,
+                       since=time.strftime("%H:%M:%S"))
+        log.error("list-workspaces --json rc=%s stdout=%r stderr=%r",
+                  rc, stdout[:300], stderr[:300])
+        return
+    _repeat["count"] += 1
+    if now - _repeat["logged_at"] >= REPEAT_LOG_INTERVAL:
+        log.error("list-workspaces --json still failing (%d failures since %s): rc=%s stderr=%r",
+                  _repeat["count"], _repeat["since"], rc, stderr[:300])
+        _repeat["logged_at"] = now
+
+
+def _log_list_success() -> None:
+    if _repeat["key"] is not None:
+        log.info("list-workspaces recovered after %d failures (since %s)",
+                 _repeat["count"], _repeat["since"])
+        _repeat.update(key=None, count=0)
 
 
 def list_workspaces() -> list[dict]:
@@ -107,9 +142,9 @@ def list_workspaces() -> list[dict]:
     try:
         data = json.loads(out.stdout)
     except json.JSONDecodeError:
-        log.error("list-workspaces --json rc=%s stdout=%r stderr=%r",
-                  out.returncode, out.stdout[:300], out.stderr[:300])
+        _log_list_failure(out.returncode, out.stdout, out.stderr)
         return []
+    _log_list_success()
     rows: list[dict] = []
     for w in data.get("workspaces", []):
         m = re.match(r"workspace:(\d+)$", w.get("ref", ""))

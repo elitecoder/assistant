@@ -60,7 +60,7 @@ BASE_CTX = {
     "ws_ref": "workspace:1", "title": "t", "cwd": "/",
     "transcript_path": None, "transcript_source": None, "session_id8": None,
     "agent_surface": None, "last_turn_age_sec": 100, "agent_status": "idle",
-    "cwd_dirty": False, "cwd_unpushed": False, "is_protected": False,
+    "is_protected": False,
     "screen_text": "the same screen", "screen_shows_error": False,
 }
 
@@ -116,8 +116,6 @@ class ObsInputHashTests(unittest.TestCase):
         base = self.mod.obs_input_hash(ctx())
         for over in ({"screen_text": "something new"},
                      {"agent_status": "working"},
-                     {"cwd_dirty": True},
-                     {"cwd_unpushed": True},
                      {"screen_shows_error": True},
                      {"title": "renamed"},
                      {"cwd": "/elsewhere"}):
@@ -267,6 +265,9 @@ class SkipWiringTests(unittest.TestCase):
     def setUp(self):
         self._tmp_obj = TemporaryDirectory()
         self._tmp = fixture_home(Path(self._tmp_obj.name))
+        # These tests drive the Observer, which is off by default; opt in.
+        (self._tmp / ".assistant/config.json").write_text(
+            json.dumps({"observer": {"enabled": True}}))
         self._old_home = os.environ.get("HOME")
         self._old_argv = sys.argv
         self.mod = load_pulse(self._tmp)
@@ -321,6 +322,88 @@ class SkipWiringTests(unittest.TestCase):
         saved = [c for c in run_mock.call_args_list
                  if c.args and "state-write.py" in str(c.args[0])]
         return json.loads(saved[-1].kwargs.get("input_text", "{}"))
+
+    def test_observer_turned_off_in_config_makes_no_observer_call(self):
+        (self._tmp / ".assistant/config.json").write_text(json.dumps({"observer": {"enabled": False}}))
+        rc, obs_mock, _save, send_mock, _run = self._run_pulse(ctx())
+        self.assertEqual(rc, 0)
+        obs_mock.assert_not_called()
+        send_mock.assert_not_called()
+        self.assertFalse(self._metrics()[-1]["observer_called"])
+
+    def test_observer_is_off_unless_config_sets_enabled_true(self):
+        path = self._tmp / ".assistant/config.json"
+        for cfg in (None, "not json", "[]", json.dumps({}), json.dumps({"observer": {}}),
+                    json.dumps({"observer": "on"}), json.dumps({"observer": 1}),
+                    json.dumps({"observer": {"enabled": "true"}}), json.dumps({"observer": {"enabled": 1}}),
+                    json.dumps({"observer": {"enabled": "on"}}), json.dumps({"observer": {"enabled": False}})):
+            if cfg is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_text(cfg)
+            self.assertFalse(self.mod.observer_enabled(), cfg)
+        path.write_text(json.dumps({"observer": {"enabled": True}}))
+        self.assertTrue(self.mod.observer_enabled())
+        _rc, obs_mock, *_ = self._run_pulse(ctx(), observer_result=({}, {}))
+        obs_mock.assert_called()
+
+    def _run_pulse_with_todo(self):
+        """main() with one open workspace and one autoDispatch TODO, recording
+        every step the pulse runs besides the Observer."""
+        steps = {"self_update": [], "strategist": []}
+        self.mod.self_update_pulse = steps["self_update"].append
+        with mock.patch.object(self.mod, "pick_ws_batch", return_value={
+                "to_reclassify": [{"ref": "workspace:1", "title": "t", "cwd": "/"}],
+                "reuse_cached": [], "backed_off": [], "total_ws": 1,
+            }), \
+             mock.patch.object(self.mod, "OBSERVER_AUDIT_ENABLED", True), \
+             mock.patch.object(self.mod, "run_strategist_context_step",
+                               side_effect=steps["strategist"].append), \
+             mock.patch.object(self.mod, "purge_stale_awaiting") as purge_mock, \
+             mock.patch.object(self.mod, "build_ctx", return_value=ctx()) as ctx_mock, \
+             mock.patch.object(self.mod, "call_observer_batch",
+                               return_value=({}, {})) as obs_mock, \
+             mock.patch.object(self.mod, "save_summary") as save_mock, \
+             mock.patch.object(self.mod, "cmux_send") as send_mock, \
+             mock.patch.object(self.mod, "pick_open_todos", return_value={
+                 "bucket_b": [{"id": "td-1", "priority": "P1"}]}), \
+             mock.patch.object(self.mod, "scan_busy_ws", return_value=set()), \
+             mock.patch.object(self.mod, "dispatch_todo", return_value=True) as dispatch_mock, \
+             mock.patch.object(self.mod, "run", return_value=(0, "", "")) as run_mock:
+            sys.argv = ["pulse.py"]
+            rc = self.mod.main()
+        return rc, steps, purge_mock, ctx_mock, obs_mock, save_mock, send_mock, dispatch_mock, run_mock
+
+    def test_observer_off_by_default_makes_no_observer_call_and_still_dispatches(self):
+        (self._tmp / ".assistant/config.json").unlink()
+        rc, steps, purge_mock, ctx_mock, obs_mock, save_mock, send_mock, dispatch_mock, run_mock = \
+            self._run_pulse_with_todo()
+        self.assertEqual(rc, 0)
+        obs_mock.assert_not_called()
+        ctx_mock.assert_not_called()
+        save_mock.assert_not_called()
+        send_mock.assert_not_called()
+        dispatch_mock.assert_called_once_with("td-1")
+        purge_mock.assert_called_once()
+        self.assertEqual(len(steps["self_update"]), 1)
+        self.assertEqual(len(steps["strategist"]), 1)
+        payload = self._state_payload(run_mock)
+        self.assertEqual(payload["_meta"]["n_observed"], 0)
+        self.assertIn("dispatch-td-1", [a["key"] for a in payload["actions_taken"]])
+        metric = self._metrics()[-1]
+        self.assertFalse(metric["observer_called"])
+        self.assertEqual(metric["batch_size"], 0)
+        self.assertTrue((self._tmp / ".assistant/heartbeat.json").exists())
+
+    def test_observer_off_by_default_runs_no_audit(self):
+        (self._tmp / ".assistant/config.json").unlink()
+        _rc, _steps, _purge, _ctx, obs_mock, *_ = self._run_pulse_with_todo()
+        obs_mock.assert_not_called()
+        self.assertEqual(list((self._tmp / ".assistant").glob("audit/audit-window-*")), [])
+        (self._tmp / ".assistant/config.json").write_text(json.dumps({"observer": {"enabled": True}}))
+        _rc, _steps, _purge, _ctx, obs_mock, *_ = self._run_pulse_with_todo()
+        self.assertIn("audit", [c.kwargs.get("label") for c in obs_mock.call_args_list])
+        self.assertEqual(len(list((self._tmp / ".assistant").glob("audit/audit-window-*"))), 1)
 
     def test_matching_hash_skips_observer_and_carries_verdict(self):
         c = ctx()

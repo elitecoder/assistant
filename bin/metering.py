@@ -43,10 +43,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import sys
 import time
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+
+import agent_session
 
 # Rotate metrics.jsonl once it exceeds this (one ~350-byte record per 5-min
 # pulse ≈ 100KB/day, so 5MB is ~50 days of history). Old file is kept as
@@ -112,49 +116,27 @@ def estimate_cost_usd(tokens_in: int, tokens_out: int, model: str) -> float:
     return tokens_in / 1e6 * p_in + tokens_out / 1e6 * p_out
 
 
+def _usage(parsed: dict | None) -> dict | None:
+    if parsed is None:
+        return None
+    return {k: parsed[k] for k in ("tokens_in", "tokens_out", "cost_usd")}
+
+
 def parse_cli_usage(stdout: str) -> dict | None:
-    """Parse usage from any Claude or Droid result envelope.
-
-    Returns {"tokens_in", "tokens_out", "cost_usd"} or None when stdout is
-    not a usage-bearing envelope (plain-text CLI, timeout, empty). tokens_in
-    includes cache-creation/read tokens — it measures how much context the
-    Observer consumed, which is the cadence signal we care about."""
-    try:
-        d = json.loads((stdout or "").strip())
-    except Exception:
-        return None
-    if not isinstance(d, dict) or not isinstance(d.get("usage"), dict):
-        return None
-    u = d["usage"]
-
-    def _i(key: str) -> int:
-        v = u.get(key)
-        return int(v) if isinstance(v, (int, float)) else 0
-
-    tokens_in = _i("input_tokens") + _i("cache_creation_input_tokens") + _i("cache_read_input_tokens")
-    tokens_out = _i("output_tokens")
-    cost = d.get("total_cost_usd")
-    return {
-        "tokens_in": tokens_in,
-        "tokens_out": tokens_out,
-        "cost_usd": float(cost) if isinstance(cost, (int, float)) else None,
-    }
+    """Usage from a Claude or Droid result envelope, or Copilot's JSONL event
+    stream: {"tokens_in", "tokens_out", "cost_usd"}, or None when stdout
+    carries no usage (plain text, timeout, empty). tokens_in includes
+    cache-creation/read tokens — it measures how much context the Observer
+    consumed, which is the cadence signal we care about."""
+    return _usage(agent_session.parse_usage(agent_session.CLAUDE, stdout)
+                  or agent_session.parse_usage(agent_session.COPILOT, stdout))
 
 
 def parse_cli_result(stdout: str) -> dict | None:
-    """Parse usage only from a successful CLI result envelope."""
-    try:
-        d = json.loads((stdout or "").strip())
-    except Exception:
-        return None
-    if not isinstance(d, dict):
-        return None
-    if d.get("type") == "result" and (
-        d.get("is_error") is True
-        or d.get("subtype") not in (None, "success")
-    ):
-        return None
-    return parse_cli_usage(stdout)
+    """parse_cli_usage, but None unless the run reports success."""
+    if agent_session.parse_usage(agent_session.CLAUDE, stdout) is not None:
+        return _usage(agent_session.parse_headless(agent_session.CLAUDE, stdout))
+    return _usage(agent_session.parse_headless(agent_session.COPILOT, stdout))
 
 
 def observer_usage(stdout: str, prompt_chars: int, model: str) -> dict:
@@ -207,15 +189,108 @@ def sum_usage(usages: list[dict]) -> dict:
     }
 
 
+# Jobs that run on their own, so a model call that keeps failing the same way
+# can be held back. A call a person asked for (the Work queue refresh, the Slack
+# tab refresh) is never held back: it always runs when asked.
+BACKGROUND_CALLERS = ("lessons", "strategist", "narrator", "observer-audit", "triage")
+
+
+def _failwatch():
+    """The failure counter, or None if it can't be loaded."""
+    try:
+        src = str(Path(__file__).resolve().parent.parent / "src")
+        if src not in sys.path:
+            sys.path.insert(0, src)
+        from assistant import failwatch  # noqa: PLC0415
+        return failwatch
+    except Exception:  # noqa: BLE001 — counting must never break a model call
+        return None
+
+
+def failure_reason(rc: int | None, stderr: str = "") -> str:
+    """A short, stable reason for a failed model call: what the CLI said last,
+    or the exit code in words."""
+    if rc == 124:
+        return "timed out"
+    if rc == 127:
+        return "not installed"
+    lines = (stderr or "").strip().splitlines()
+    return lines[-1][:150] if lines else f"exit code {rc}"
+
+
+def _context(provider: str | None, model: str | None) -> str:
+    return f"{provider}/{model}"
+
+
+def paused_note(caller: str, provider: str | None = None, model: str | None = None) -> str | None:
+    """For a background job about to call a model: a one-line reason to skip the
+    call because the same failure has repeated, or None to go ahead. A job that
+    knows its provider and model before the call passes them, so a pause set
+    for another model (the wrong id was fixed) doesn't hold."""
+    try:
+        watch = _failwatch()
+        context = _context(provider, model) if provider or model else None
+        until = (watch.backed_off("model:" + caller, context=context)
+                 if watch and caller in BACKGROUND_CALLERS else None)
+        if until:
+            return (f"{caller} model calls paused after repeating the same failure; "
+                    f"next try after {time.strftime('%H:%M', time.localtime(until))}")
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def _count_call(caller: str, model: str | None, provider: str | None,
+                status: str, error: str | None) -> None:
+    """Tell failwatch how a model call went. Never raises."""
+    try:
+        watch = _failwatch()
+        if watch is None:
+            return
+        component = "model:" + caller
+        if status == "failed":
+            text = f"{provider or 'unknown provider'} {model or 'unknown model'} call failed"
+            if error:
+                text += f": {error}"
+            watch.record_failure(component, text, pause=caller in BACKGROUND_CALLERS,
+                                 context=_context(provider, model))
+        elif status == "ok":
+            watch.record_ok(component)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _records():
+    """assistant.records, or None when it can't be loaded. Writing a model call's record is never load-bearing."""
+    try:
+        src = str(Path(__file__).resolve().parent.parent / "src")
+        if src not in sys.path:
+            sys.path.insert(0, src)
+        from assistant import records  # noqa: PLC0415
+        return records
+    except Exception:  # noqa: BLE001 — a record must never break a model call
+        return None
+
+
+_TRACE = re.compile(r"t[rl]-[0-9a-f]{16}")
+
+
 def append_cost_row(*, caller: str, model: str | None, usage: dict,
                     wall_ms: int,
                     path: Path | None = None, status: str = "ok",
-                    provider: str | None = None) -> None:
+                    provider: str | None = None, error: str | None = None,
+                    trace: str = "", batch: int | None = None, failure_kind: str | None = None) -> None:
     """One per-call row in ~/.assistant/cost-ledger.jsonl (design section 3:
     {ts, caller, model, tokens_in, tokens_out, est_usd, wall_ms}). Every LLM
     caller beyond the Observer (triage, later strategist/drafter) appends here
     so $/day per caller is derivable. Failed rows retain observed or estimated
-    spend so repeated failures cannot evade cost accounting."""
+    spend so repeated failures cannot evade cost accounting.
+
+    `trace` is the trace id of what the call served: the run's for a batch, a row's or a task's for a call about
+    one piece of work, or "" when it served none. It goes into the row and into the call's telemetry record, which
+    also holds `batch`, which of the run's calls this was, and `failure_kind` (a word from telemetry.SOURCE_REASON) what kind of
+    failure it was, when the caller knows."""
+    trace = trace if isinstance(trace, str) and _TRACE.fullmatch(trace) else ""
     p = path if path is not None else cost_ledger_path()
     p.parent.mkdir(parents=True, exist_ok=True)
     row = {
@@ -229,9 +304,14 @@ def append_cost_row(*, caller: str, model: str | None, usage: dict,
         "usage_source": usage.get("source", "estimated"),
         "wall_ms": int(wall_ms),
         "status": status,
+        "trace": trace,
     }
     with open(p, "a") as f:
         f.write(json.dumps(row) + "\n")
+    _count_call(caller, model, provider, status, error)
+    records = _records()
+    if records is not None:
+        records.model_call(caller, model, status, usage, wall_ms, trace, error, batch, failure_kind)
 
 
 def read_cost_ledger(path: Path | None = None) -> list[dict]:

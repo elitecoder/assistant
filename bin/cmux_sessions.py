@@ -33,16 +33,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import agent_session  # noqa: E402
+
 APP_CLI = "/Applications/cmux.app/Contents/Resources/bin/cmux"
 # A busy machine has taken 4.8 s to answer; a scan that times out sees no records.
 TIMEOUT_SEC = 15
 CMUX = "cmux"
 REGISTRY = "registry"
 
-# cmux's agent names for the two agents the fleet drives, mapped to the
-# fleet's own provider names (agent_session.CLAUDE / agent_session.DROID).
-_PROVIDERS = {"claude": "claude", "factory": "droid", "droid": "droid"}
-_AGENT_PROCESSES = {"claude", "droid"}
+_AGENT_PROCESSES = set(agent_session.AGENTS)
 
 
 @dataclass(frozen=True)
@@ -63,8 +63,8 @@ class Session:
 
     @property
     def provider(self) -> Optional[str]:
-        """``"claude"`` or ``"droid"``; None for agents the fleet doesn't run."""
-        return _PROVIDERS.get(self.agent)
+        """The fleet's agent name; None for agents the fleet doesn't run."""
+        return agent_session.agent_from_kind(self.agent)
 
 
 def cli_path() -> str:
@@ -77,8 +77,14 @@ def cli_path() -> str:
     return shutil.which("cmux") or APP_CLI
 
 
-def list_sessions() -> list[Session]:
-    """Every session record cmux has saved, active or not."""
+class SessionsUnavailable(RuntimeError):
+    """`cmux sessions list` could not be run or read (raised only in strict mode)."""
+
+
+def list_sessions(strict: bool = False) -> list[Session]:
+    """Every session record cmux has saved, active or not. A failure yields []
+    unless `strict`, which raises SessionsUnavailable so a caller that must not
+    mistake "cmux didn't answer" for "no sessions" can tell the two apart."""
     cli = cli_path()
     try:
         result = subprocess.run(
@@ -86,16 +92,16 @@ def list_sessions() -> list[Session]:
             capture_output=True, text=True, timeout=TIMEOUT_SEC,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        return _unavailable(cli, exc)
+        return _unavailable(cli, exc, strict)
     if result.returncode != 0:
-        return _unavailable(cli, f"exit {result.returncode}: {result.stderr.strip()[:200]}")
+        return _unavailable(cli, f"exit {result.returncode}: {result.stderr.strip()[:200]}", strict)
     try:
         document = json.loads(result.stdout)
     except ValueError:
-        return _unavailable(cli, "output is not JSON")
+        return _unavailable(cli, "output is not JSON", strict)
     rows = document.get("sessions") if isinstance(document, dict) else None
     if not isinstance(rows, list):
-        return _unavailable(cli, "output has no sessions list")
+        return _unavailable(cli, "output has no sessions list", strict)
     return [session for session in map(_parse, rows) if session is not None]
 
 
@@ -138,7 +144,8 @@ def registry_fallback(path: Path, records) -> list[Session]:
 
 
 def agent_process(pid) -> bool:
-    """True when `pid` is a running claude or droid process, not a reused pid."""
+    """True when `pid` is a running claude, copilot, or droid process, not a
+    reused pid."""
     if not pid:
         return False
     try:
@@ -149,8 +156,10 @@ def agent_process(pid) -> bool:
     return os.path.basename(result.stdout.strip()) in _AGENT_PROCESSES
 
 
-def _unavailable(cli, reason) -> list[Session]:
+def _unavailable(cli, reason, strict=False) -> list[Session]:
     print(f"cmux_sessions: `{cli} sessions list` unavailable ({reason})", file=sys.stderr)
+    if strict:
+        raise SessionsUnavailable(str(reason))
     return []
 
 

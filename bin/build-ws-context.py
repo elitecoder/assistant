@@ -20,13 +20,12 @@ Output JSON to stdout:
       "ws_ref": "workspace:N",
       "workspace_id": "<UUID>" | null,
       "observed_at": <epoch seconds>,
-      "observed_sessions": [{"surface_id": "<UUID>", "provider": "claude|droid",
+      "observed_sessions": [{"surface_id": "<UUID>",
+                             "provider": "claude|copilot|droid",
                              "session_id": "<full session ID>"}]
     },
     "last_turn_age_sec": <int|null>,
     "agent_status": "working" | "idle",
-    "cwd_dirty": <bool>,
-    "cwd_unpushed": <bool>,
     "is_protected": <bool>,
     "screen_text": "<live AGENT-pane viewport+scrollback>",
     "screen_shows_error": <bool>
@@ -69,6 +68,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import agent_session  # noqa: E402
 import cmux_sessions  # noqa: E402
 
 HOME = Path(os.environ["HOME"])
@@ -96,14 +96,17 @@ SCREEN_LINES = 120
 # Matched per-line, case-insensitive, against screen_text.
 _ERROR_LINE_RE = re.compile(
     r"""^\s*               # leading indent cmux may render
-        [⏺·∙•*]\s*         # the assistant-turn bullet glyph
-        (?:                # …immediately followed by an error envelope:
-            api\ error\b
-          | request\ timed\ out\b
-          | (?:the\ )?system\ encountered\ an\ unexpected\ error
-          | overloaded(?:_error)?\b
-          | rate[\ _]limit(?:_error)?\b
-          | connection\ error\b
+        (?:
+          [⏺●✗·∙•*]\s*     # the assistant-turn bullet glyph (● and ✗ are Copilot's)
+          (?:              # …immediately followed by an error envelope:
+              api\ error\b
+            | request\ timed\ out\b
+            | (?:the\ )?system\ encountered\ an\ unexpected\ error
+            | overloaded(?:_error)?\b
+            | rate[\ _]limit(?:_error)?\b
+            | connection\ error\b
+          )
+        | [●✗]\s*execution\ failed:   # Copilot's failed-turn banner
         )
     """,
     re.IGNORECASE | re.VERBOSE,
@@ -201,6 +204,8 @@ def _agent_for_screen(text: str) -> str | None:
         return None
     if status_bar_session_id(text):
         return "claude"
+    if agent_session.shows_copilot(text):
+        return "copilot"
     if any(m in text for m in _DROID_PANE_MARKERS):
         return "droid"
     if any(m in text for m in _CLAUDE_PANE_MARKERS):
@@ -301,7 +306,7 @@ def _pid_alive(pid) -> bool:
 
 def _transcript_internal_sid(path: str) -> str | None:
     """The sessionId recorded INSIDE the transcript (Claude Code writes it on
-    every line). Used to confirm a file's identity matches the id we resolved
+    every line; Droid and Copilot on their session-start record). Used to confirm a file's identity matches the id we resolved
     from — the last verification gate before we trust a path."""
     try:
         with open(path, "rb") as f:
@@ -318,6 +323,9 @@ def _transcript_internal_sid(path: str) -> str | None:
         sid = d.get("sessionId") or d.get("session_id")
         if not sid and d.get("type") == "session_start":
             sid = d.get("id")
+        if not sid and d.get("type") == "session.start":
+            data = d.get("data")
+            sid = data.get("sessionId") if isinstance(data, dict) else None
         if sid:
             return sid
     return None
@@ -333,10 +341,12 @@ def transcript_from_session_id(sid8: str | None) -> str | None:
     (astronomically unlikely) 8-hex prefix collision."""
     if not sid8:
         return None
-    roots = [HOME / ".claude/projects", HOME / ".factory/sessions"]
+    roots = [agent_session.transcript_root(a, home=HOME) for a in agent_session.SLUG_AGENTS]
+    copilot_root = agent_session.transcript_root(agent_session.COPILOT, home=HOME)
     candidates = sorted(
-        (str(p) for root in roots if root.is_dir()
-         for p in root.glob(f"*/{sid8}*.jsonl")),
+        [*(str(p) for root in roots if root.is_dir()
+           for p in root.glob(f"*/{sid8}*.jsonl")),
+         *(str(p) for p in copilot_root.glob(f"{sid8}*/events.jsonl"))],
         key=os.path.getmtime, reverse=True,
     )
     for path in candidates:
@@ -383,6 +393,9 @@ def recorded_transcript_for_surface(surface_uuid: str, expect_sid8: str | None =
     if expect_sid8 and sid8 != expect_sid8:
         return None  # the record disagrees with the live screen → screen wins
     tp = record.transcript_path
+    if not tp and record.provider == agent_session.COPILOT:
+        tp = agent_session.transcript_for_session(
+            agent_session.COPILOT, record.session_id, home=HOME)
     if not tp or not os.path.exists(tp):
         return None
     # Final identity gate: the file must self-identify as this session.
@@ -423,10 +436,9 @@ def resume_binding_for_surface(surface_ref: str, ws_ref: str) -> dict | None:
     if not binding:
         return None
     sid = binding.get("checkpointId") or binding.get("checkpoint_id")
-    kind = str(binding.get("kind") or "").lower()
-    if kind not in {"claude", "factory", "droid"}:
+    agent = agent_session.agent_from_kind(binding.get("kind"))
+    if agent is None:
         return None
-    agent = "droid" if kind in {"factory", "droid"} else "claude"
     return {"session_id": str(sid), "agent": agent}
 
 
@@ -491,7 +503,7 @@ def observation_identity(ws_ref: str, before: dict | None,
         return identity
     transcript = resolved.get("transcript_path")
     if transcript:
-        root = HOME / (".factory/sessions" if provider == "droid" else ".claude/projects")
+        root = agent_session.transcript_root(provider, home=HOME)
         if (not Path(transcript).is_relative_to(root)
                 or _transcript_internal_sid(transcript) != sid):
             return identity
@@ -581,8 +593,9 @@ def transcript_signals(path: str | None) -> tuple[int | None, str]:
     tail, since Claude Code also writes bookkeeping records after a turn. With
     no such record in the tail, it counts from the file's mtime.
 
-    agent_status='working' means a tool_use is in flight (last entry is
-    assistant emitting tool_use, no matching tool_result yet). Otherwise 'idle'.
+    agent_status='working' means a tool call is in flight: a tool_use with no
+    matching tool_result yet, or a Copilot tool.execution_start with no
+    tool.execution_complete. Otherwise 'idle'.
     """
     if not path or not os.path.exists(path):
         return None, "idle"
@@ -613,12 +626,21 @@ def transcript_signals(path: str | None) -> tuple[int | None, str]:
             continue
         if not isinstance(d, dict):
             continue
-        if d.get("type") in ("user", "assistant", "message") and not d.get("isMeta"):
+        kind = d.get("type")
+        if kind in ("user", "assistant", "message") and not d.get("isMeta"):
             last_turn = _record_time(d.get("timestamp")) or last_turn
-        msg = d.get("message")
-        if not isinstance(msg, dict):
+        if kind in ("abort", "session.shutdown"):
+            pending_tool_ids.clear()
             continue
-        content = msg.get("content")
+        if kind in ("tool.execution_start", "tool.execution_complete"):
+            data = d.get("data")
+            tid = data.get("toolCallId") if isinstance(data, dict) else None
+            if kind == "tool.execution_start" and tid:
+                pending_tool_ids.add(tid)
+            else:
+                pending_tool_ids.discard(tid)
+            continue
+        content = agent_session.record_content(d)
         if not isinstance(content, list):
             continue
         for c in content:
@@ -646,28 +668,6 @@ def _record_time(stamp) -> float | None:
         return None
 
 
-def cwd_state(cwd: str | None) -> tuple[bool, bool]:
-    if not cwd or not os.path.isdir(cwd):
-        return False, False
-    try:
-        r = subprocess.run(
-            ["git", "--no-optional-locks", "-C", cwd, "status", "--porcelain"],
-            capture_output=True, text=True, timeout=5,
-        )
-        dirty = bool(r.stdout.strip()) if r.returncode == 0 else False
-    except Exception:
-        dirty = False
-    try:
-        r = subprocess.run(
-            ["git", "--no-optional-locks", "-C", cwd, "log", "@{u}..", "--oneline"],
-            capture_output=True, text=True, timeout=5,
-        )
-        unpushed = bool(r.stdout.strip()) if r.returncode == 0 else False
-    except Exception:
-        unpushed = False
-    return dirty, unpushed
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--ws-ref", required=True)
@@ -687,7 +687,6 @@ def main() -> int:
         resolved, observed_at)
     transcript = resolved["transcript_path"]
     age, agent_status = transcript_signals(transcript)
-    dirty, unpushed = cwd_state(args.cwd)
 
     # When transcript is null (no verified session found), age is None and the
     # Observer can't tell if the workspace is fresh or stale. Fall back to the
@@ -720,8 +719,6 @@ def main() -> int:
         "observation_identity": identity,
         "last_turn_age_sec": age,
         "agent_status": agent_status,
-        "cwd_dirty": dirty,
-        "cwd_unpushed": unpushed,
         "is_protected": args.ws_ref in PROTECTED_REFS,
         "screen_text": resolved["screen_text"],
         "screen_shows_error": resolved["screen_shows_error"],

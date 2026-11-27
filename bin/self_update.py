@@ -30,9 +30,10 @@ location-independent — a user who installed it anywhere, not just
      rather than merging blindly. Local commits the remote already holds are
      left behind with `git reset --keep <fetched sha>`.
      bin/ and prompts/ are symlinked / read live, so a pull alone makes
-     code + Observer-prompt changes take effect on the very next pulse.
-  4. If the pull touched COPIED artifacts (skills/, launchagents/, the
-     installer itself), run `install.sh --apply` to re-copy + reload them.
+     the next pulse run the new code and prompts.
+  4. If the pull touched bin/, COPIED artifacts (skills/, launchagents/, the
+     installer itself), run `install.sh --apply` to re-copy + reload them and
+     to restart the always-on services whose code changed.
      ASSISTANT_SELF_UPDATE=1 tells install.sh to skip reloading the pulse's
      OWN plist (reloading it mid-pulse would kill this very process).
 
@@ -53,12 +54,15 @@ import time
 from pathlib import Path
 
 # A pull that changes any of these needs `install.sh --apply` to take effect:
-# copied install-time files, and code that long-running services (the
-# dashboard server, the app connectors) load once at start. The rest of bin/,
-# prompts/, hooks/, and docs/ are read live, so a bare pull makes them current.
+# copied install-time files, and bin/ code, which the always-on services (the
+# comms listener, the watchers, the dashboard server, the app connectors) load
+# once at start (and the Slack reactor's slack-reactor/src/ code); install.sh
+# restarts the running ones. prompts/, hooks/, and
+# docs/ are read live, so a bare pull makes them current.
 INSTALL_REQUIRING_PREFIXES = ("skills/", "launchagents/", "install/",
-                              "bin/connectors/", "src/assistant/")
-INSTALL_REQUIRING_FILES = ("install.sh", "bin/todo-server.py")
+                              "bin/", "src/assistant/",
+                              "slack-reactor/src/", "work_queue/")
+INSTALL_REQUIRING_FILES = ("install.sh",)
 
 # Reloading this label mid-pulse would SIGTERM the updater. install.sh honors
 # ASSISTANT_SELF_UPDATE=1 by skipping it; the plist change applies on the next
@@ -66,6 +70,11 @@ INSTALL_REQUIRING_FILES = ("install.sh", "bin/todo-server.py")
 SELF_PLIST_LABEL = "com.assistant.assistant-pulse"
 
 DEFAULT_INTERVAL_SEC = 3600
+
+WATCH = "self-update"  # the name failwatch counts this job's failures under
+# The hourly throttle already limits the load, so a pause here never needs the
+# full day: the cause (a branch, a network) is often fixed within hours.
+WATCH_CAP_SEC = 4 * 3600
 
 # A working tree that stays dirty across this many seconds is auto-stashed so
 # self-update can proceed. Measured from the FIRST throttle-passing pulse that
@@ -82,7 +91,7 @@ DEFAULT_DIRTY_STASH_AFTER_SEC = 86400  # 1 day
 # pulled commit from doing the same; bin/run-pulse.py covers the working copy.
 SYNTAX_GATE_PATHS = ("bin/", "src/", "hooks/", "install/", "prompts/", "skills/",
                      "launchagents/", "config/", "docs/", "slack-reactor/",
-                     "install.sh", "install-bootstrap.sh")
+                     "install.sh", "install-bootstrap.sh", "work_queue/")
 
 # A refused commit is re-checked, and its failure re-recorded, this often.
 REJECT_REMIND_SEC = 86400  # 1 day
@@ -422,10 +431,50 @@ def syntax_gate(repo: Path, old_sha: str, new_sha: str) -> tuple[str, str]:
     return "ok", "ok"
 
 
-def maybe_update(
+def _failwatch():
+    """The failure counter, or None if it can't be loaded: counting a failure
+    must never stop an update."""
+    try:
+        src = str(Path(__file__).resolve().parent.parent / "src")
+        if src not in sys.path:
+            sys.path.insert(0, src)
+        from assistant import failwatch  # noqa: PLC0415
+        return failwatch
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _context(remote: str | None, branch: str | None) -> str:
+    """What an update is trying to reach, so a pause for one branch doesn't
+    hold once the branch or remote has changed."""
+    return f"{remote}/{branch}" if remote and branch else "none"
+
+
+def maybe_update(repo: Path, **kwargs) -> dict | None:
+    """Throttled self-update (see _maybe_update), plus failure counting: every
+    attempt that failed is counted under one name so a repeat shows once with
+    a count, and a clean attempt clears the streak. A refused commit that was
+    already reported today (syntax-fail-known) is neither."""
+    result = _maybe_update(repo, **kwargs)
+    if result is None or not result.get("attempted") or result.get("skipped_reason") == "syntax-fail-known":
+        return result
+    watch = _failwatch()
+    if watch is None:
+        return result
+    problem = result.get("error") or (result.get("syntax_error") if result.get("skipped_reason") == "syntax-fail" else None)
+    if problem:
+        watch.record_failure(WATCH, problem, now=kwargs.get("now"), cap=WATCH_CAP_SEC,
+                             context=_context(result.get("remote"), result.get("branch")))
+    else:
+        watch.record_ok(WATCH, now=kwargs.get("now"))
+    return result
+
+
+def _maybe_update(
     repo: Path,
     *,
     now: float | None = None,
+    force: bool = False,
     interval_sec: int = DEFAULT_INTERVAL_SEC,
     dirty_stash_after_sec: int = DEFAULT_DIRTY_STASH_AFTER_SEC,
     marker_path: Path | None = None,
@@ -451,6 +500,20 @@ def maybe_update(
     # throttle next pulse (we never want a hot retry loop).
     marker["last_attempt_ts"] = now
     _write_marker(marker_path, marker)
+
+    # The same failure three times running pauses the retries (1 hour, doubling
+    # to 24). --force is a person asking, so it always tries.
+    watch = None if force else _failwatch()
+    paused_until = watch.backed_off(WATCH, now=now) if watch else None
+    if paused_until:
+        # The pause was earned on one remote and branch. If the checkout now
+        # points somewhere else (the branch was fixed), try straight away.
+        target = resolve_remote_branch(repo)
+        paused_until = watch.backed_off(WATCH, now=now, context=_context(*(target or (None, None))))
+    if paused_until:
+        _log("paused after repeating the same failure; next try after "
+             f"{time.strftime('%H:%M', time.localtime(paused_until))}")
+        return None
 
     result: dict = {"attempted": True, "changed": False, "installed": False,
                     "skipped_reason": None}
@@ -659,6 +722,7 @@ if __name__ == "__main__":  # manual run: ./self_update.py [--force]
     out = maybe_update(
         repo,
         interval_sec=0 if args.force else DEFAULT_INTERVAL_SEC,
+        force=args.force,
         log=logging.getLogger("self_update"),
     )
     print(json.dumps(out, indent=2))

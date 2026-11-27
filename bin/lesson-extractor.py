@@ -14,9 +14,11 @@ Two signal sources feed one proposal pipeline:
   tool results, harness reminders, and spawn prompts), and emits candidates in
   the same shape the ledger pass produces. Skipped with --ledger-only.
 
+The ledger pass is off by default; set ASSISTANT_LESSON_LEDGER_PASS=1 to run it.
+
 Both passes drop candidates already covered by an existing lesson or a pending
 proposal (idempotency — running twice produces no duplicates), ask Claude
-(one-shot `claude -p`) to write a {trigger, rule, target, scope}, and append it
+(one-shot `claude -p`) to write a {rule, target, scope}, and append it
 to proposals.jsonl (atomic single-line append) where the user can review and
 confirm it.
 
@@ -51,8 +53,7 @@ LEDGER_PATH = ASSISTANT_DIR / "actions-ledger.jsonl"
 PROPOSALS_PATH = ASSISTANT_DIR / "proposals.jsonl"
 AUDIT_LOG = ASSISTANT_DIR / "assistant-audit.log"
 CURATOR = BIN / "assistant-curator.py"
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(HOME / ".local/bin/claude"))
-# Keel M8 model-tiering: the extractor only PHRASES a {trigger, rule, target}
+# Keel M8 model-tiering: the extractor only PHRASES a {rule, target}
 # over a recurrence already DETECTED in Python (MIN_OCCURRENCES), and every
 # result is a HUMAN-CONFIRMED proposal — a hard gate that makes this a CHEAP-tier
 # task (a weak draft is reviewed, never auto-applied). EXTRACTOR_MODEL still wins
@@ -66,11 +67,12 @@ MIN_OCCURRENCES = 3
 WINDOW_SEC = 72 * 3600
 STEM_WORDS = 8
 
-# Where Claude Code writes one JSONL transcript per session.
-CLAUDE_PROJECTS = HOME / ".claude" / "projects"
 if str(BIN) not in sys.path:
     sys.path.insert(0, str(BIN))
 import agent_session  # noqa: E402
+
+# Where Claude Code writes one JSONL transcript per session.
+CLAUDE_PROJECTS = agent_session.transcript_root(agent_session.CLAUDE, home=HOME)
 
 # Strip these noise tokens out of evidence before computing the stem so the
 # grouping keys on the SHAPE of the evidence, not its per-workspace specifics.
@@ -317,6 +319,12 @@ def signal_stem(text: str, words: int = 10) -> str:
     return " ".join(_norm(text).split()[:words])
 
 
+def _session_name(path: Path) -> str:
+    """A transcript's per-session name: the file name, or `<id>/events.jsonl`
+    for Copilot, whose every session file is named events.jsonl."""
+    return f"{path.parent.name}/{path.name}" if path.name == "events.jsonl" else path.name
+
+
 class TranscriptScanner:
     """Scans Claude Code session transcripts for correction/confirmation signals.
 
@@ -349,12 +357,16 @@ class TranscriptScanner:
     def __init__(self, roots: list[Path] | None = None,
                  projects_dir: Path = CLAUDE_PROJECTS,
                  droid_dir: Path | None = None,
+                 copilot_dir: Path | None = None,
                  existing: list[str] | None = None,
                  now: float | None = None):
         if roots is None:
             droid_dir = droid_dir or agent_session.DROID_SESSIONS
             roots = [base / d for base in (projects_dir, droid_dir)
                      for d in self.PRIORITY_DIRS if (base / d).is_dir()]
+            if copilot_dir is not None or agent_session.copilot_chosen():
+                roots += self._copilot_roots(copilot_dir or agent_session.transcript_root(
+                    agent_session.COPILOT, home=HOME))
         self.roots = roots
         self.now = now if now is not None else time.time()
         # Existing lesson triggers for fuzzy dedup. Fetched lazily by the caller
@@ -362,6 +374,16 @@ class TranscriptScanner:
         self._existing_stems = {signal_stem(t) for t in (existing or []) if t}
 
     # ── file selection ──────────────────────────────────────────────────────
+
+    def _copilot_roots(self, copilot_dir: Path) -> list[Path]:
+        """Copilot session dirs whose cwd maps to a priority project slug."""
+        try:
+            dirs = sorted(copilot_dir.iterdir())
+        except OSError:
+            return []
+        return [d for d in dirs
+                if (cwd := agent_session.copilot_session_cwd(d))
+                and agent_session.claude_project_slug(cwd) in self.PRIORITY_DIRS]
 
     def _gather_files(self) -> list[Path]:
         """Recency-sorted, filtered transcript paths under the scan roots."""
@@ -453,10 +475,7 @@ class TranscriptScanner:
                 role = agent_session.record_role(obj)
                 if role is None:
                     continue
-                msg = obj.get("message")
-                if not isinstance(msg, dict):
-                    continue
-                content = msg.get("content")
+                content = agent_session.record_content(obj)
                 text = (self._user_text(content) if role == "user"
                         else self._assistant_text(content))
                 if text:
@@ -506,7 +525,7 @@ class TranscriptScanner:
                 if text.rstrip().endswith("?") and len(text) <= 200:
                     qstem = signal_stem(text, words=8)
                     if qstem:
-                        q_files[qstem].add(path.name)
+                        q_files[qstem].add(_session_name(path))
                         q_repr.setdefault(qstem, text)
                 sig = self._classify(text)
                 if not sig:
@@ -521,7 +540,7 @@ class TranscriptScanner:
                     agg[key] = {
                         "type": "transcript",
                         "signal": sig,
-                        "source_file": path.name,
+                        "source_file": _session_name(path),
                         "assistant_context": self._prev_assistant(turns, i)[:200],
                         "user_signal": text[:150],
                         "stem": stem,
@@ -579,8 +598,7 @@ to do with each workspace). The lesson is a rule: either codify a good behavior 
 this pattern reflects, or prevent a mistake it reveals.
 
 Return ONLY a single JSON object, no prose, no code fences:
-{{"trigger": "<one short line naming when the rule fires>", \
-"rule": "<one paragraph, imperative, what to do and why>", \
+{{"rule": "<one paragraph, imperative: when it applies, what to do, and why>", \
 "target": "assistant", \
 "scope": "<one of: verdict, merge, cleanup, stranded, general>"}}
 """
@@ -612,8 +630,7 @@ If the correction is about general coding or tool behavior, prefer "claude". \
 If it is about orchestration/workspace verdicts, use "assistant".
 
 Return ONLY a single JSON object, no prose, no code fences:
-{{"trigger": "<one short line naming when the rule fires>", \
-"rule": "<one paragraph, imperative, what to do and why>", \
+{{"rule": "<one paragraph, imperative: when it applies, what to do, and why>", \
 "target": "<claude|assistant>", \
 "scope": "<a valid scope for the chosen target>"}}
 
@@ -640,8 +657,7 @@ classification, dashboard, ffp, scout, memory, security.
 policy). Valid scopes: verdict, merge, cleanup, stranded, general.
 
 Return ONLY a single JSON object, no prose, no code fences:
-{{"trigger": "<one short line naming when the rule fires>", \
-"rule": "<one paragraph, imperative, what to do and why>", \
+{{"rule": "<one paragraph, imperative: when it applies, what to do, and why>", \
 "target": "<claude|assistant>", \
 "scope": "<a valid scope for the chosen target>"}}
 
@@ -660,8 +676,7 @@ the standing context, targeting "claude" (scope: global) unless it is clearly \
 orchestration policy (target "assistant").
 
 Return ONLY a single JSON object, no prose, no code fences:
-{{"trigger": "<one short line naming when this comes up>", \
-"rule": "<one paragraph stating the standing answer/context and what to do>", \
+{{"rule": "<one paragraph stating when this comes up, the standing answer/context, and what to do>", \
 "target": "<claude|assistant>", \
 "scope": "<a valid scope for the chosen target>"}}
 
@@ -745,7 +760,8 @@ def _bedrock_env() -> dict[str, str]:
 def draft_lesson(candidate: dict[str, Any],
                  llm: Callable[[str], str] | None = None) -> dict[str, Any] | None:
     """Ask the LLM to turn a candidate pattern into {trigger, rule, target,
-    scope}. Returns None if the call fails or the output isn't usable JSON.
+    scope}; `trigger` is "" unless the LLM returns one. Returns None if the
+    call fails or the output isn't usable JSON.
     `llm` is injectable for tests; the default shells out to `claude -p`."""
     prompt = build_draft_prompt(candidate)
     raw = (llm or _claude_oneshot)(prompt)
@@ -758,7 +774,7 @@ def draft_lesson(candidate: dict[str, Any],
         return None
     trigger = (obj.get("trigger") or "").strip()
     rule = (obj.get("rule") or "").strip()
-    if not trigger or not rule:
+    if not rule:
         return None
     target = (obj.get("target") or "assistant").strip() or "assistant"
     scope = (obj.get("scope") or "").strip()
@@ -770,20 +786,32 @@ def draft_lesson(candidate: dict[str, Any],
     return {"trigger": trigger, "rule": rule, "target": target, "scope": scope}
 
 
+_PAUSE_LOGGED = False
+
+
 def _claude_oneshot(prompt: str) -> str:
     if str(BIN) not in sys.path:
         sys.path.insert(0, str(BIN))
     import llm_runner  # noqa: PLC0415
-    run_dir = ASSISTANT_DIR / "lesson-runs" / str(time.time_ns())
-    run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "prompt.md").write_text(prompt)
+    import metering  # noqa: PLC0415
     route = llm_runner.load_route_config(
         llm_runner.config_path(home=HOME), "lessons")
     provider = llm_runner.select_provider(route, [str(time.time_ns())])
     model = route.model_for(EXTRACTOR_MODEL)
+    # A changed model or provider lifts the pause at once.
+    paused = metering.paused_note("lessons", provider, model)
+    if paused:
+        global _PAUSE_LOGGED
+        if not _PAUSE_LOGGED:  # one line per run, not one per candidate
+            audit(f"model call skipped: {paused}")
+            _PAUSE_LOGGED = True
+        return ""
+    run_dir = ASSISTANT_DIR / "lesson-runs" / str(time.time_ns())
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "prompt.md").write_text(prompt)
     result = llm_runner.invoke(
         provider=provider, prompt=prompt, model=model, run_dir=run_dir,
-        timeout=120, run=_run, claude_bin=CLAUDE_BIN,
+        timeout=120, run=_run,
         droid_bin=route.droid_bin,
         reasoning_effort=route.reasoning_effort, local_url=route.local_url,
         disable_tools=True, tag="assistant-lessons")
@@ -809,7 +837,8 @@ def _claude_oneshot(prompt: str) -> str:
                    "cost_usd": cost, "source": source},
             wall_ms=result.wall_ms,
             status="ok" if result.usable else "failed",
-            provider=provider)
+            provider=provider,
+            error=metering.failure_reason(result.rc, result.stderr))
     except Exception:
         pass
     return result.result_text if result.usable else ""
@@ -1158,6 +1187,7 @@ def run_discovery(*, dry_run: bool = False,
 
 def extract(*, dry_run: bool = False,
             ledger_only: bool = False,
+            ledger_pass: bool | None = None,
             llm: Callable[[str], str] | None = None,
             ledger_path: Path = LEDGER_PATH,
             proposals_path: Path = PROPOSALS_PATH,
@@ -1172,7 +1202,12 @@ def extract(*, dry_run: bool = False,
     scanner_factory).
     """
     now = now if now is not None else now_epoch()
-    entries = read_ledger_tail(ledger_path)
+    # The ledger pass is off unless ASSISTANT_LESSON_LEDGER_PASS=1: nobody
+    # answered its proposals, so by default only transcript corrections run.
+    if ledger_pass is None:
+        ledger_pass = os.environ.get("ASSISTANT_LESSON_LEDGER_PASS", "0").strip().lower() in (
+            "1", "true", "yes", "on")
+    entries = read_ledger_tail(ledger_path) if ledger_pass else []
     candidates = find_patterns(entries, now=now)
 
     triggers = existing_triggers(curator)

@@ -176,6 +176,12 @@ def _write_droid_settings(home, body='{"model": "glm-5.2"}'):
     return s
 
 
+@pytest.fixture(autouse=True)
+def _no_real_agent_installs(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path / "agent-home"))
+    monkeypatch.setattr(doctor, "HOME", tmp_path / "agent-home")
+
+
 def test_droid_binary_pass_when_selected_and_present(monkeypatch, tmp_path):
     _select_droid(monkeypatch)
     droid = tmp_path / "droid"
@@ -294,3 +300,21 @@ def test_claude_box_agent_checks_do_not_fail_exit(monkeypatch, tmp_path):
     monkeypatch.setattr(doctor, "SLACK_CHECKS",
                         [lambda: doctor.Check("opt", doctor.SKIP, core=False)])
     assert doctor.main(["--only", "all", "--strict"]) == 0
+
+
+def test_observer_check_says_off_by_default_and_how_to_turn_it_on(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    check = doctor.check_observer()
+    assert check.status == doctor.SKIP and not check.core
+    assert check.detail.startswith("off (the default)")
+    assert '{"observer": {"enabled": true}}' in check.detail and "ASSISTANT_WATCHER=1" in check.detail
+    assert doctor.check_observer in doctor.AGENT_CHECKS
+
+
+def test_observer_check_passes_when_config_turns_it_on(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".assistant").mkdir()
+    (tmp_path / ".assistant/config.json").write_text('{"observer": {"enabled": true}}')
+    check = doctor.check_observer()
+    assert check.status == doctor.PASS
+    assert check.detail.startswith("on in ~/.assistant/config.json")

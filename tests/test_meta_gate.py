@@ -210,37 +210,12 @@ def test_cli_coverage_hit_text(tmp_path, capsys):
     assert "x.md" in out
 
 
-def test_cli_detect_with_repo(tmp_path, capsys, monkeypatch):
-    """--repo flag calls _git_changed_paths and appends to the explicit path list."""
-    monkeypatch.setattr(mg, "_git_changed_paths",
-                        lambda repo, base: [".claude/rules/ffp-lessons.md"])
-    rc = mg.main(["detect", "--repo", str(tmp_path)])
-    out = capsys.readouterr().out
+def test_cli_detect_takes_paths_only(capsys):
+    with pytest.raises(SystemExit):
+        mg.main(["detect", "--repo", "."])
+    rc = mg.main(["detect", "--paths", ".claude/rules/ffp-lessons.md"])
     assert rc == 0
-    assert "FFP rule/skill change" in out
-
-
-def test_git_changed_paths_returns_sorted(tmp_path, monkeypatch):
-    """_git_changed_paths unions diff, unstaged, and staged output."""
-    import subprocess as sp
-
-    class _CP:
-        returncode = 0
-
-    def fake_run(cmd, *a, **kw):
-        r = _CP()
-        if "--staged" in cmd:
-            r.stdout = ".claude/rules/ffp-lessons.md\n"
-        elif cmd[-1] == "HEAD..HEAD":  # never matches, but exercises the loop
-            r.stdout = ""
-        else:
-            r.stdout = ".claude/rules/ffp-lessons.md\nsrc/x.tsx\n"
-        return r
-
-    monkeypatch.setattr(mg.subprocess, "run", fake_run)
-    paths = mg._git_changed_paths(tmp_path, "origin/main")
-    assert ".claude/rules/ffp-lessons.md" in paths
-    assert paths == sorted(paths)
+    assert "FFP rule/skill change" in capsys.readouterr().out
 
 
 def test_gather_existing_corpus_subprocess_ok(monkeypatch):

@@ -62,13 +62,17 @@ install.sh — install/update the Assistant system from $REPO_ROOT
 
   --dry-run         (default) Show what would change. No mutation.
   --apply           Actually create symlinks/copies, copy plists, reload launchd.
-  --pro             Turn on Pro mode: notifications and triage, goals and the
-                    planner, the Notifications, Decisions, Background work, and
-                    Connected apps tabs, and the /goal, /attend, /back-off, and
-                    /lesson skills. Connectors you've set up start polling.
+  --pro             Turn on Pro mode: goals, the Notifications, Decisions,
+                    Background work, and Connected apps tabs, and the /goal,
+                    /attend, /back-off, and /lesson skills. Decisions, the
+                    morning brief, and the goals planner stay off until you
+                    turn each on in config.json. Connectors you've set up
+                    start polling.
+                    Also loads the Work queue page (docs/work-queue.md).
                     Saved as {"mode": "pro"} in ~/.assistant/config.json. The
                     dashboard's settings area has the same switch.
   --no-pro          Switch to default mode and unlink the Pro skills.
+                    Also unloads the Work queue server.
                     Without either flag, an install that already has goals,
                     notifications, or the Pro skills stays in Pro mode.
   --pull-skills     Pull edits from a live ~/.claude/skills/<name>/ directory
@@ -100,6 +104,11 @@ install.sh — install/update the Assistant system from $REPO_ROOT
   Flags/answers only affect what gets LOADED; an already-running feature daemon
   is never torn out (it's adopted and remembered as enabled).
   -h, --help        This help.
+  ASSISTANT_PYTHON=/path/to/python3 picks the interpreter the LaunchAgents run
+  with; several paths separated by colons are tried in order. Otherwise it's
+  the first python3 of 3.11 or newer from Homebrew, then /usr/local/bin, then
+  /usr/bin. The Work queue needs 3.11 or newer; with an older one its
+  LaunchAgent isn't installed, and one an earlier install left is removed.
 
 After --apply:
   - ~/.claude/bin                                → symlink → $REPO_ROOT/bin
@@ -404,9 +413,20 @@ ensure_file_copy() {
     fi
 }
 
+# service_running <label> — 0 when launchd reports the service running. Reads
+# all of launchctl's output, so grep exiting early can't fail the pipeline.
+service_running() {
+    launchctl print "gui/$UID/$1" 2>/dev/null | grep "state = running" >/dev/null
+}
+
 # launchctl_reload <label> <plist_path>
 launchctl_reload() {
     local label="$1" plist="$2"
+    # A dry run never copies a new plist, so a new service has none to reload yet.
+    if [[ ! -f "$plist" && $APPLY -eq 0 ]]; then
+        note "would load $label (bootstrap $plist once it's copied)"
+        return 0
+    fi
     if [[ ! -f "$plist" ]]; then
         warn "plist missing for $label at $plist"
         return 1
@@ -584,6 +604,15 @@ log ""
 # through its native paths.
 ensure_symlink "$HOME_DIR/.factory/skills" "$HOME_DIR/.claude/skills"
 ensure_symlink "$HOME_DIR/.factory/AGENTS.md" "$HOME_DIR/.claude/CLAUDE.md" || true
+# Copilot reads personal skills from ~/.copilot/skills.
+if python3 "$REPO_ROOT/bin/agent_session.py" copilot-chosen; then
+    if [[ $APPLY -eq 1 ]]; then
+        python3 "$REPO_ROOT/bin/agent_session.py" link-copilot-skills \
+            || warn "Copilot skills not linked; Copilot sessions have no /cleanup, /todo, or /lesson"
+    else
+        note "would link ~/.copilot/skills → ~/.claude/skills (Copilot is picked)"
+    fi
+fi
 log ""
 
 # --- 3. Generate LaunchAgent plists from templates + reload only those that changed ----------
@@ -620,9 +649,23 @@ BREW_BIN=""
 if command -v brew >/dev/null 2>&1; then
     BREW_BIN="$(brew --prefix 2>/dev/null)/bin"
 fi
+# The first python3 of 3.11 or newer (pyproject's requires-python), or else the
+# first one found. The Work queue needs 3.11 or newer and isn't installed without it.
 PLIST_PYTHON=""
-for cand in "$BREW_BIN/python3" /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
-    if [[ -n "$cand" && -x "$cand" ]]; then PLIST_PYTHON="$cand"; break; fi
+PLIST_PYTHON_NEW=0
+if [[ -n "${ASSISTANT_PYTHON:-}" ]]; then
+    IFS=: read -r -a PYTHON_CANDIDATES <<< "$ASSISTANT_PYTHON"
+else
+    PYTHON_CANDIDATES=("$BREW_BIN/python3" /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3)
+fi
+for cand in "${PYTHON_CANDIDATES[@]}"; do
+    [[ -x "$cand" ]] || continue
+    if "$cand" -c 'import sys; sys.exit(sys.version_info < (3, 11))' >/dev/null 2>&1; then
+        PLIST_PYTHON="$cand"
+        PLIST_PYTHON_NEW=1
+        break
+    fi
+    [[ -n "$PLIST_PYTHON" ]] || PLIST_PYTHON="$cand"
 done
 if [[ -z "$PLIST_PYTHON" ]]; then
     warn "no python3 found for LaunchAgent plists — install Xcode CLT or Homebrew python3"
@@ -682,6 +725,7 @@ PLIST_SKIP=(
 #   cmux-ws-numberer   number + color cmux workspaces → on unless declined (--no-ws-numberer)
 #   assistant-comms    Slack comms (needs token + assistant-comms-setup.sh)
 #   slack-reactor      Slack emoji→todo (needs SLACK_APP_TOKEN/SLACK_BOT_TOKEN)
+#   work-queue         the Work queue page → loaded in Pro mode only, unloaded otherwise
 # comms/slack-reactor are never auto-loaded even with a flag — they crash-loop
 # without their tokens, so they activate by hand after setup. memory,
 # crash-resume, and ws-numberer DO auto-load when their flag is passed.
@@ -694,22 +738,25 @@ feature_of() {
         com.assistant.cmux-ws-numberer.plist)   echo "ws-numberer" ;;
         com.assistant.assistant-comms.plist)    echo "comms" ;;
         com.assistant.slack-reactor.plist)      echo "slack-reactor" ;;
+        com.assistant.work-queue.plist)         echo "work-queue" ;;
         *)                                       echo "" ;;
     esac
 }
 # feature_enabled <feature> → 0 (load it) / 1 (copy-no-load). comms &
 # slack-reactor are ALWAYS copy-no-load (token-gated); memory, crash-resume,
-# and ws-numberer load only when their --with flag was passed.
+# and ws-numberer load only when their --with flag was passed; work-queue loads
+# only in Pro mode.
 feature_enabled() {
     case "$1" in
         memory)        [[ $WITH_MEMORY -eq 1 ]] ;;
         crash-resume)  [[ $WITH_CRASH_RESUME -eq 1 ]] ;;
         ws-numberer)   [[ $WITH_WS_NUMBERER -eq 1 ]] ;;
+        work-queue)    [[ "$MODE" == "pro" ]] ;;
         *)             return 1 ;;
     esac
 }
 
-declare -a CHANGED_LABELS
+declare -a CHANGED_LABELS=()
 for plist in "$REPO_ROOT"/launchagents/*.plist; do
     base="$(basename "$plist")"
     label="$(basename "$plist" .plist)"
@@ -720,6 +767,26 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
     for skip_base in "${PLIST_SKIP[@]}"; do
         [[ "$base" == "$skip_base" ]] && skip=1 && break
     done
+
+    # The Work queue can't run on a python3 older than 3.11, and launchd would
+    # start it at every login: don't install it, and remove an earlier copy.
+    if [[ "$base" == "com.assistant.work-queue.plist" && $PLIST_PYTHON_NEW -eq 0 ]]; then
+        if [[ "$MODE" == "pro" ]]; then
+            warn "$base — needs Python 3.11 or newer, and $PLIST_PYTHON is older (NOT installed; install Python 3.11+, for example brew install python, then run ./install.sh --apply --pro)"
+        else
+            note "$base — needs Python 3.11 or newer, and $PLIST_PYTHON is older (NOT installed)"
+        fi
+        if [[ -e "$target" || -L "$target" ]]; then
+            if [[ $APPLY -eq 1 ]]; then
+                launchctl bootout "gui/$UID/$label" 2>/dev/null || true
+                rm -f "$target"
+                note "removed $target"
+            else
+                note "would remove $target"
+            fi
+        fi
+        continue
+    fi
 
     # Tier: CORE loads; a FEATURE daemon loads only if opted in, else copy-no-load.
     copy_no_load=0
@@ -732,6 +799,8 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
             case "$feat" in
                 memory|crash-resume|ws-numberer)
                     note "FEATURE $base — not enabled (copied, NOT loaded; enable with --with-$feat)" ;;
+                work-queue)
+                    note "FEATURE $base — Pro mode only (copied, NOT loaded; turn on with --pro)" ;;
                 *)  # comms / slack-reactor: token-gated, hand-loaded after setup
                     note "FEATURE $base — token-gated (copied, NOT loaded; hand-load after setup — see ONBOARDING.md)" ;;
             esac
@@ -764,6 +833,11 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
             && ! launchctl print "gui/$UID/$label" >/dev/null 2>&1; then
         no_load=1
     fi
+    # The hourly update never starts a Work queue that isn't running: it
+    # doesn't load it fresh, and it doesn't restart one you stopped by hand.
+    if [[ "$feat" == "work-queue" && "${ASSISTANT_SELF_UPDATE:-0}" == "1" ]] && ! service_running "$label"; then
+        no_load=1
+    fi
 
     # A symlinked target (legacy install pointing into the repo) must be turned
     # into a real file regardless of content — cmp reads THROUGH the link, so
@@ -771,10 +845,19 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
     if [[ ! -L "$target" && -f "$target" ]] && cmp -s "$staged" "$target"; then
         if [[ $no_load -eq 1 ]]; then
             note "OK   $target (matches repo; not auto-loaded — activate by hand)"
-        elif [[ "$feat" == "ws-numberer" && "${ASSISTANT_SELF_UPDATE:-0}" != "1" ]] \
+        elif [[ ( "$feat" == "ws-numberer" && "${ASSISTANT_SELF_UPDATE:-0}" != "1" ) || "$feat" == "work-queue" ]] \
                 && ! launchctl print "gui/$UID/$label" >/dev/null 2>&1; then
             note "OK   $target (matches repo; enabled but not running → will load)"
             CHANGED_LABELS+=("$label")
+        elif [[ "$feat" == "work-queue" ]] && ! service_running "$label"; then
+            # Loaded but exited, for example when its port was taken at login.
+            if [[ $APPLY -eq 0 ]]; then
+                note "would start $label (loaded but not running)"
+            elif launchctl kickstart -k "gui/$UID/$label" >/dev/null 2>&1; then
+                note "started $label (loaded but not running)"
+            else
+                warn "couldn't start $label; run launchctl kickstart -k gui/\$UID/$label"
+            fi
         else
             note "OK   $target (matches repo, no reload needed)"
         fi
@@ -787,6 +870,11 @@ for plist in "$REPO_ROOT"/launchagents/*.plist; do
         fi
     fi
 done
+
+# Default mode stops the Work queue server that Pro mode started.
+if [[ "$MODE" != "pro" && $APPLY -eq 1 ]]; then
+    launchctl bootout "gui/$UID/com.assistant.work-queue" 2>/dev/null || true
+fi
 
 # Tear down legacy plists (renames + removed services).
 #  - com.mukuls.triage-pulse → com.assistant.assistant-pulse (2026-05-23 rename)
@@ -857,13 +945,17 @@ ensure_symlink "$HOME_DIR/.claude/hooks/cmux-auto-resume.py"    "$REPO_ROOT/hook
 ensure_symlink "$HOME_DIR/.claude/hooks/cmux-session-ledger.py" "$REPO_ROOT/hooks/cmux-session-ledger.py"
 ensure_symlink "$HOME_DIR/.local/bin/cmux-restore-sessions"     "$REPO_ROOT/bin/cmux-restore-sessions.py"
 if [[ $APPLY -eq 1 ]]; then
-    CMUX_CLI="/Applications/cmux.app/Contents/Resources/bin/cmux"
+    CMUX_CLI="${CMUX_BIN:-/Applications/cmux.app/Contents/Resources/bin/cmux}"
     if [[ -x "$CMUX_CLI" ]]; then
         # Factory-optional: an old cmux without factory support, or a droid-less
         # box, must not abort the installer before the Claude settings patch and
         # launchd reload below.
         "$CMUX_CLI" hooks factory install --yes 2>&1 | sed 's/^/  /' \
             || warn "cmux Factory hooks install failed (continuing — droid resume may be unbound)"
+        if python3 "$REPO_ROOT/bin/agent_session.py" copilot-chosen; then
+            CMUX_BIN="${CMUX_BIN:-$CMUX_CLI}" python3 "$REPO_ROOT/bin/agent_session.py" install-copilot-hooks 2>&1 | sed 's/^/  /' \
+                || warn "cmux Copilot hooks install failed (continuing — Copilot sessions may not show on the dashboard)"
+        fi
     else
         warn "cmux CLI missing; Factory lifecycle hooks were not installed"
     fi
@@ -872,7 +964,7 @@ if [[ $APPLY -eq 1 ]]; then
         2>&1 | sed 's/^/  /' \
         || warn "patch-settings failed (continuing — cmux session hooks may be incomplete)"
 else
-    note "would install cmux Factory hooks and patch Claude + Factory session hooks"
+    note "would install cmux Factory hooks (+ Copilot hooks when Copilot is picked) and patch Claude + Factory session hooks"
 fi
 log ""
 
@@ -897,17 +989,18 @@ else
     done
 fi
 
-# The dashboard server and the app connectors keep old code until restarted.
+# The dashboard server, the app connectors, and the other always-on services keep old code until restarted.
 # Restart the running ones when their code changed since the last install
 # recorded it; record it only once every restart worked. A failed restart
 # leaves a note that the dashboard shows and the hourly update retries.
 CODE_STAMP="$HOME_DIR/.assistant/service-code.sha256"
 RESTART_NOTE="$HOME_DIR/.assistant/service-restart-failed"
-CODE_SHA="$(cd "$REPO_ROOT" && find bin/todo-server.py bin/connectors src/assistant -type f \( -name '*.py' -o -name '*.sh' \) \
+CODE_SHA="$(cd "$REPO_ROOT" && find bin src/assistant slack-reactor/src work_queue -type f \( -name '*.py' -o -name '*.sh' -o -name '*.js' \) \
     | LC_ALL=C sort | xargs shasum -a 256 | shasum -a 256 | cut -d' ' -f1)"
 if [[ "$(cat "$CODE_STAMP" 2>/dev/null || true)" != "$CODE_SHA" ]]; then
     failed_labels=()
-    for label in com.assistant.assistant-todo-server com.assistant.connector-{github,gmail,gcal,slack,outlook}; do
+    for label in com.assistant.assistant-todo-server com.assistant.work-queue com.assistant.connector-{github,gmail,gcal,slack,outlook} \
+            com.assistant.{assistant-comms,workspace-watcher,slack-reactor,session-context-watcher,cmux-ws-numberer}; do
         [[ " ${CHANGED_LABELS[*]:-} " == *" $label "* ]] && continue
         launchctl print "gui/$UID/$label" 2>/dev/null | grep -q "state = running" || continue
         if [[ $APPLY -eq 0 ]]; then
@@ -926,6 +1019,28 @@ if [[ "$(cat "$CODE_STAMP" 2>/dev/null || true)" != "$CODE_SHA" ]]; then
     elif [[ $APPLY -eq 1 ]]; then
         printf '%s\n' "${failed_labels[@]}" > "$RESTART_NOTE"
     fi
+fi
+log ""
+
+# --- 5b. Work queue sources (Pro mode; prompts only on an interactive --apply) ---
+# Offers to link each unlinked source. A dry run lists them, and headless runs
+# (the pulse self-update, curl|bash, CI) never prompt.
+log "[5b] Work queue sources"
+WQ_SETUP="$REPO_ROOT/bin/work-queue-setup.py"
+if [[ "$MODE" != "pro" ]]; then
+    note "Pro mode is off, so the Work queue isn't installed (turn it on with --pro)"
+elif [[ $APPLY -eq 0 ]]; then
+    note "would offer to link these Work queue sources:"
+    python3 "$WQ_SETUP" status | sed 's/^/    /' || true
+elif [[ ! -t 0 || "${ASSISTANT_SELF_UPDATE:-0}" == "1" ]]; then
+    note "non-interactive, so not linking Work queue sources (run bin/work-queue-setup.py link <source>)"
+else
+    python3 "$WQ_SETUP" status | sed 's/^/    /' || true
+    for wq_source in $(python3 "$WQ_SETUP" unlinked); do
+        if prompt_yn "Link $wq_source to the Work queue? [y/N] "; then
+            python3 "$WQ_SETUP" link "$wq_source" | sed 's/^/    /' || true
+        fi
+    done
 fi
 log ""
 
@@ -1146,6 +1261,9 @@ log ""
 # copy-no-load / skip and must be hand-loaded. So the summary states what is
 # already running vs. what the user still activates by hand. Same runbook in
 # ONBOARDING.md (linked from the README).
+log "The Observer is off by default, so no model checks your workspaces. To turn it on,"
+log "set {\"observer\": {\"enabled\": true}} in ~/.assistant/config.json and run the pulse"
+log "with ASSISTANT_WATCHER=1. See docs/configuration.md."
 if [[ $APPLY -eq 0 ]]; then
     log "✅ Dry-run complete. Re-run with --apply to make changes."
     log "   Then follow the activation runbook it prints (also in ONBOARDING.md)."
@@ -1167,13 +1285,20 @@ else
     log "     (it runs a preflight and prints the exact launchctl line when green)"
     log ""
     log "   ── Slack emoji → todo capture ─────────────────────────────────────"
-    log "   • Set SLACK_APP_TOKEN + SLACK_BOT_TOKEN in ~/.zprofile, then:"
+    log "   • Set SLACK_APP_TOKEN + SLACK_BOT_TOKEN in ~/.zprofile, and SLACK_USER_ID to"
+    log "     your own Slack user id (in Slack: your profile, the three dots, Copy member"
+    log "     ID; without it, a reaction is saved as Ask me and never starts by itself,"
+    log "     or in Pro mode a reaction from anyone starts a task), then:"
     log "     launchctl load ~/Library/LaunchAgents/com.assistant.slack-reactor.plist"
     log ""
     log "   ── Pro mode (now: $MODE) ─────────────────────────────────────────"
     log "   • Switch it in the dashboard's Settings and background services, or"
     log "     run ./install.sh --apply --pro (or --no-pro). Pro mode adds"
-    log "     notifications and triage, goals and the planner, and their tabs."
+    log "     goals and the Notifications and Decisions tabs. Decisions, the"
+    log "     morning brief, and the planner stay off until you turn each on in"
+    log "     ~/.assistant/config.json (see docs/configuration.md)."
+    log "   • Pro mode also runs the Work queue page. Link your sources with"
+    log "     ./bin/work-queue-setup.py link <source> (see docs/work-queue.md)."
     log ""
     log "   Re-run anytime:  ./bin/assistant-doctor.py         (preflight health)"
     log "   Full guide:      ONBOARDING.md"

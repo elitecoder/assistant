@@ -82,6 +82,13 @@ def observed_home(tmp_path, cmux_fixture):
     return home, env
 
 
+SCREENS = {
+    "claude": "Claude Code v1\ncontext 10% │ #abcd1234",
+    "copilot": "❯\n ~/work · Claude Sonnet 4.5 · / commands · ? help",
+    "droid": "Skills (2)\n? for help",
+}
+
+
 def write_fixture(home, *, provider="claude", **changes):
     fixture = {
         "tree": {"windows": [{"workspaces": [{
@@ -93,11 +100,19 @@ def write_fixture(home, *, provider="claude", **changes):
         "surface_id": SURFACE_ID,
         "binding": {"kind": "factory" if provider == "droid" else provider,
                     "checkpointId": SESSION_ID},
-        "screen": ("Skills (2)\n? for help" if provider == "droid"
-                   else "Claude Code v1\ncontext 10% │ #abcd1234"),
+        "screen": SCREENS[provider],
         **changes,
     }
     (home / "cmux-fixture.json").write_text(json.dumps(fixture))
+    if provider == "copilot":
+        session_dir = home / ".copilot/session-state" / SESSION_ID
+        session_dir.mkdir(parents=True)
+        (session_dir / "workspace.yaml").write_text(f"id: {SESSION_ID}\ncwd: /work\n")
+        transcript = session_dir / "events.jsonl"
+        transcript.write_text(json.dumps({
+            "type": "session.start", "id": "event-1",
+            "data": {"sessionId": SESSION_ID}}) + "\n")
+        return transcript
     root = home / (".factory/sessions" if provider == "droid" else ".claude/projects")
     project = root / "fixture-project"
     project.mkdir(parents=True)
@@ -226,11 +241,13 @@ def test_summary_rejects_invalid_identity_shapes_without_saving(observed_home, i
     assert not (home / ".assistant/observer-summaries/workspace_7.json").exists()
 
 
-@pytest.mark.parametrize("provider", ["claude", "droid"])
+@pytest.mark.parametrize("provider", ["claude", "copilot", "droid"])
 def test_observed_full_identity_survives_save_after_workspace_recycling(observed_home, provider):
     home, env = observed_home
-    write_fixture(home, provider=provider)
+    transcript = write_fixture(home, provider=provider)
     context = build_context(env)
+    assert context["agent_provider"] == provider
+    assert context["transcript_path"] == str(transcript)
     identity = context["observation_identity"]
     assert identity == expected_identity(provider, identity["observed_at"])
     fixture_path = home / "cmux-fixture.json"

@@ -68,6 +68,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from . import eventspine, mode
+from .redact import install_crash_hooks, redact
 
 # ─── fallback defaults (all overridable via config; never the sole source) ───
 
@@ -1017,7 +1018,10 @@ class Connector:
         self.config = config if config is not None else load_connector_config(name)
         self.dry_run = dry_run
         self.record = record
-        self._log = log or (lambda msg: None)
+        # Every connector's log line passes through here (poll errors can quote a
+        # failed request), so none writes a token.
+        sink = log or (lambda msg: None)
+        self._log = lambda msg: sink(redact(msg))
         self.skip_events_before = 0.0
 
     # ── paths (per-call so a tmp $HOME is honored) ──────────────────────────
@@ -1132,8 +1136,8 @@ class Connector:
         if self.record:
             self._record_fixture(event, raw)
         if self.dry_run:
-            print(json.dumps({"dry_run": True, "event": event},
-                             ensure_ascii=False))
+            print(redact(json.dumps({"dry_run": True, "event": event},
+                                    ensure_ascii=False)))
             return None
         return self._atomic_drop(event, now)
 

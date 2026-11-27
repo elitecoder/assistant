@@ -313,6 +313,7 @@ class SlackEventsConnector(connector.Connector):
 
 
 def main(argv=None) -> int:
+    connector.install_crash_hooks()  # an uncaught error prints a redacted traceback
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--dry-run", action="store_true",
                     help="normalize + print, do NOT drop or consume the spool")
@@ -327,7 +328,7 @@ def main(argv=None) -> int:
 
     if args.once or args.dry_run:
         result = c.poll_once()
-        print(connector.json.dumps(result), file=sys.stderr)
+        print(connector.redact(connector.json.dumps(result)), file=sys.stderr)
         return 0
 
     if not c._wired_check():

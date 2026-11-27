@@ -17,8 +17,7 @@ the exact behavior the operator was correcting.
   the paths."* The agent answered completely — a clean list of 14 rule
   paths — and stopped. Nothing is left to do.
 - **ctx.json:** the real values Observer saw at run 0445 —
-  `last_turn_age_sec: 13576` (3.8h), `agent_status: idle`,
-  `cwd_dirty: false`, `cwd_unpushed: false`.
+  `last_turn_age_sec: 13576` (3.8h), `agent_status: idle`.
 
 ## The real misfire this pins against
 
@@ -46,7 +45,7 @@ nudged a done workspace to keep going.
 The tightened B3 (stranded) now requires the last text to be **truly
 mid-step** — "trailed off inside a step with no handoff to the user" —
 and explicitly excludes recaps and completed answers. A fully-answered
-one-shot diagnostic with a clean cwd and no open iteration is
+one-shot diagnostic with no open iteration is
 `ready_for_cleanup` (the deliverable was the answer; nothing remains to
 review).
 

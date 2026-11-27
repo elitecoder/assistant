@@ -22,13 +22,19 @@ Usage:
 import argparse
 import json
 import os
-import shlex
 import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+import agent_session  # noqa: E402
 import cmux_sessions  # noqa: E402
+
+try:
+    from assistant import session_gate  # noqa: E402 - the default mode types through it; stdlib only
+except Exception:  # noqa: BLE001 - nothing here may stop the default mode from starting
+    session_gate = None
 
 REGISTRY = Path.home() / ".claude/cmux-registry.json"
 CMUX_STATE = Path.home() / "Library/Application Support/cmux/session-com.cmuxterm.app.json"
@@ -41,6 +47,8 @@ def run_cmux(*args, timeout=5):
             capture_output=True, text=True, timeout=timeout
         )
         return r.returncode, r.stdout.strip(), r.stderr.strip()
+    except subprocess.TimeoutExpired as e:
+        return 124, "", str(e)  # a time-out is "can't tell": whoever types decides what that means
     except Exception as e:
         return 1, "", str(e)
 
@@ -55,8 +63,11 @@ def load_recorded():
     records = cmux_sessions.list_sessions()
     records += cmux_sessions.registry_fallback(REGISTRY, records)
     newest = {}
+    copilot_picked = agent_session.copilot_chosen()
     for record in records:
         if not (record.active_for_surface and record.provider and record.surface_id):
+            continue
+        if record.provider == agent_session.COPILOT and not copilot_picked:
             continue
         current = newest.get(record.surface_id)
         if current is None or (record.updated_at or 0) > (current.updated_at or 0):
@@ -65,7 +76,7 @@ def load_recorded():
         surface_id: {
             "session_id": record.session_id,
             "cwd": record.launch_cwd or record.cwd,
-            "provider": "factory" if record.provider == "droid" else "claude",
+            "provider": agent_session.CMUX_KIND[record.provider],
             "launch_argv": list(record.launch_argv),
             "transcript_path": record.transcript_path,
             "pid": record.pid,
@@ -102,12 +113,13 @@ def pgrep_session(session_id: str) -> bool:
 
 
 def normalize_provider(value):
-    value = str(value or "").strip().lower()
-    if value in {"factory", "droid"}:
-        return "factory"
-    if value == "claude":
-        return "claude"
-    return ""
+    """cmux kind (claude, copilot, factory) for an agent/provider name, or "".
+    Copilot counts only when the user picked it, so Copilot sessions started
+    by hand are never relaunched."""
+    agent = agent_session.agent_from_kind(value)
+    if agent == agent_session.COPILOT and not agent_session.copilot_chosen():
+        return ""
+    return agent_session.CMUX_KIND[agent] if agent else ""
 
 
 def infer_ledger_provider(entry):
@@ -117,12 +129,13 @@ def infer_ledger_provider(entry):
         provider = normalize_provider(entry.get(key))
         if provider:
             return provider
-    transcript = str(entry.get("transcript_path", "")).replace("\\", "/")
-    if "/.factory/sessions" in transcript:
-        return "factory"
+    agent = agent_session.agent_from_transcript(entry.get("transcript_path"))
+    if agent in (agent_session.DROID, agent_session.COPILOT):
+        return normalize_provider(agent)
     argv = entry.get("launch_argv") or []
-    if argv and os.path.basename(str(argv[0])).lower() == "droid":
-        return "factory"
+    agent = agent_session.agent_from_executable(argv[0]) if argv else None
+    if agent in (agent_session.DROID, agent_session.COPILOT):
+        return normalize_provider(agent)
     return ""
 
 
@@ -183,39 +196,6 @@ def _strip_session_args(args):
     return filtered
 
 
-def _replace_option(args, option, value):
-    result = []
-    skip_next = False
-    for arg in args:
-        if skip_next:
-            skip_next = False
-            continue
-        if arg == option:
-            skip_next = True
-            continue
-        if arg.startswith(option + "="):
-            continue
-        result.append(arg)
-    result.extend([option, value])
-    return result
-
-
-def _strip_option(args, option):
-    result = []
-    skip_next = False
-    for arg in args:
-        if skip_next:
-            skip_next = False
-            continue
-        if arg == option:
-            skip_next = True
-            continue
-        if arg.startswith(option + "="):
-            continue
-        result.append(arg)
-    return result
-
-
 def _launch_argv(agent, ledger_entry):
     ledger_argv = (ledger_entry or {}).get("launch_argv") or []
     if ledger_argv:
@@ -258,40 +238,23 @@ def build_resume_cmd(panel, ledger_entry=None):
     # before the GLM migration are rebuilt so the required runtime settings are
     # always present.
     command = rb.get("command")
-    droid_configured = (
-        "droid-glm-settings.json" in (command or "")
-        and "--append-system-prompt-file" in (command or "")
-        and "--auto high" in (command or "")
-    )
     if (
         command
         and session_id
         and session_id in command
-        and (provider == "claude" or droid_configured)
+        and agent_session.binding_is_current(
+            agent_session.agent_from_kind(provider), command)
     ):
-        return cwd, command
+        return cwd, agent_session.with_copilot_rules(command)
 
     if not session_id:
         return None, None
 
     args = _launch_argv(agent, ledger_entry)
-    default_executable = "droid" if provider == "factory" else "claude"
-    executable = args[0] if args else default_executable
-    preserved = _strip_session_args(args[1:])
-
-    if provider == "factory":
-        settings = str(Path.home() / ".assistant" / "droid-glm-settings.json")
-        lessons = str(Path.home() / ".claude" / "CLAUDE.md")
-        preserved = _replace_option(preserved, "--settings", settings)
-        preserved = _replace_option(preserved, "--auto", "high")
-        preserved = _strip_option(
-            preserved, "--append-system-prompt-file")
-        if Path(lessons).is_file():
-            preserved.extend(["--append-system-prompt-file", lessons])
-
-    argv = [executable, "--resume", session_id, *preserved]
-    cmd = f"cd {shlex.quote(str(cwd))} && {shlex.join(argv)}"
-
+    fleet_agent = agent_session.agent_from_kind(provider)
+    executable = args[0] if args else None
+    cmd = agent_session.resume_command(
+        fleet_agent, session_id, cwd, _strip_session_args(args[1:]), executable)
     return cwd, cmd
 
 
@@ -308,21 +271,71 @@ def respawn_panel(ws, panel, cmd: str, dry_run: bool, verbose: bool):
         print(f"  [DRY-RUN] Would send: {cmd}")
         return True
 
-    # Try to respawn by sending the command to the surface
-    rpc_params = json.dumps({"surface_id": surface_id, "text": cmd})
-    rc, out, err = run_cmux("rpc", "surface.send_text", rpc_params, timeout=5)
-    if rc != 0:
-        # Fall back to surface ref
-        rc, out, err = run_cmux("rpc", "surface.send_text",
-                                json.dumps({"surface_id": panel_id, "text": cmd}), timeout=5)
-    if rc == 0:
-        # Send Enter
-        run_cmux("rpc", "surface.send_key",
-                 json.dumps({"surface_id": surface_id or panel_id, "key": "enter"}), timeout=5)
-        return True
+    last_error = [""]
+
+    def rpc(method, params):
+        rc, out, last_error[0] = run_cmux("rpc", method, json.dumps(params), timeout=5)
+        if rc == 124:
+            raise TimeoutError(method)  # the keystroke may have landed
+        return (out or "{}") if rc == 0 else None
+
+    # Asked once, here: a typing begun in the default mode stays what it always was, and one begun in Pro mode keeps
+    # Pro mode's rules to its end, whatever the mode is by then.
+    try:
+        pro = bool(session_gate and session_gate.active())
+    except Exception:  # noqa: BLE001
+        pro = False
+    if not pro:
+        # As it always was: text to the terminal, then to the panel's own id, then Enter; nothing recorded or checked.
+        keys = session_gate.Keys(rpc, surface_id)
+        ok = keys.text(cmd)
+        if not ok:
+            keys.surface_id = panel_id
+            ok = keys.text(cmd)
+        if ok:
+            keys.surface_id = surface_id or panel_id
+            keys.key("enter")
+            return True
+        if verbose:
+            print(f"  ERROR: send_text failed: {last_error[0]}")
+        return False
+
+    # Pro mode. A person ran this, which is what allows the typing. The intent is recorded first, and the saved state
+    # knows a panel only by its terminal id, which is what the record holds.
+    try:
+        from assistant import session_effects  # noqa: PLC0415
+    except Exception as exc:  # noqa: BLE001 - loud: without its record nothing is typed
+        print(f"  NOT TYPED: the record of what is typed can't be loaded ({type(exc).__name__}: {exc})")
+        return False
+    try:
+        effect_id = session_effects.begin("", "restore", kind="tap", ref="cli:restore", component="restore",
+                                          surface=surface_id)
+    except session_effects.Refused as refusal:
+        print(f"  NOT TYPED: {refusal}")
+        return False
+    try:
+        keys = session_effects.Keys(effect_id, rpc, surface_id)
+    except session_effects.Refused as refusal:
+        session_effects.finish(effect_id, "failed", error="not recorded")
+        print(f"  NOT TYPED: {refusal}")
+        return False
+    try:
+        # Try to respawn by sending the command to the surface, then by the panel's own id (the same terminal). A
+        # timeout is "can't tell", so it is not tried again.
+        ok = keys.text(cmd)
+        if not ok and not keys.raised:
+            keys.surface_id, keys.refused = panel_id, 0  # a refused try that is tried again isn't half a typing
+            ok = keys.text(cmd)
+        if ok:
+            # Send Enter; as before, a text that went out counts as restored whatever Enter did.
+            keys.surface_id = surface_id or panel_id
+            keys.key("enter")
+            return True
+    finally:
+        keys.finish()
 
     if verbose:
-        print(f"  ERROR: send_text failed: {err}")
+        print("  ERROR: send_text failed: the terminal didn't take the text")
     return False
 
 

@@ -1,4 +1,4 @@
-"""Plain-text conversation slice of a Claude Code or Factory Droid transcript.
+"""Plain-text conversation slice of a Claude Code, Copilot, or Droid transcript.
 
 The Observer reads this instead of raw JSONL: the first request plus the most
 recent turns, with attachments, hook output, request records, and thinking
@@ -18,7 +18,7 @@ FIRST_REQUEST_CHARS = 1500
 TURN_CHARS = 1500
 LAST_TURN_CHARS = 4000
 TOOL_CHARS = 160
-REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
+REMINDER = re.compile(r"<system[-_]reminder>.*?</system[-_]reminder>", re.S)
 COMMAND = re.compile(r"<command-name>\s*([^<]*?)\s*</command-name>")
 COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.S)
 SYSTEM_PREFIXES = ("<task-notification>", "<local-command-", "<bash-stdout>",
@@ -70,6 +70,25 @@ def _turn(record: dict) -> tuple[str, str, str] | None:
     if kind == "system" and record.get("subtype") == "away_summary":
         recap = REMINDER.sub("", str(record.get("content") or "")).strip()
         return ("system", str(record.get("timestamp") or ""), "Recap: " + recap) if recap else None
+    if kind in ("user.message", "assistant.message"):
+        return _copilot_turn(record, kind.split(".", 1)[0])
+    if kind == "tool.execution_complete":
+        data = record.get("data")
+        if not isinstance(data, dict) or data.get("parentToolCallId"):
+            return None
+        result = data.get("result")
+        content = result.get("content") if isinstance(result, dict) else result
+        error = data.get("error")
+        if not content and isinstance(error, dict):
+            content = error.get("message")
+        return _render(record, "user", [{"type": "tool_result", "content": content,
+                                         "is_error": data.get("success") is False}])
+    if kind in ("session.compaction_complete", "system.notification", "abort"):
+        return _copilot_notice(record, kind)
+    if kind == "session.error":
+        data = record.get("data")
+        message = data.get("message") if isinstance(data, dict) else None
+        return _render(record, "assistant", [f"[error] {message or 'session error'}"])
     message = record.get("message")
     if not isinstance(message, dict):
         return None
@@ -81,6 +100,44 @@ def _turn(record: dict) -> tuple[str, str, str] | None:
         return None
     content = message.get("content")
     blocks = [content] if isinstance(content, str) else content or []
+    return _render(record, role, blocks)
+
+
+def _copilot_notice(record: dict, kind: str) -> tuple[str, str, str] | None:
+    """A SYSTEM turn for Copilot's compaction summary, background notice, or
+    user abort."""
+    data = record.get("data") if isinstance(record.get("data"), dict) else {}
+    text = {"session.compaction_complete": "Compacted: " + str(data.get("summaryContent") or ""),
+            "system.notification": str(data.get("content") or ""),
+            "abort": f"[aborted: {data.get('reason') or 'user'}]"}[kind]
+    text = REMINDER.sub("", text).strip()
+    return ("system", str(record.get("timestamp") or ""), _clip(text, TURN_CHARS)) if text else None
+
+
+def _copilot_turn(record: dict, role: str) -> tuple[str, str, str] | None:
+    """A Copilot events.jsonl turn: plain-text content plus its tool requests.
+    A subagent's own turns (parentToolCallId) and its prompt (source
+    agent-<id>) are dropped; other non-typed user text (memory, skills,
+    discovered instructions) is a SYSTEM turn."""
+    data = record.get("data")
+    if not isinstance(data, dict) or data.get("parentToolCallId"):
+        return None
+    source = data.get("source")
+    if role == "user" and isinstance(source, str) and source.startswith("agent-"):
+        return None
+    content = data.get("content")
+    blocks = [content] if isinstance(content, str) else []
+    blocks += [{"type": "tool_use", "name": request.get("name"),
+                "input": request.get("arguments")}
+               for request in data.get("toolRequests") or []
+               if isinstance(request, dict)]
+    turn = _render(record, role, blocks)
+    if turn and role == "user" and source not in (None, "user"):
+        return ("system", turn[1], turn[2])
+    return turn
+
+
+def _render(record: dict, role: str, blocks) -> tuple[str, str, str] | None:
     text = " ".join(t for t in (_block_text(b) for b in blocks) if t)
     text = REMINDER.sub("", text).strip()
     if not text:

@@ -439,6 +439,16 @@ def test_fmt_lesson_proposal_carries_id_and_confirm_hint(paths: cl.Paths):
     assert "seen 4" in body
 
 
+def test_fmt_lesson_proposal_shows_when_only_for_a_trigger(paths: cl.Paths):
+    pid = "2026-07-08T10:00:00.000000Z"
+    assert cl.fmt_lesson_proposal(_lesson(pid)).splitlines()[1:3] == [
+        f"*when* trigger-{pid}", f"*rule* rule-{pid}"]
+    plain = cl.fmt_lesson_proposal(_lesson(pid, trigger="", rule="When X, do Y."))
+    assert "*when*" not in plain
+    assert plain.splitlines()[1] == "*rule* When X, do Y."
+    assert len(plain.splitlines()) == 3
+
+
 # ─── threads.jsonl ──────────────────────────────────────────────────────────
 
 def test_threads_append_and_lookup(paths: cl.Paths):

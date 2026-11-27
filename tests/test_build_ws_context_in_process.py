@@ -14,7 +14,7 @@ ABSOLUTE INVARIANT: never attach a transcript from an old or wrong workspace.
     tests/fake_cmux.py) behind the live-pid, active-record, screen-agreement,
     and internal-sid gates — rejects the stale-record trap.
   - resolve_workspace_screen_and_transcript: end-to-end, never-guess priority.
-  - transcript_signals / cwd_state / screen_shows_error / main().
+  - transcript_signals / screen_shows_error / main().
 """
 from __future__ import annotations
 
@@ -62,6 +62,17 @@ def use_fake_cmux(test: unittest.TestCase, records=()) -> None:
 def _status_bar(sid8: str, branch: str = "main") -> str:
     """A realistic Claude status-bar line carrying the session stamp."""
     return f"  assistant {branch} │ ●3 ●1 │ context 39% │ $42.20 │ #{sid8}"
+
+
+def _copilot_session(home: Path, sid: str, *lines: dict) -> Path:
+    """A Copilot session-state dir: events.jsonl led by its session.start."""
+    session_dir = home / ".copilot/session-state" / sid
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / "workspace.yaml").write_text(f"id: {sid}\ncwd: /work\n")
+    events = session_dir / "events.jsonl"
+    start = {"type": "session.start", "id": "event-0", "data": {"sessionId": sid}}
+    events.write_text("".join(json.dumps(d) + "\n" for d in (start, *lines)))
+    return events
 
 
 class StatusBarSessionIdTests(unittest.TestCase):
@@ -168,6 +179,19 @@ class TranscriptFromSessionIdTests(unittest.TestCase):
         self.assertEqual(
             self.mod.transcript_from_session_id(full), str(tp))
 
+    def test_resolves_copilot_session_by_prefix_and_session_start_id(self):
+        full = "c0b11071-7134-4060-bcf1-6c509c9983cd"
+        events = _copilot_session(self._tmp, full)
+        self.assertEqual(
+            self.mod.transcript_from_session_id("c0b11071"), str(events))
+
+    def test_rejects_copilot_session_whose_session_start_disagrees(self):
+        full = "c0b11071-7134-4060-bcf1-6c509c9983cd"
+        events = _copilot_session(self._tmp, full)
+        events.write_text(json.dumps({"type": "session.start", "data": {
+            "sessionId": "99999999-0000-0000-0000-000000000000"}}) + "\n")
+        self.assertIsNone(self.mod.transcript_from_session_id("c0b11071"))
+
 
 class RecordedTranscriptTests(unittest.TestCase):
     """The stale-record trap (ws:12): cmux records which session runs on each
@@ -270,6 +294,14 @@ class RecordedTranscriptTests(unittest.TestCase):
         lookup = self._surface(self._record(
             full, agent="factory", pid=os.getpid(), transcript_path=str(tp)))
         self.assertEqual(lookup("SURF-A")["agent"], "droid")
+
+    def test_copilot_record_without_a_transcript_path_finds_its_events(self):
+        full = "c0b11071-7134-4060-bcf1-6c509c9983cd"
+        events = _copilot_session(self._tmp, full)
+        lookup = self._surface(self._record(full, agent="copilot", pid=os.getpid()))
+        self.assertEqual(lookup("SURF-A"), {"transcript_path": str(events),
+                                            "session_id8": "c0b11071",
+                                            "agent": "copilot"})
 
     def test_agent_the_fleet_does_not_run_is_ignored(self):
         full = "c0dec0de-1111-1111-1111-111111111111"
@@ -388,6 +420,21 @@ class TranscriptSignalsTests(unittest.TestCase):
         self.assertGreaterEqual(age, 3990)
         self.assertLess(age, 4100)
 
+    def test_a_record_with_no_usable_time_leaves_the_file_time(self):
+        path = self._tmp / "t.jsonl"
+        turn = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 4000))
+        path.write_text("\n".join([
+            json.dumps([{"type": "user", "timestamp": turn}]),
+            json.dumps({"type": "user", "timestamp": 1700000000,
+                        "message": {"content": "x"}}),
+            json.dumps({"type": "assistant", "message": {"content": "y"}}),
+        ]))
+        old = time.time() - 600
+        os.utime(path, (old, old))
+        age, _ = self.mod.transcript_signals(str(path))
+        self.assertGreaterEqual(age, 595)
+        self.assertLess(age, 700)
+
     def test_age_reflects_mtime(self):
         path = self._tmp / "t.jsonl"
         path.write_text("{}")
@@ -395,63 +442,16 @@ class TranscriptSignalsTests(unittest.TestCase):
         age, _ = self.mod.transcript_signals(str(path))
         self.assertGreaterEqual(age, 499)
 
-
-class CwdStateTests(unittest.TestCase):
-    def setUp(self):
-        self._tmp_obj = TemporaryDirectory()
-        self._tmp = fixture_home(Path(self._tmp_obj.name))
-        self.mod = load_module(self._tmp)
-
-    def tearDown(self):
-        self._tmp_obj.cleanup()
-
-    def test_returns_false_false_when_cwd_missing(self):
-        d, u = self.mod.cwd_state(None)
-        self.assertEqual((d, u), (False, False))
-
-        d, u = self.mod.cwd_state("/no/such/dir-x")
-        self.assertEqual((d, u), (False, False))
-
-    def test_git_checks_never_rewrite_the_index(self):
-        """cwd_state runs under the pulse's timeout kill; a plain `git status`
-        rewrites the index under index.lock, and a kill at that moment leaves
-        the lock behind. Mutation probe: drop `--no-optional-locks` and the
-        index mtime changes."""
-        repo = self._tmp / "repo-locks"
-        repo.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=str(repo), check=True)
-        (repo / "f.txt").write_text("a")
-        subprocess.run(["git", "add", "f.txt"], cwd=str(repo), check=True)
-        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "i"],
-                       cwd=str(repo), check=True)
-        os.utime(repo / "f.txt", (1, 1))
-        index = repo / ".git" / "index"
-        before = index.stat().st_mtime_ns
-        self.mod.cwd_state(str(repo))
-        self.assertEqual(index.stat().st_mtime_ns, before)
-
-    def test_clean_repo(self):
-        # Init a real git repo + empty commit so @{u} doesn't error
-        # (subprocess just returns rc != 0 when no upstream — we treat
-        # that as unpushed=False).
-        repo = self._tmp / "repo"
-        repo.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=str(repo), check=True)
-        subprocess.run(["git", "config", "user.email", "test@test"], cwd=str(repo))
-        subprocess.run(["git", "config", "user.name", "test"], cwd=str(repo))
-        subprocess.run(["git", "commit", "-q", "--allow-empty", "-m", "init"],
-                       cwd=str(repo), check=True)
-        d, u = self.mod.cwd_state(str(repo))
-        self.assertFalse(d)
-        self.assertFalse(u)
-
-    def test_dirty_repo(self):
-        repo = self._tmp / "repo2"
-        repo.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=str(repo), check=True)
-        (repo / "f.txt").write_text("hello")
-        d, _ = self.mod.cwd_state(str(repo))
-        self.assertTrue(d)
+    def test_copilot_tool_execution_without_completion_is_working(self):
+        sid = "c0b11071-7134-4060-bcf1-6c509c9983cd"
+        start = {"type": "tool.execution_start",
+                 "data": {"toolCallId": "call-1", "toolName": "bash"}}
+        events = _copilot_session(self._tmp, sid, start)
+        self.assertEqual(self.mod.transcript_signals(str(events))[1], "working")
+        events = _copilot_session(self._tmp, sid, start, {
+            "type": "tool.execution_complete",
+            "data": {"toolCallId": "call-1", "success": True}})
+        self.assertEqual(self.mod.transcript_signals(str(events))[1], "idle")
 
 
 class SurfaceHelperTests(unittest.TestCase):
@@ -513,6 +513,14 @@ class SurfaceHelperTests(unittest.TestCase):
                 "surface:21", "workspace:9")
         self.assertEqual(binding["agent"], "droid")
         self.assertEqual(binding["session_id"][:8], "d0d01234")
+
+    def test_resume_binding_accepts_copilot(self):
+        fake = mock.Mock(returncode=0, stdout=json.dumps({"binding": {
+            "kind": "copilot", "checkpointId": "c0b11071-aaaa-bbbb-cccc-dddddddddddd"}}))
+        with mock.patch.object(self.mod.subprocess, "run", return_value=fake):
+            binding = self.mod.resume_binding_for_surface("surface:21", "workspace:9")
+        self.assertEqual(binding, {"session_id": "c0b11071-aaaa-bbbb-cccc-dddddddddddd",
+                                   "agent": "copilot"})
 
     def test_resume_binding_beats_a_stale_restore_record(self):
         fake = mock.Mock(returncode=0, stdout=json.dumps({
@@ -619,6 +627,23 @@ class FindAgentPaneTests(unittest.TestCase):
             res = self.mod.find_agent_pane("workspace:9")
         self.assertEqual(res["agent"], "droid")
         self.assertEqual(res["surface_ref"], "surface:1")
+
+    def test_copilot_agent_pane_is_detected_by_status_bar_or_banner(self):
+        ready = ("❯ \n ~/work [main] · Claude Opus 4.5 · / commands · ? help")
+        # Captured from Copilot CLI 1.0.109 while its trust dialog is up.
+        booting = ("│  ╭─╮╭─╮                             │  Getting started   │\n"
+                   "│  ╰─╯╰─╯  Copilot v1.0.109 uses AI.  │  /model — Switch models │\n"
+                   "Do you trust the files in this folder?")
+        for screen in (ready, booting):
+            p = self._patch(
+                panes=["pane:1", "pane:2"],
+                surfaces_by_pane={"pane:1": [("surface:1", "U1")],
+                                  "pane:2": [("surface:2", "U2")]},
+                screen_by_surface={"surface:1": self.SHELL, "surface:2": screen})
+            with p[0], p[1], p[2]:
+                res = self.mod.find_agent_pane("workspace:9")
+            self.assertEqual(res["agent"], "copilot")
+            self.assertEqual(res["surface_ref"], "surface:2")
 
     def test_no_agent_pane_returns_none(self):
         # All shells → None. No agent ⇒ no transcript attached (the invariant).
@@ -891,9 +916,6 @@ class MainTests(unittest.TestCase):
         self.assertIsNone(d["session_id8"])
         self.assertIsNone(d["agent_surface"])
         self.assertIsNone(d["agent_provider"])
-        # cwd doesn't exist → dirty/unpushed both false.
-        self.assertFalse(d["cwd_dirty"])
-        self.assertFalse(d["cwd_unpushed"])
         self.assertEqual(d["screen_text"], "")
         self.assertFalse(d["screen_shows_error"])
 
@@ -960,7 +982,7 @@ class MainTests(unittest.TestCase):
 
 class TranscriptSignalsEdgeCaseTests(unittest.TestCase):
     """Cover transcript_signals edge cases: OSError on getmtime, bad JSON,
-    non-dict message, content not list — and cwd_state exception paths."""
+    non-dict message, content not list."""
 
     def setUp(self):
         self._tmp_obj = TemporaryDirectory()
@@ -1011,15 +1033,6 @@ class TranscriptSignalsEdgeCaseTests(unittest.TestCase):
         Path(path).write_text(json.dumps({"message": {"content": ["string"]}}) + "\n")
         age, status = self.mod.transcript_signals(path)
         self.assertEqual(status, "idle")
-
-    def test_cwd_state_git_exception_returns_false_false(self):
-        import tempfile
-        with tempfile.TemporaryDirectory() as d:
-            with mock.patch.object(self.mod.subprocess, "run",
-                                   side_effect=OSError("no git")):
-                dirty, unpushed = self.mod.cwd_state(d)
-        self.assertFalse(dirty)
-        self.assertFalse(unpushed)
 
 
 class CmuxHelperEdgeCases(unittest.TestCase):

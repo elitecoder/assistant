@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -36,16 +37,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import agent_session  # noqa: E402
 import comms_lib  # noqa: E402
+from assistant import mode  # noqa: E402
 
 DROID = agent_session.DROID
+COPILOT = agent_session.COPILOT
 
 HOME = Path(os.environ.get("HOME", str(Path.home())))
 REPO = Path(__file__).resolve().parent.parent
 
 # Same default as comms_session.py — the warm session invokes this exact binary.
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", str(HOME / ".local/bin/claude"))
 
 PASS, WARN, FAIL, SKIP = "PASS", "WARN", "FAIL", "SKIP"
 
@@ -220,25 +223,39 @@ def check_slack_scopes() -> Check:
     )
 
 
+def _agent_binary(agent: str) -> str | None:
+    path = agent_session.binary(agent, env={**os.environ, "HOME": str(HOME)})
+    return path if Path(path).is_file() and os.access(path, os.X_OK) else None
+
+
 def check_claude_bin() -> Check:
-    # The warm comms session spawns this exact binary. OPTIONAL — only comms
-    # needs it; the mechanical pulse uses its own claude invocation.
-    if Path(CLAUDE_BIN).is_file() and os.access(CLAUDE_BIN, os.X_OK):
-        return Check("claude binary (warm session)", PASS, core=False, detail=CLAUDE_BIN)
-    on_path = shutil.which("claude")
+    # The warm comms session spawns the chosen agent's binary. OPTIONAL — only
+    # comms needs it.
+    agent = agent_session.warm_session_agent()
+    name = f"{agent} binary (warm session)"
+    found = _agent_binary(agent)
+    if found:
+        return Check(name, PASS, core=False, detail=found)
+    expected = agent_session.binary(agent, env={**os.environ, "HOME": str(HOME)})
+    on_path = shutil.which(agent)
+    env_var = agent_session._BIN_ENV[agent]
     if on_path:
         return Check(
-            "claude binary (warm session)", WARN, core=False,
-            detail=f"{CLAUDE_BIN} missing; claude on PATH at {on_path}",
-            remedy=f"symlink it: ln -s {on_path} {CLAUDE_BIN}  (or set CLAUDE_BIN={on_path})",
+            name, WARN, core=False,
+            detail=f"{expected} missing; {agent} on PATH at {on_path}",
+            remedy=f"set {env_var}={on_path}",
         )
-    return Check("claude binary (warm session)", FAIL, core=False,
-                 detail=f"{CLAUDE_BIN} missing and no claude on PATH",
-                 remedy="install the Claude Code CLI, then symlink to ~/.local/bin/claude")
+    return Check(name, FAIL, core=False,
+                 detail=f"{expected} missing and no {agent} on PATH",
+                 remedy=f"install the {agent} CLI, or set {env_var} to its path")
 
 
 def check_bedrock_env() -> Check:
     # The warm session's headless claude needs auth. OPTIONAL.
+    agent = agent_session.warm_session_agent()
+    if agent != agent_session.CLAUDE:
+        return Check("warm-session auth", SKIP, core=False,
+                     detail=f"the Slack session runs {agent}, which signs in on its own")
     env = comms_lib.load_bedrock_env()
     combined = {**env, **os.environ}
     if combined.get("CLAUDE_CODE_USE_BEDROCK", "").strip() not in ("", "0", "false"):
@@ -256,7 +273,51 @@ def check_bedrock_env() -> Check:
                  remedy="set ANTHROPIC_API_KEY or the Bedrock vars in ~/.zprofile (only if you want comms)")
 
 
-SLACK_CHECKS = [check_slack_token, check_slack_scopes, check_claude_bin, check_bedrock_env]
+MISTYPED_OWNER = (" (SLACK_USER_ID is set, but to something that isn't one: a member ID is a U or W followed by "
+                  "capital letters and digits)")
+
+
+# What the reactor does meanwhile: with no SLACK_USER_ID at all, Pro mode takes any member's reaction as yours; with a mistyped one
+# it keeps saving every reaction as Ask me.
+REACTOR_SAYS = {
+    False: "The Slack reactor can't tell either, so it takes a reaction with your task emoji from any member as yours.",
+    True: "The Slack reactor saves every reaction as Ask me until the ID is fixed.",
+}
+
+# The reactor reads SLACK_USER_ID when it starts, like the listener, and is its own service.
+REACTOR_RESTART = " (and `launchctl kickstart -k gui/$UID/com.assistant.slack-reactor` if you use reactions)"
+
+
+def check_slack_owner() -> Check:
+    """Only the owner's Slack messages are typed into the warm session, once Assistant knows which member that is.
+    In a channel it has to be told; until then every member's messages are typed, as before."""
+    target, why = _slack_config()
+    if target is None:
+        return Check("slack owner", SKIP, core=False, detail=why)
+    if target[:1] not in ("C", "G"):
+        return Check("slack owner", PASS, core=False, detail="the target is a person, so their messages are yours")
+    env_id = os.environ.get("SLACK_USER_ID", "").strip()
+    if re.fullmatch(r"[UW][A-Z0-9]{2,}", env_id):
+        return Check("slack owner", PASS, core=False, detail="SLACK_USER_ID names you")
+    try:
+        configured = str(json.loads(comms_lib.Paths.from_env().config.read_text()).get("slack", {}).get("owner") or "")
+    except (OSError, ValueError, AttributeError):
+        configured = ""
+    if re.fullmatch(r"[UW][A-Z0-9]{2,}", configured.strip()):
+        return Check("slack owner", PASS, core=False, detail="slack.owner in ~/.assistant/config.json names you")
+    return Check("slack owner", WARN, core=False,
+                 detail="the target is a channel and neither SLACK_USER_ID nor slack.owner in ~/.assistant/config.json "
+                        "is set to a member ID" + (MISTYPED_OWNER if env_id else "") +
+                        ", so Assistant can't tell which messages are yours and types every "
+                        "member's messages into the session, as it always has. " + REACTOR_SAYS[bool(env_id)] +
+                        " Fine if you are the only person in the channels Assistant is in",
+                 remedy="to have only your own messages typed, add `export SLACK_USER_ID=U…` (your member ID: your "
+                        "Slack profile, the three dots, Copy member ID) to ~/.zprofile (the service reads that file, "
+                        "not ~/.zshrc), then run `launchctl kickstart -k gui/$UID/com.assistant.assistant-comms`" + REACTOR_RESTART)
+
+
+SLACK_CHECKS = [check_slack_token, check_slack_scopes, check_claude_bin, check_bedrock_env,
+                check_slack_owner]
 
 
 # --------------------------------------------------------------------------- provider / agents checks
@@ -269,17 +330,7 @@ def _droid_selected() -> bool:
 
 
 def _droid_binary() -> str | None:
-    # Mirror agent_session.agent_available: PATH plus the common install
-    # locations launchd's pinned PATH misses (~/.local/bin is Factory's default).
-    on_path = shutil.which(DROID)
-    if on_path:
-        return on_path
-    for cand in (HOME / ".local" / "bin" / DROID,
-                 Path("/opt/homebrew/bin") / DROID,
-                 Path("/usr/local/bin") / DROID):
-        if cand.is_file() and os.access(cand, os.X_OK):
-            return str(cand)
-    return None
+    return _agent_binary(DROID)
 
 
 def check_droid_binary() -> Check:
@@ -293,7 +344,7 @@ def check_droid_binary() -> Check:
         "droid binary", FAIL, core=False,
         detail="droid not found on PATH or ~/.local/bin, /opt/homebrew/bin, /usr/local/bin",
         remedy="install Factory droid (curl -fsSL https://app.factory.ai/cli | sh) "
-               "so it lands on ~/.local/bin/droid, then re-run",
+               "so it lands in Factory's default install dir, then re-run",
     )
 
 
@@ -311,7 +362,7 @@ def check_droid_settings() -> Check:
     except ValueError:
         return Check("droid settings", FAIL, core=False,
                      detail=f"{settings} is not valid JSON",
-                     remedy=f"fix the JSON in {settings} so `droid --settings` can parse it")
+                     remedy=f"fix the JSON in {settings} so Droid can read it")
     if not isinstance(parsed, dict):
         return Check("droid settings", FAIL, core=False,
                      detail=f"{settings} parsed but is not a JSON object",
@@ -319,7 +370,85 @@ def check_droid_settings() -> Check:
     return Check("droid settings", PASS, core=False, detail=str(settings))
 
 
-AGENT_CHECKS = [check_droid_binary, check_droid_settings]
+def check_copilot_binary() -> Check:
+    if not agent_session.copilot_chosen():
+        return Check("copilot binary", SKIP, core=False,
+                     detail="provider is not copilot (llm.provider / dispatch.agent / comms)")
+    found = _agent_binary(COPILOT)
+    if found and agent_session.runs(found):
+        source = agent_session.copilot_sign_in_source()
+        if source is None:
+            return Check("copilot binary", FAIL, core=False,
+                         detail=f"{found} runs, but no Copilot account is signed in",
+                         remedy="run `copilot login`")
+        if agent_session.copilot_sign_in_source(env={}) is None:
+            shell_only = ("COPILOT_HOME is set" if source == "account"
+                          else "COPILOT_GH_HOST or GH_HOST is set" if source == "gh"
+                          else f"{source} is set")
+            return Check("copilot binary", WARN, core=False,
+                         detail=(f"{found} runs, signed in because {shell_only} in this "
+                                 "shell; Assistant's background jobs don't get it, so "
+                                 "the Slack session and dispatch run Claude and other "
+                                 "Copilot jobs fail"),
+                         remedy="run `copilot login` (it signs in ~/.copilot)")
+        return Check("copilot binary", PASS, core=False, detail=found)
+    return Check(
+        "copilot binary", FAIL, core=False,
+        detail=(f"{found} --version failed" if found else
+                "copilot not found on PATH, ~/.local/bin, /opt/homebrew/bin, "
+                "/usr/local/bin, or ~/.nvm"),
+        remedy="install GitHub Copilot CLI (npm install -g @github/copilot), "
+               "run `copilot login`, or set COPILOT_BIN",
+    )
+
+
+def check_copilot_hooks() -> Check:
+    if not agent_session.copilot_chosen():
+        return Check("copilot cmux hooks", SKIP, core=False,
+                     detail="Copilot isn't picked anywhere")
+    if agent_session.copilot_hooks_installed(HOME):
+        return Check("copilot cmux hooks", PASS, core=False,
+                     detail=str(agent_session.copilot_hooks_file(HOME)))
+    return Check(
+        "copilot cmux hooks", FAIL, core=False,
+        detail=f"{agent_session.copilot_hooks_file(HOME)} is missing; Copilot "
+               "sessions won't show on the dashboard",
+        remedy="python3 bin/agent_session.py install-copilot-hooks",
+    )
+
+
+def check_claude_alias() -> Check:
+    alias = agent_session.claude_alias()
+    if alias == agent_session.CLAUDE:
+        return Check("claude alias", SKIP, core=False, detail="Claude sessions start with claude")
+    kind = agent_session.alias_kind(alias)
+    if kind in agent_session._LAUNCHABLE_KINDS:
+        return Check("claude alias", PASS, core=False, detail=f"{alias} is defined in your login zsh ({kind})")
+    if kind:
+        return Check(
+            "claude alias", WARN, core=False,
+            detail=f"{alias} is a shell {kind} in your login zsh, so Claude sessions won't start",
+            remedy="run: python3 bin/assistant-llm.py claude-alias claude",
+        )
+    return Check(
+        "claude alias", WARN, core=False,
+        detail=f"{alias} isn't an alias, function, or command in your login zsh; "
+               "Claude sessions start with claude instead",
+        remedy=f"define {alias} in ~/.zprofile, or run: python3 bin/assistant-llm.py claude-alias claude",
+    )
+
+
+def check_observer() -> Check:
+    if mode.observer_enabled():
+        return Check("observer", PASS, core=False,
+                     detail="on in ~/.assistant/config.json; it runs when the pulse has ASSISTANT_WATCHER=1")
+    return Check("observer", SKIP, core=False,
+                 detail='off (the default). To turn it on, set {"observer": {"enabled": true}} in '
+                        "~/.assistant/config.json and run the pulse with ASSISTANT_WATCHER=1")
+
+
+AGENT_CHECKS = [check_droid_binary, check_droid_settings, check_copilot_binary,
+                check_copilot_hooks, check_claude_alias, check_observer]
 
 
 # --------------------------------------------------------------------------- runner
@@ -329,7 +458,8 @@ def run_checks(only: str = "all") -> list[Check]:
     if only in ("all", "core"):
         checks += [c() for c in CORE_CHECKS]
     if only in ("all", "slack"):
-        checks += [c() for c in SLACK_CHECKS]
+        # The owner check belongs to Pro mode's rule about who may type into the Slack session.
+        checks += [c() for c in SLACK_CHECKS if c is not check_slack_owner or mode.is_pro()]
     if only == "all":
         checks += [c() for c in AGENT_CHECKS]
     return checks

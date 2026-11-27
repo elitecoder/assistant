@@ -62,6 +62,19 @@ def test_droid_messages_read_like_claude_turns(tmp_path):
     assert out.splitlines() == ["USER t: hi", "ASSISTANT t: hello"]
 
 
+def test_copilot_events_read_like_claude_turns(tmp_path):
+    records = [{"type": "session.start", "data": {"sessionId": "s"}},
+               {"type": "user.message", "timestamp": "t", "data": {"content": "Fix the build"}},
+               {"type": "tool.execution_start", "data": {"toolCallId": "c1", "toolName": "bash"}},
+               {"type": "assistant.message", "timestamp": "t", "data": {
+                   "content": "", "toolRequests": [{"toolCallId": "c1", "name": "bash",
+                                                    "arguments": {"command": "make"}}]}},
+               {"type": "assistant.message", "timestamp": "t", "data": {"content": "Fixed."}}]
+    out = ts.read_conversation(_write(tmp_path / "events.jsonl", records))
+    assert out.splitlines() == ["USER t: Fix the build", "ASSISTANT t: [tool bash: make]",
+                                "ASSISTANT t: Fixed."]
+
+
 def test_end_replays_the_transcript_as_it_was(tmp_path):
     path = _write(tmp_path / "s.jsonl", [_user("first"), _user("second")])
     end = len(json.dumps(_user("first"))) + 1

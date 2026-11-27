@@ -1,8 +1,7 @@
-# 05 — done recap + no PR + clean cwd → ready_for_cleanup
+# 05 — done recap + no PR → ready_for_cleanup
 
 Rule B1. The agent's last narrative explicitly says "Mission complete,
-no follow-up." cwd_dirty and cwd_unpushed are both false (probe didn't
-write any tracked files). No PR exists for this workspace's branch
+no follow-up." No PR exists for this workspace's branch
 (no fake-gh-bin, so any `gh pr view` returns nothing — Observer must
 notice "no PR" via empty `head` lookup or `gh pr list --head` empty
 array).

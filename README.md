@@ -3,7 +3,7 @@
 ![platform](https://img.shields.io/badge/platform-macOS-111111)
 ![python](https://img.shields.io/badge/python-3.11%2B-3572A5)
 
-**Assistant is a chief of staff for your fleet of Claude Code agents.**
+**Assistant is a chief of staff for your fleet of coding agents: Claude Code, GitHub Copilot CLI, or Factory Droid.**
 
 It watches every agent session you run in cmux, plus your Slack and inbox. It
 shows you only what needs you, and it handles the work around your agents:
@@ -17,14 +17,14 @@ starting sessions, answering you on Slack, and cleaning up after them.
 |---|---|
 | **See every session** | The **Sessions** tab sorts your cmux workspaces into Needs your answer, Assistant tasks, Ready to close, and Paused. |
 | **Answer agents in seconds** | A card quotes the agent's question and choices, then takes you to the right session. |
-| **Turn a task into a session** | Add a task with `/todo`, and Assistant opens a Claude session to work on it. |
+| **Turn a task into a session** | Add a task with `/todo`, and Assistant opens a session in your chosen agent to work on it. Pick the agent with `bin/assistant-llm.py set claude\|copilot\|droid`. |
 | **Start background work** | `/spawn-claude-workspace` starts an agent in a new cmux workspace without taking your focus. |
 | **Clean up when you're done** | `/cleanup` stops dev servers, saves uncommitted changes, and removes the branch and worktree. `/cleanup --undo` brings them back. |
 | **Talk to your Mac from Slack** | A Claude session answers your messages in a private Slack channel and pings you when a workspace needs you. |
 | **Save a Slack thread as a task** | React with your machine's emoji, and the thread becomes a task, which then gets its own session. |
 | **Find Slack threads that need you** | The **Slack** tab lists threads where someone is waiting on you or you promised something. |
-| **One list for your inbox** (Pro mode) | The **Notifications** tab ranks GitHub, Gmail, Google Calendar, Outlook, and Slack alerts, and stays current. |
-| **Track ranked goals** (Pro mode) | `/goal` records your goals, and a planner suggests the next step when one stalls. |
+| **One list for your inbox** (Pro mode) | Once you turn on decisions, the **Notifications** tab ranks GitHub, Gmail, Google Calendar, Outlook, and Slack alerts, and stays current. Decisions are off by default. |
+| **Track ranked goals** (Pro mode) | `/goal` records your goals. Once you turn on the planner, it suggests the next step when one stalls and records their progress. The planner is off by default. |
 | **Recover from crashes** | Workspaces that crash come back on their own. Opt in with `--with-crash-resume`. |
 | **Keep your Macs in sync** | Claude memory syncs across your Macs. Opt in with `--with-memory`. |
 
@@ -46,9 +46,11 @@ you promised something. You stop scrolling channels to find them.
 
 ### Rank your notifications instead of reading them all (Pro mode)
 
-Rules sort every notification into escalate, staged, digest, or drop, and rank
-what's left. You see the few decisions that matter, and **Wrong lane** teaches
-the rules with one tap.
+Decisions are off until you turn them on with `"jobs": {"decisions": true}` in
+`~/.assistant/config.json`; see [Pro mode](#pro-mode). Once they're on, rules
+sort every notification into escalate, staged, digest, or drop, and rank what's
+left. You see the few decisions that matter, and **Wrong lane** teaches the
+rules with one tap.
 
 ![A decision card with sample data: "@you can you sanity-check the new rate-limit headers?" marked escalate by the gh-mention-escalate rule, with Accept, Snooze 1h, Reject, and Wrong lane buttons.](docs/images/decision-card.png)
 
@@ -67,20 +69,35 @@ services**, or run `./install.sh --apply --pro` (or `--no-pro`). New installs
 start in default mode; existing installs stay in Pro mode. Pro mode adds:
 
 - The **Notifications**, **Decisions**, **Background work**, and **Connected
-  apps** tabs, with triage ranking your notifications.
+  apps** tabs. Turning events into decisions is off until you turn it on.
 - Read-only connectors for GitHub, Gmail, Google Calendar, Outlook, and Slack,
   which you set up separately. See [Connect your sources](docs/connectors.md).
   They pause while Pro mode is off.
-- Ranked goals with the `/goal` skill, and a planner that suggests next steps.
+- The [Work queue](docs/work-queue.md), a local page that merges your Slack
+  Later saves, pull requests waiting on your review, Outlook, Gmail, and
+  today's calendar into one list you clear. Turning Pro mode off stops its
+  server within seconds.
+- Ranked goals with the `/goal` skill, and a planner that suggests next steps
+  and records their progress once you turn it on.
 - `/back-off` and `/attend` tell Assistant to leave a workspace alone or watch
   it again. `/lesson` saves a rule that future sessions follow.
-- Background jobs that each need their own setting: the strategist
+- Background jobs that are off until you turn them on: decisions, the morning
+  brief, and the planner. Add `"jobs": {"decisions": true, "brief": true,
+  "planner": true}` to `~/.assistant/config.json`, next to `"mode"`, with only
+  the ones you want. Write `true` without quotes. It takes effect at Assistant's
+  next check. See
+  [Configuration](docs/configuration.md#background-jobs-that-are-off-by-default).
+- Background jobs that each need their own variable: the strategist
   (`ASSISTANT_STRATEGIST=1`), the lessons extractor
-  (`ASSISTANT_LESSON_EXTRACTOR=1`), and the brief narrator
-  (`ASSISTANT_BRIEF_NARRATOR=1`).
+  (`ASSISTANT_LESSON_EXTRACTOR=1`, with its pass over repeated actions behind
+  `ASSISTANT_LESSON_LEDGER_PASS=1`), and the brief narrator
+  (`ASSISTANT_BRIEF_NARRATOR=1`, which also needs the brief).
 - The session check acting on its results: merging PRs, closing finished
-  workspaces, and nudging stuck ones. The check itself runs in either mode
-  with `ASSISTANT_WATCHER=1`; in default mode it only adds cards.
+  workspaces, and nudging stuck ones. The check itself, the Observer, is off by
+  default in both modes. To turn it on, set `{"observer": {"enabled": true}}`
+  in `~/.assistant/config.json` and run the pulse with `ASSISTANT_WATCHER=1`.
+  See [Configuration](docs/configuration.md#observer). In default mode it only
+  adds cards.
 
 ## Quick start
 
@@ -129,9 +146,13 @@ walkthrough, see [ONBOARDING.md](ONBOARDING.md).
 |---|---|
 | Install, opt-in features, and troubleshooting | [ONBOARDING.md](ONBOARDING.md) |
 | Connect GitHub, Gmail, Google Calendar, Outlook, and Slack | [docs/connectors.md](docs/connectors.md) |
+| Clear one list from all your sources (Pro mode) | [docs/work-queue.md](docs/work-queue.md) |
 | Using the dashboard tabs and decision cards | [docs/dashboard.md](docs/dashboard.md) |
+| What Assistant records about its own work, locally, and how to turn it off | [docs/telemetry.md](docs/telemetry.md) |
+| What Assistant records about what you tell it on the Work queue, and how to delete it | [docs/feedback.md](docs/feedback.md) |
 | Noise budget, wake hour, planner, Strategist, and model settings | [docs/configuration.md](docs/configuration.md) |
 | Lanes, ranking, outbound gates, design decisions, and code map | [docs/design.md](docs/design.md) |
+| What Assistant records before it changes anything outside itself | [docs/effects.md](docs/effects.md) |
 | Slack comms design | [docs/assistant-comms-onboarding.md](docs/assistant-comms-onboarding.md) |
 | Slack emoji-to-TODO capture | [slack-reactor/README.md](slack-reactor/README.md) |
 

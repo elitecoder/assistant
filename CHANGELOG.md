@@ -9,10 +9,342 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ## [Unreleased]
 
+### Security
+- Stop a Slack reaction from anyone else starting an agent on your Mac. Until
+  now, when `SLACK_USER_ID` wasn't set, a reaction with your task emoji from
+  anyone in any channel the bot is in made a task that started by itself, and
+  the agent it launched runs with permission prompts off. The Slack reactor now
+  finds your Slack user id from `SLACK_USER_ID`, or else `slack.owner` in
+  `~/.assistant/config.json`, or else `slack.target` there when it is a user id
+  (the Slack channel setup saves it; it counts as you only when the other two
+  are absent, so it helps only if that target is your own user id). A
+  `SLACK_USER_ID` that isn't a user id, such as a typo or a channel id, is
+  reported in the log and ignored. The start-up line prints the id it found. A
+  reaction from you works as before; a reaction from anyone else is ignored.
+  When the reactor can't tell who you are, it still saves what you react to,
+  but as an "Ask me" task that never starts by itself: its title starts with
+  "Not started, reaction not confirmed as yours", its priority is P3, the message
+  gets an eyes reaction instead of the check mark, no more than 20 wait at once,
+  and the top of the task says how to fix it. Tasks already saved as "Ask me"
+  stay that way until you press On. To make sure your own reactions start work,
+  set `SLACK_USER_ID` to your Slack user id in `~/.zprofile` and restart the
+  reactor. `TODO_AUTODISPATCH=0` still turns self-starting off for everyone.
+- In Pro mode, when Assistant knows which Slack member is you, only your own
+  messages are typed into the warm session. The reason: before, every non-bot
+  message in the channel you set up was typed into a session that runs with its
+  permission prompts off, so any member of the channel could make it run
+  commands on your Mac. Your Slack id comes from `SLACK_USER_ID`, then
+  `slack.owner` in `~/.assistant/config.json`, then the target when it is a
+  person. A message from someone else is kept as received, never typed, and
+  Assistant says once a day, in its thread, that it only takes instructions
+  from you. When the target is a channel and none of those names you, Assistant
+  can't tell which member is you, so it types every message in that channel as
+  it always has, and the Slack check in `assistant-doctor.py` warns. To have
+  only your own messages typed there, add `export SLACK_USER_ID=U…` (your
+  member ID: your Slack profile, the three dots, Copy member ID) to
+  `~/.zprofile` and restart the service
+  (`launchctl kickstart -k gui/$UID/com.assistant.assistant-comms`). A
+  `SLACK_USER_ID` that isn't a member ID is skipped, the next of those is used,
+  and the Slack check says so.
+  In the default mode any member of a configured Slack channel can still have a
+  message typed into the warm session, as before, and nothing here changes that
+  for now.
+- In Pro mode, "run now" on a proposal is checked before it types. Before, it typed
+  whatever a proposal file said, of any length, with any control characters,
+  into whatever session the file named, with no check. Now the session must be
+  a real `workspace:N`, the text one line of at most 500 characters with no
+  control characters, and the typing is recorded first. It also types into the
+  session's terminal, not whichever pane is on top, and says what happened when
+  it couldn't. This is closed in Pro mode only: in the default mode "run now"
+  still types whatever a proposal file says, as before, and nothing here changes
+  that for now.
+- **Pro mode only.** The default mode types exactly as before, with no limit and no hold. In Pro mode: Stop the same text being typed into the same session in a loop. Before,
+  nothing stopped a nudge or `/cleanup` going into one session every pulse,
+  forever. Now the same thing typed into the same session more than three
+  times in thirty minutes is waited on, and a typing that may have landed is
+  not repeated by Assistant on its own: a nudge, `/cleanup` or merge request
+  waits 30 minutes before it may be tried again. A message you send in Slack is
+  typed once, whatever was typed before it. Everything else Assistant types,
+  including a script that you or an agent runs, is limited to three of the same
+  thing into one session in thirty minutes and is not retyped for thirty minutes
+  after a typing whose outcome isn't known; you can always type into the
+  session yourself. If you script `bin/cmux-send.py`: its sends into one
+  session count together unless each kind names its own `--source`, so a fourth
+  inside thirty minutes is refused (exit status 4) even when the text differs.
+  The page tells you when something may already have been typed.
+- Check every request that changes something on the dashboard server the same
+  way, with no exceptions. Before, a web page open in your browser could make
+  your machine start a TODO's agent session (`/dispatch-now`), type a
+  proposal's text into a session (`/proposal/<id>/run-now`), switch to a
+  workspace, turn a task's automatic start on or off, remove a task, or add a
+  note to one, because those six routes skipped the cross-site check. A page
+  sandboxed inside any website could also reach the routes that did check,
+  because a missing or `null` origin was let through, and any website could
+  show the dashboard in a frame and act through it. Now:
+  - The dashboard answers only at `127.0.0.1` or `localhost`, on any port, so
+    a forwarded port works and a page that points another name at your
+    machine is refused.
+  - A change from the dashboard page you opened is let through, under either
+    `127.0.0.1` or `localhost` on the same port. One from any other page is
+    refused, including a page on `localhost` at another port.
+  - The dashboard page can't be shown in a frame, read, or embedded by another
+    site.
+  - Anything with no origin, such as the dashboard opened as a local file or a
+    command-line call, has to send the token in `~/.assistant/api-token` as
+    the `X-Assistant-Token` header, and is refused with a sentence saying so
+    otherwise. The `/goal` skill sends it for you; to do it by hand, put the
+    header on standard input (`curl -H @-`) so it stays off the command line.
+    The token is created the first time it's needed. Only you can read it
+    and the saved dashboard page that now holds it.
+  - If you forward the dashboard's port through another local server or
+    tunnel, every page that address serves is treated as the dashboard's own
+    page. The saved page holds your token and always talks to
+    `http://127.0.0.1:9876`, so don't share it.
+  - This stops web pages open in your browser. It does not stop other
+    programs running as you on this Mac, which can read the token file and
+    the saved page.
+  - A dashboard tab you left open before this update keeps working. Opened as
+    a local file, only **Refresh now** and the signal that you looked at the
+    Notifications tab reach the server, and they now say when they are
+    refused.
+  - Two page rebuilds at once no longer share one temporary file, so neither
+    can crash or garble the page, and a problem with the token file no longer
+    stops the page from being built.
+
+### Added
+- Find out why a row is on your Work queue, and what Assistant has done with
+  it. Every Open list row, Start here item, email, row waiting for your
+  approval and Ready for you result now has a short **Why?** link next to
+  **Tell Assistant** (its full name, "Why is this here?", is what a screen
+  reader says and what shows when you point at it). Nothing opens until you
+  select it. Then a box under the row's line of buttons lists, oldest first and
+  with the time of each step, when Assistant first saw it and from where, how
+  the model sorted it (and which model and sorting rules), that you sent it to
+  an agent, that an agent was started or couldn't be (and why, and whether
+  Assistant will try again by itself), that the agent finished or was blocked, what the
+  check afterwards found, every change Assistant made because of it (such as
+  archiving the email, and whether you pressed the button or approved it) and
+  what you said about it. So "the model didn't sort this because today's spend
+  limit was reached" and "Assistant tried to start an agent 14 times and cmux
+  didn't answer" are now on the page instead of hidden. It is built from the
+  record Assistant keeps on your Mac and holds no message text: no title,
+  sender, link, or reason the model gave. It says "Assistant has no record for
+  this yet" when nothing is kept, and when it can't read part of its record it
+  says so, and says the list may be missing steps, instead of calling it
+  complete. For a row that was here before Assistant started keeping the record
+  it says that earlier steps aren't shown. Repeated steps are one line, and it
+  shows the newest 50 steps and says how many earlier ones aren't shown. An open
+  box stops the page reloading on its own after a refresh, the way an open note
+  does; changing tabs closes it. The link adds no line to any row on a phone, and
+  below 860 px wide the buttons sit under the title so a title is never squeezed
+  to nothing: between 621 and 860 px wide a plain row is about 98 px tall where
+  it was 61, and its title has the full width. At 320 wide a row can gain a line.
+- In the **Why?** list, starting an agent is one step that says what was typed
+  into the new session ("Assistant started an agent on it and typed the task's
+  instruction into the new session", or "…but couldn't tell if the session received it. Look at the
+  session to check."), instead of a line for each thing typed. A start that opened a
+  session and then couldn't type into it says the task is marked blocked and how to run
+  it again. A typing that belongs to no start, such as a
+  nudge or `/cleanup`, says what it was.
+- Every Work queue row and every TODO now carries a short id that later
+  features will use to show where a piece of work came from. Nothing you see
+  changes yet.
+- Assistant now records each step a piece of work goes through, so one row can
+  be followed from arrival to done: a refresh and each source it read, the
+  model sorting the row, you sending it, an agent being started on it, the agent
+  reporting back, and the check that clears it. Every model call, every
+  change Assistant makes to your mail, removing or re-queuing a task on the
+  dashboard, and every pulse that did something leaves a record too. Each line
+  of the spend file now also notes which piece of work, if any, the model call
+  was for. The records hold ids, counts, timings and states only, never a
+  title, a sender, message text, a link, a model's reason or a prompt. A row the
+  model never sorted is recorded too, with a one-word reason, and so is a source
+  or a dispatch that failed. Nothing you see changes yet, and it all stays on
+  your Mac, in the local record described in [Telemetry](docs/telemetry.md),
+  which also shows how to look up everything recorded about one row.
+- Record every Work queue Gmail change (**Archive**, **Mark read**, moving a
+  conversation back to your inbox, and Gmail Trash from **Apply approvals**)
+  and every unsubscribe in a new append-only record, before it runs and again
+  when it ends, in `~/.assistant/effects/effects.jsonl`. An action Assistant
+  can't record doesn't run, and the page says "Assistant couldn't record this
+  action, so it didn't run it. Check that your disk isn't full, then try
+  again". A second press while the first is still working is turned down. An
+  unsubscribe that went through is never sent again, and neither is one that
+  was sent and never answered: the row says "Assistant sent this but didn't
+  hear back, so it may have gone through. Approve it again to send it once
+  more". An **Undo** that doesn't happen, because the record refused it or
+  Gmail did, leaves the row in Trash and says why on the row and on the
+  last-run line, and the next **Apply approvals** tries it again. The record
+  holds ids only, never a subject, a sender, message text or an unsubscribe
+  link, and only you can read it. See `docs/effects.md`.
+- Record every Slack Later save the Work queue marks completed or reopens in
+  the same record, before it acts and again when it ends. That covers a row you
+  send to an agent and **Apply approvals**, **Undo** included. A save the record
+  can't write, or turns down, is left out of that run and the rest still go
+  through. A reopen the record refuses leaves the save done and its row says
+  why ("Undo not done: ..."); the next **Apply approvals** tries it again. A save
+  counts as done when Slack accepted the change, and as verified when your Later
+  list, read again, shows it. When Slack answers with an error, the save is
+  recorded as not done. When the browser run stopped after it started, so a save
+  may have changed, it is recorded as unknown, never as not done. The record
+  holds only the channel id, the message time and a short code for the row,
+  never the message, its link or a name. See `docs/effects.md`.
+- Try a Slack save again by itself when marking it done after you send its row
+  to an agent didn't work (Slack answered with an error, the browser run failed,
+  Slack needed you to sign in, or the record turned it down). A sent row leaves the page, so before
+  this the save stayed open in Slack with no sign. Now it is tried again after 1,
+  5 and 15 minutes, and a restart keeps the saves still waiting. If the last try
+  fails, one line under the page title says how many saves couldn't be marked,
+  why in plain words ("Slack asked us to slow down", "Slack needs you to sign in
+  again", "Slack didn't answer", "an earlier try may still be running", and so
+  on), with an "Open in Slack" link to each of the first three that says when
+  that save was sent, and what to do ("Mark it done in Slack yourself", or sign
+  in again). A sign-in problem shows at once, because trying again can't fix it. The
+  line goes away when Slack no longer has the save or a retry marks it.
+- Tell Assistant when something on the Work queue is wrong, with one tap. Every
+  Open list row, Start here item, email, model draft, Ready for you result and
+  row waiting for your approval has a small thumbs-down and a **Tell Assistant**
+  link. One tap records the thumbs-down and nothing else opens, so you can go
+  down a list tapping; tapping again takes it back. A note under the buttons
+  says what you said, with **Add a reason** and **Undo**. **Add a reason** opens
+  a small list over the page that never covers another row's thumbs-down or
+  **Tell Assistant** link (Not
+  important, Wrong order, Not mine, Already done; Wrong tone, Wrong facts, Not
+  how I'd say it for a draft; Not what I asked, Didn't finish, Should not have
+  been started for a result), and **Change** opens it again. The note is still
+  there after a reload or a refresh.
+  **Tell Assistant** opens a box for your own words about an item, and one at
+  the top of the page is for the page as a whole. A refresh that finishes while
+  you are choosing a reason or typing no longer reloads the page away.
+- Keep a local record of what you do on the Work queue:
+  Done, Snooze, Drop, Send to Agent (and hands-off), Approve, Keep, Archive,
+  Mark read, clearing a Ready for you result, copying a draft, and each Undo
+  are now written down, one line each, with a trace id and a pointer to the
+  item, never its title, sender, text or link. It goes to
+  `~/.assistant/feedback/feedback.jsonl`, only you can read it, and nothing is
+  sent anywhere. Assistant only records this now and doesn't use it yet; using
+  it (to reorder rows, learn what you drop, and show what changed) is planned
+  for the next update. If a note can't be saved, the page says so and the action still
+  happens. See [Feedback](docs/feedback.md).
+- Keep a local record of what Assistant does, as ids, counts, timings, states
+  and money, so later features can follow one piece of work from the moment it
+  arrives to your decision on it. It never holds message text, titles,
+  prompts, a model's reasons, email addresses or links, and a secret never
+  reaches it. Nothing leaves your Mac, and nothing about it shows on a page
+  yet. It lives in `~/.assistant/telemetry/`, readable only by you, keeps 90
+  days up to about 200 MB, and the pulse tidies it once an hour and logs a line
+  if a setting can't be read or records were lost. Set
+  `{"telemetry": {"enabled": false}}` in `~/.assistant/config.json` to turn it
+  off (anything but `true` is off, and so is a settings file that can't be read); delete the folder to remove what is there. See
+  [Telemetry](docs/telemetry.md).
+- **Pro mode only.** The default mode types exactly as before and writes no record, shows no new card and sends no new Slack message. In Pro mode: Record everything Assistant's own code types into an agent session before it
+  types it. Agents run with their permission prompts off and can't take typing
+  back, and before this only two of twelve ways of typing left any record, and
+  one typed text from a file with no check. Now the start of a task, the
+  folder-trust answer, the "stalled" nudge, `/cleanup`, merge requests, Slack
+  messages and the Slack session's start-up, "run now" and
+  `cmux-restore-sessions` each write a line to `~/.assistant/effects` first,
+  saying which session, which task, where the text came from and what allowed
+  it (never the text), and a second line saying how it went. When the line
+  can't be written, nothing is typed: Assistant checks it can write before it
+  starts a session for a task, and if it can't, the Tasks tab shows "Dispatch
+  paused — can't record what it types" with the disk and folder to check, and
+  the tasks still waiting. If it had already started a session when it
+  refused, the task is parked and the card names it and the workspace left open:
+  close the workspace and press "Queue to start" on the task. A nudge is
+  skipped, and a Slack message stays queued and you still get a note saying
+  why. A Slack message that can't be confirmed is never typed twice, and when
+  Assistant stops trying it tells you in the message's thread (also when your
+  Slack target is a person): if its text is still in the prompt box only Enter
+  is pressed again, and only while the box still shows that message, so text
+  you are typing there isn't submitted (apart from the split second between
+  that check and the key press). A test fails the
+  build if any other code types into a session. Typing by the
+  `spawn-claude-workspace` skill, by the Slack session's own model and by crash
+  resume isn't recorded yet; see `docs/effects.md`.
+- Show a failure that keeps repeating as one red line at the top of the
+  dashboard, with how many times in a row it has happened, since when, a short
+  error, and what happens next, all in one box that shows two lines and keeps
+  the rest under "and N more that keep repeating". It covers self-update,
+  background model calls, and the page refresh after an edit. Sessions flagged
+  as ready to merge with no pull request linked share one line, which clears
+  when each has a pull request, is no longer ready, or closes. The self-update
+  line gives a command you can paste, with the Python the services use. A background job that fails the same
+  way three times in a row stops calling the model, and so stops spending,
+  for an hour, then two, up to 24 hours. Self-update pauses for 4 hours at
+  most. It, and the model jobs that know their model beforehand, try again at
+  once if the remote, branch, model, or provider changes. Anything you
+  ask for, such as a Work queue or Slack tab refresh, is never paused. A pause
+  ends by itself, and the line clears when the next attempt works. To clear a
+  pause sooner, run `self_update.py --force`, or delete
+  `~/.assistant/failures.json`, which forgets every count. If the page itself
+  can't be rebuilt, it can't show the line until a rebuild works. The file
+  holds short error samples, with tokens, keys, and passwords removed, that can
+  include a branch name or a model id. Counts stay out of the actions ledger.
+- Clear finished work from the Work queue's **Ready for you** box on each
+  refresh. A done item clears when every pull request its result names is
+  merged or closed, or when you commented on or reviewed one of them, or
+  posted in its Slack thread, after it finished. Clearing writes the **Done**
+  mark with the reason, **Show cleared** lists the last 7 days' cleared items
+  with **Undo**, and an item you bring back never clears again. An item with
+  an open pull request says what would clear it. A blocked item never clears;
+  when its reason names a GitHub repository it couldn't reach and `gh` can
+  read it now, it says the blocker looks gone. A failed check leaves the item
+  showing and never stops the refresh. `/api/state` adds `checks`. The server
+  and the refresh now change `marks.json` under one file lock, so a mark one
+  of them writes is never lost to the other.
+- Give each Work queue row a short action title from the model, such as
+  "Review Ana's pull request #42 on the parser", and use it as the headline
+  on the Open list and Start here, with the row's own text under it. A row
+  without a usable title shows its own text as before, and **Send to Agent**
+  still sends the row's own text.
+- Group the Work queue's Open list by the model's lanes: **Do first**,
+  **Promise**, **This week**, and **Optional**, in that order, each row naming
+  its source. Rows the model didn't sort follow under **Not sorted yet**,
+  grouped by source. The triage cache is asked again once, since the prompt
+  changed.
+- Turn the Observer off with `{"observer": {"enabled": false}}` in
+  `~/.assistant/config.json`. The pulse then sends no workspace to it and
+  each workspace keeps its last verdict.
+- Show finished agent work in a **Ready for you** box at the top of the Work
+  queue's Start here tab, or of the Open list when there's no Start here. Each
+  TODO you sent from the page that's done or blocked shows its title, id, and
+  result or blocked reason, with **Done** to hide it. `/api/state` now lists
+  each sent row's TODO under `queued`: id, title, status, result, reason,
+  finish time, and workspace. The page reads it again every 20 seconds while
+  a sent TODO is still open or still listed, without redrawing a note you're
+  typing. A blocked Start here item shows **Sent td-NNN**, turned off.
+- Add **Open workspace** to each Ready for you item: `POST /api/focus` brings
+  the TODO's cmux workspace to the front and selects it. It refuses a closed
+  workspace and a workspace ref that cmux reused for another workspace, whose
+  title doesn't start with the TODO's id.
+- Merge the Work queue's Outlook, Gmail, and Unsubscribe tabs into one
+  **Email** tab with a collapsible part for each. A part with email that
+  needs you starts open, and old links and saved tabs land on the right part.
+- Add email actions to every Outlook and Gmail row on the Email tab: **Send
+  to Agent** and **Snooze**, and on Gmail, **Archive** while it's in the
+  inbox and **Mark read** while it's unread. `POST /api/gmail` changes the
+  whole conversation, so mail that arrived since the last refresh changes
+  too, then reads every message's labels back and reports success only when
+  Gmail confirms it. **Show hidden email** lists hidden email with **Undo**,
+  and Undo on an archived email moves it back to the inbox. Hiding keys on
+  the email's own id, so it survives a refresh.
+- Add a note box to Send to Agent on Open list rows, Start here items, and
+  email rows. The note goes in the TODO above the untrusted row block,
+  outside its markers, labeled as the sender's own instruction. Cmd+Enter or
+  Ctrl+Enter sends and Esc cancels; a failed send keeps the note, and a row
+  that was already sent says the note wasn't added.
+- Serve files inside `~/dev/generated-docs` read-only at `GET /files/<path>`,
+  so `file://` links in an agent's result open from the page. Nothing outside
+  that folder is served, through `..` or a symbolic link either, Markdown is
+  served as text, and each file is sandboxed. Links in a result keep a
+  trailing period out, and only `http`, `https`, and `file` links are made.
+
 ### Fixed
-- Stop rechecking sessions that haven't changed. Replaying the session checks
-  from 2026-11-12, about 57% (223 of 388) were for sessions with no new
-  conversation. The fingerprint that decides when to recheck now:
+- With the Observer turned on, stop rechecking sessions that haven't changed.
+  An offline replay of the session checks from 2026-11-12 put about 57% of
+  them (223 of 388) on sessions with no new conversation. The fingerprint
+  that decides when to recheck now:
   - Ignores the sidebar number at the end of a workspace title, which shifts
     when other workspaces open or close.
   - Hashes the plain-text conversation the check reads instead of the file's
@@ -20,16 +352,547 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 - Count a session's idle time from its last conversation turn, not the
   transcript file's modified time. Claude Code writes bookkeeping records after
   a turn, which kept moving sessions back under the 30-minute idle mark.
+- In Pro mode, a task Assistant made itself (its id looks like `td-auto-1a2b3c4d`) is started
+  again. Before, Assistant opened a session for it, refused to type into it, parked the task and
+  paused every other task's start, with a card blaming the session's name. It now types the
+  instruction and records it without the task. A task parked this way earlier stays parked until
+  you close its workspace and press "Queue to start" on it. Default mode is unchanged.
+- In Pro mode, a Slack reaction with your task emoji starts a task by itself
+  again when Assistant doesn't know your Slack member ID. Since 2026-11-24 such
+  a reaction was saved as an "Ask me" task that never started, so none of your
+  reactions started work if you had never set `SLACK_USER_ID` or `slack.owner`.
+  In Pro mode it is now captured as it was before: a plain title, the normal
+  priority, started by itself (unless `TODO_AUTODISPATCH=0`), with no limit on
+  how many wait. Until you set `SLACK_USER_ID`, anyone in a channel Assistant is
+  in can start a task the same way; the reactor's start-up line says so, and so
+  does `assistant-doctor.py` when your Slack target is a channel. Setting
+  `SLACK_USER_ID` restricts it to your reactions. A `SLACK_USER_ID` that is set
+  but mistyped still saves reactions as "Ask me". Pro mode here means that
+  `bin/assistant-mode.py` says so; if it can't be asked, the reactor treats the
+  install as the default mode. The default mode is unchanged: an unknown owner
+  is still saved as "Ask me". Tasks already saved as "Ask me" stay as they are;
+  they start with Queue to start.
+- In Pro mode, Assistant types your Slack messages into the warm session again
+  when the target is a channel and `SLACK_USER_ID` isn't set. An update on
+  2026-11-25 made it refuse them all and reply "I can't tell which Slack
+  account is yours". A message it refused then isn't replayed: send it again.
+- Start the installer's list of changed agents empty. Under bash 5 (Homebrew's, or Linux's), an install that
+  changed no agent stopped at step 5 with `CHANGED_LABELS: unbound variable`.
+- The records of a dispatch and of an effect on a session now accept the ten-digit session numbers
+  the session tool really uses (such as `workspace:1000020126`). Before, such a record was left out whole.
+- Running the tests no longer touches your real home folder. The test setup now moves `HOME` to a throwaway
+  folder before anything is imported, puts it back before every test, and removes the folder when the run ends.
+  Before this, a test that forgot to do that itself wrote into the real `~/.assistant`: the lesson extractor's
+  tests had been adding lines to the real `assistant-audit.log` since July, and the guard that was meant to
+  catch this watched only two folders. Data folders named for the whole login session (`ASSISTANT_DIR`,
+  `WQ_DATA`) and your global git settings no longer reach the tests either. The test README now says to run
+  the suite with `pytest`: `unittest` skips this protection.
+- Stop one silent connection from freezing the dashboard. The dashboard's server answers one connection at a
+  time, and a connection that opened and sent nothing held it for as long as it stayed open; browsers keep
+  spare connections like that. Such a connection is now dropped after two seconds of silence.
+- Stop a Slack thread from reading as instructions to the agent. The thread in
+  a saved task now sits between marker lines with a code made for that task,
+  under rules that tell the agent it is content to act on and never
+  instructions, the same way the Work queue treats a row. A message can't forge
+  either marker, and the first message no longer appears as the title in the
+  prompt the agent reads. A long thread keeps its first message and the one you
+  reacted to, marked, then the newest messages that fit in 50 messages and 8,000
+  characters, and says how many it left out, with the link to read the rest. The
+  whole thread is read, not only its first 200 messages. A Slack task saved
+  before this change is fenced when its prompt is built.
+- Stop the Slack reactor from corrupting your task list. It now takes the lock
+  the Python services take before it reads and writes the list, waits up to 5
+  seconds for it, and tries the whole add three times about 15 seconds apart.
+  Before this, a reaction landing while another writer saved could corrupt the
+  file or lose a task. If it still can't save, it logs that and puts a warning
+  reaction on the message, so you can see it wasn't saved. The reactor also
+  writes through a private temporary file of its own and removes it if the save
+  fails. This needs macOS; on another system the reactor doesn't write. The
+  `/todo` and `/cleanup` skills still write the list without the lock.
+- Stop a speed test for the Work queue's scrubber from failing on a busy machine. It allowed two seconds for a
+  megabyte of text and exists to catch a pattern that takes minutes; its limits are now ten times looser, and
+  the three mutation checks that rely on it still reject their mutants.
+- Some services could fail without a word because they ran under the system's
+  older Python. They now use the same Python as the rest of Assistant.
+- Trim oversized logs. Every five minutes the Assistant now checks its logs:
+  the ones in `~/.assistant/logs`, the `.log` files in `~/.assistant`, the
+  comms listener log, the workspace watcher log, and the to-do server's two
+  output files. A log over 20 MB is cut to its last 5 MB; the older lines are
+  deleted and there is no backup copy. This frees the space the repeated lines
+  took; one log had reached 1.6 GB and another 870 MB. Services keep writing
+  without a restart, and a line written during a trim can be lost. Nothing is
+  deleted the day you update: when `~/.assistant/config.json` has no `logs`
+  entry, the first time a log is found over the limit the Assistant only shows
+  a card saying which logs it will trim and when, and waits 24 hours. To keep
+  your logs, or to change the limits, add a `logs` entry alongside your
+  existing keys; do not replace the file. For example,
+  `{"mode": "pro", "logs": {"cap_mb": 0}}` turns trimming off, and
+  `"cap_mb"` and `"keep_mb"` are in megabytes. Check the file with
+  `python3 -m json.tool ~/.assistant/config.json`. A `logs` setting that can't
+  be read, such as a number in quotes, turns trimming off and the log says why.
+- Stop the workspace watcher from restarting its cmux event stream in a tight
+  loop. When cmux refused the connection, the watcher started a new stream
+  the instant the last one ended and logged every try. It now waits 2 seconds
+  after a failed stream, doubling up to 30, and starts over after a stream
+  that stayed up for a minute. It logs a repeated failure once, then once per
+  wait step with the attempt count, and says when the stream recovers. cmux's
+  own error text no longer goes to the launchd error log; the watcher logs its
+  last line instead. The workspace numberer likewise logs a repeated cmux
+  error once, then once every 5 minutes with a count, and says when cmux
+  answers again.
+- **If the Slack reactor ran any earlier version, rotate your Slack bot token
+  now: its log file holds the old one.**
+
+  1. In the Slack app's settings, under OAuth & Permissions, reinstall the app
+     to get a new bot token.
+  2. If the old log also shows an `xapp-` token, regenerate the app-level
+     token under Basic Information, App-Level Tokens.
+  3. Update `SLACK_BOT_TOKEN` (and `SLACK_APP_TOKEN`) in `~/.zprofile`.
+  4. Restart the reactor with this command:
+     `launchctl kickstart -k gui/$(id -u)/com.assistant.slack-reactor`
+  5. Confirm the old token no longer works. Call `auth.test` with it, for
+     example with this command, and expect `invalid_auth` or `token_revoked`:
+     `curl -s -X POST -H "Authorization: Bearer <old token>" https://slack.com/api/auth.test`
+  6. Delete or empty `~/.assistant/logs/slack-reactor.launchd.err`, and any
+     copy of it in a backup.
+
+  What changed: the Slack reactor's error log held the bot token again and
+  again, because a failed Slack request printed its whole request, headers and
+  body included. From now on the reactor replaces token-shaped text with
+  `<redacted>` in what it prints and in its crash output. A crash writes one
+  line with the reason, the network error underneath and a few stack lines,
+  then exits so it restarts as before. The pulse, the comms listener, the cmux
+  watcher, the workspace watcher and numberer, the world scanner, the to-do
+  server, the connectors and the background service do the same for Slack,
+  GitHub, Google, AWS and model keys, JWTs, `Bearer`, `Authorization` and
+  cookie values, passwords and `token=` style fields, and an uncaught error in
+  any of them prints its traceback the same way. This does not clean old lines
+  in any log.
+
+  The limits: this is pattern matching, not a guarantee. Scripts that only
+  `print`, output written around the logger, and a token split across two
+  writes are not covered.
+- Stop a Work queue test from failing at random. It read the refresh log the instant the refresh
+  reported it had finished, a moment before the last lines were written, and failed about one run in
+  four. It now waits for the line it checks.
+- Keep the limit of 5 busy sessions working with the Observer off. Assistant
+  counted busy sessions from the Observer's checks, so with the Observer off,
+  which is now the default, it counted none and could start up to 30 sessions.
+  It now counts them itself from cmux and each session's transcript. **The 5
+  includes sessions you are using yourself**, so a task set to start
+  automatically, or a Work queue row you sent to an agent, now waits while 5
+  sessions are busy. A session is busy when it had a turn in the last 10
+  minutes or has a tool call open. A tool call still open after 2 hours is
+  treated as a session waiting on you, not a busy one. A plain terminal and an
+  agent that has exited aren't counted; a session whose transcript can't be
+  read is. The limit is fixed at 5; there is no setting for it. The **Tasks**
+  tab's "Dispatch capped" card now says in plain words which limit is holding
+  things and names the busy sessions. When Assistant can't read the open
+  workspaces or the sessions, it starts nothing that time and shows a
+  "Dispatch paused" card, which clears by itself once it can.
+- Stop the comms daemon from leaking duplicate `assistant-comms (warm)`
+  workspaces. Its liveness check, close guard, and orphan scan listed
+  workspaces with a bare `cmux list-workspaces`, which shows only the focused
+  window. A live warm session in another window looked gone, so the daemon
+  spawned a second one and skipped closing the first. All three now list every
+  window (`list-windows`, then `list-workspaces --window` per window), and a
+  window that fails to list makes the check unknown rather than gone. The
+  close step now logs `already gone` for a session that really ended, instead
+  of calling it "not a warm workspace (ref reissued?)".
+- List pull requests from only the repositories you choose. Add `repos` to
+  the `github` entry in `sources.json`, or run `bin/work-queue-setup.py link
+  github --repo OWNER/NAME`, repeated for each repository. Without it, the
+  Work queue still lists every pull request that asks for your review.
+- Show today's Outlook calendar on the Work queue's Today tab when Outlook is
+  linked, in the same rows as Google Calendar. It reads your local day
+  through Work IQ, leaves out cancelled events, and marks the ones you
+  declined. A failed read shows as its own **Outlook calendar** error, and the
+  other sources still show. Set `"calendar": false` on the `outlook` entry to
+  turn it off.
+- Never count a Gmail read-back that failed as verified. Apply's Trash and
+  restore checks treated a failed or unreadable `gog gmail get` as a message
+  without labels, so a restore read back as verified.
+- Leave hidden email out of **Approve all**, the approved count, the Outlook
+  search, and **Apply approvals**: email you snoozed, archived, sent to an
+  agent, or marked done or dropped.
+- Answer a Work queue request that fails unexpectedly, for example on a TODO
+  store that isn't valid JSON, with a JSON error instead of dropping it.
+- Run each mutation check in a temporary folder whose path has no `__`. A
+  random folder name with `__` in it failed the installer tests' baseline,
+  which read it as a plist placeholder left unreplaced.
+- Run the mutation checks in three CI shards instead of two, so each shard
+  finishes within its 60-minute limit with this release's added checks.
+- Keep the Work queue's sent-save worker running after a failure. An
+  unexpected error in a batch, such as a malformed result or a job file that
+  can't be written, stopped the background thread but left it marked as
+  running, so later sent Slack saves waited until the server restarted. Now
+  that batch records an error for each of its saves, the traceback goes to
+  the log, and the worker goes on; a save sent during a run goes in the next
+  run, and `queue_save` starts the worker outside its lock.
+- Build the fake AWS access key IDs in the secret-scrubber test from two parts, so GitHub secret scanning no longer flags them. The test values are unchanged.
+
+### Changed
+- Run the four mutation-check shards on Linux. Only the coverage job still needs a Mac, and it also runs the
+  mutation checks whose tests save through the Slack task-list lock (`--mac-only`). Before, runs often failed
+  when GitHub had no Mac free for one of the five macOS jobs.
+  A new push to a pull request now cancels that pull request's older runs. A mutation check whose test
+  ran nothing fails, instead of passing its baseline unseen.
+- Keep each change's mutation checks in a file of its own under `tests/mutation_checks/`. Every pull request
+  used to add its checks at the same place in one long list, so each conflicted with the next, and one merge
+  joined two checks into one that nothing reported. The harness now also refuses a malformed or duplicated
+  check when it loads, and a quick test finds a check whose quoted line or test has gone.
+- An existing Pro install stops creating decisions, saving the morning brief,
+  and planning for your goals after this update; to turn each back on, add
+  `"jobs": {"decisions": true, "brief": true, "planner": true}` (just the ones
+  you want) to `~/.assistant/config.json`, next to `"mode"`.
+  Write `true` without quotes; it takes effect at Assistant's next check. Behind
+  this is five months on the maintainer's machine: none of 49,193
+  decisions was accepted, rejected, edited, or snoozed, 7 of 103 briefs were
+  opened, and the planner acted twice and no goal recorded progress. With
+  decisions off, new GitHub and session events are skipped, so turning them on
+  later starts fresh, not from a backlog. Decisions that are already open still
+  age out, staged ones after 72 hours and digest ones after 24, and urgent ones
+  stay until you answer them and still show under **Awaiting your input**. The
+  **Completed actions** and **Other updates** lists get no new entries while
+  decisions are off. With the brief off, no brief is saved and the Notifications
+  tab is a live summary; decisions no longer move to the digest for going
+  unseen. With the planner off, nothing acts on your goals or records their
+  progress, though they stay viewable and editable. The lesson extractor no
+  longer proposes lessons from repeated successful actions unless you set
+  `ASSISTANT_LESSON_LEDGER_PASS=1`; the part that finds corrections in your
+  sessions is unchanged. The Notifications tab and **Settings and background
+  services** say which of these are off, what to add to turn each on, and when
+  a value you wrote is ignored. See
+  [Configuration](docs/configuration.md#background-jobs-that-are-off-by-default).
+- Make the mutation checks faster without dropping any. Each test's baseline now runs once per run, not
+  once per check that names it (510 checks name 315 tests), each shard runs three checks at a time
+  (`--workers 3`), and the workflow runs four shards, up from three. The slowest shard had reached 51 of
+  its 60 minutes. Four shards plus the coverage job is five macOS jobs, the most that run at once here, so
+  no job waits in a queue.
+- The Observer is now off by default. It runs only when
+  `~/.assistant/config.json` has `{"observer": {"enabled": true}}`, with the
+  JSON value `true`, and the pulse has `ASSISTANT_WATCHER=1`. A missing file,
+  unreadable JSON, a missing key, or any other value leaves it off. Existing
+  installs lose the Observer and its audit after this update unless you add
+  the setting. With it off, the pulse still dispatches autoDispatch TODOs,
+  clears stale cards, and updates itself, and each workspace keeps its last
+  verdict. `assistant-doctor.py`, the dashboard's **Settings and background
+  services**, and the installer's summary say whether it's on and how to turn
+  it on. See [Configuration](docs/configuration.md#observer).
+- A lesson no longer needs a bolded trigger line above its rule.
+  `assistant-curator.py write --rule R` stores the marker and the rule
+  alone, and `list`, `rm`, `audit`, and the duplicate-slug check now see a
+  block with no bold line, which they skipped before. `--trigger` still
+  writes the bolded line, and existing blocks read as before. `list` shows a
+  rule's first line when a lesson has no trigger. `propose_lesson`, the
+  `propose_memory` agent tool, and the lesson extractor's drafts need only a
+  rule, and the `/lesson` skill and the operating guide show the rule-only
+  form. `write` keeps a blank line before the new lesson when a hand edit
+  left the section without one, and a marker with no text under it is now
+  listed and removable.
+- Send a Work queue Start here item to an agent from the list itself. Each
+  item that isn't blocked has Send to Agent next to Done, which sends its row
+  for a first pass through the row's own send path, so the TODO, the done
+  mark, the Slack save completion, and the removal of both the item and its
+  row work exactly as for the row. A blocked item, whose row was already
+  sent, has no Send button and stays on the list.
+- Send any open Work queue row to an agent, alone or many at once. Send to
+  Agent shows on every open row, not only the ones the model called `agent`;
+  that call is now an "Agent can finish" hint. `POST /api/todo` takes a
+  string `mode`, saved on the TODO as `workQueueMode`. `assist`, the default
+  and the mode of a row's own button, asks for a first pass that leaves
+  nothing other people can see except a branch of the agent's own and at most
+  one draft PR, with the Slack replies, ticket text, and PR comments as
+  drafts in its result and what's done and what's left. `handsoff` keeps the
+  old finish-it-yourself instructions. Any other value is refused. The new
+  Send to agents tab lists every open row across sources, "Agent can finish"
+  ones first, with checkboxes, Select all, a Hands-off checkbox that's off by
+  default, and a "Send N to agents" button whose confirm dialog names the
+  mode; it sends one at a time, stays off until the batch is done, and lists
+  any that failed. A sent row leaves the page at once and stays off it while
+  its TODO exists, so the page no longer shows a sent row's Queued, Working,
+  Blocked, or Done status: the TODO's status and result show on the Tasks
+  tab of the Assistant dashboard, and its session on the Sessions tab once
+  it starts. `/api/state` returns `sent` in place of `queued`. Start here
+  marks a blocked TODO's row with a flag, not by its reason text.
+- Tell a first-pass agent not to ship. When the pulse starts a TODO whose
+  `workQueueMode` is `assist`, its prompt ends with first-pass limits, written
+  to override the routing rules before them. They're instructions the
+  dispatcher adds to the prompt, not a block: nothing outside the agent
+  enforces them. They allow only the agent's own branch, local commits, a
+  push of that branch, and at most one draft PR (`gh pr create --draft`)
+  whose title and body @mention no one; no
+  Jira, no Slack posts or reactions, no PR comments, approvals, or change
+  requests, no ready-for-review, and no push to a branch it didn't create.
+  The limits say to run `/architect-ffp:archffp` with `--no-ship` and to stop
+  `/architect-ffp:archself` after its touch-set plan. Hands-off prompts are
+  unchanged. A Work queue TODO's title and link appear in the prompt only
+  inside its untrusted-row fence, and each TODO's fence markers carry a
+  random code, so a row's text can't close the fence or come before the
+  safety rules. A sent row's link is cut to one line of at most 1,000
+  characters.
+- Mark a sent Slack save completed in your Later list, in either mode, in the
+  background with no browser window, and check that it left the list. The
+  send never waits for it. One background worker marks every save sent so
+  far in one browser run, and the result is saved in `applied.json` like an
+  Apply result. A file lock keeps the worker, Apply, and the refresh from
+  using the Slack browser profile at the same time; Apply and the refresh
+  wait up to 90 seconds for it, then say to try again later. Apply now merges
+  its results into `applied.json` instead of writing back the copy it read
+  first. A save Slack no longer has (`saved_not_found`) is recorded as gone:
+  neither a send nor Apply asks Slack about it again, and Apply counts it as
+  settled, not approved. Any other Slack error stays an error, so Apply tries
+  it again. Only a permalink on a `*.slack.com` host counts as a Slack save,
+  and a saved `queued.json` or `applied.json` in the wrong shape never stops
+  a send or the state the page reads.
+- Raise the quality job's time limit from 20 to 45 minutes. The Work queue adds 55 mutation checks, and the mutation step alone now runs longer than 11 minutes on the CI runner.
+- Raise the quality job's time limit from 45 to 60 minutes. Work queue triage and the source-link fixes add mutation checks (390 in all now, up from 130 before the Work queue), and CI measured 44:56 for the whole job at commit 963642d, with 34:29 of it in the mutation step.
+- Run the mutation checks in two shards at once, in their own jobs. `tests/mutation_smoke.py --shard i/n` runs every n-th check from the i-th, so the shards together run every check exactly once, and each shard uploads its own evidence. A shard with no checks is refused rather than passing. The required check, **Tests and 100% new-code coverage**, is now a job that passes only when the tests, the coverage gate, and both shards passed; a skipped or cancelled job fails it. CI run 44676541835 took 18:48 in all, with 109 and 108 checks in the two shards, every mutant rejected. There are now 390 checks, up from 130 before the Work queue; sending rows to agents adds 62 of them, the sent-save worker fix adds 8, and Start here's Send to Agent adds 7.
+
+### Added
+- The Work queue, a Pro mode page at `http://127.0.0.1:8851/` that merges your
+  Slack Later saves, pull requests that ask for your review, Outlook, Gmail,
+  and today's calendar into one list you clear. It moved in from a standalone
+  tool, with everything personal removed. See
+  [docs/work-queue.md](docs/work-queue.md).
+  - `work_queue/` holds the server, the refresh, the page, and one module per
+    source in `work_queue/inputs/`. Paths come from `$HOME` and `$WQ_DATA`, and
+    your sources come from `~/.assistant/work-queue/sources.json`, which holds
+    no secrets.
+  - Rules sort every row. The standalone tool's hand-written "start here" list,
+    change notes, drafted replies, and per-row advice are gone; model triage
+    replaces them (below).
+  - Model triage, in Pro mode only (`work_queue/triage.py`). After the refresh
+    writes the rule-based page, one batched call per 30 new or changed open
+    rows (up to 120 a refresh) returns a one-line why, a disposition (`you`,
+    `agent`, `handoff`, or `drop`), an effort, and, for rows that need a reply,
+    a draft to copy. A second call ranks the 5 to 8 rows on **Start here**, and
+    a third summarizes the **Since last night** box, whose new, gone, and
+    changed counts per source come from code. Verdicts are cached in
+    `$WQ_DATA/triage-cache.json` by a hash of each row's content, together
+    with the rows they were asked about with: an unchanged row isn't sent
+    again, and when a row changes or leaves, the rest of its call is asked
+    again, so one row's text can't keep swaying its neighbors. A row the model
+    doesn't answer about is shown without a verdict and asked again the next
+    day, and the rest of triage goes on. With the Claude provider, the model
+    is Sonnet 5.5, the `balanced` tier in `src/assistant/model_tiers.py`, and
+    `"triage": {"model": ...}` in `sources.json` changes it; Droid, Copilot,
+    and local models use their own model settings. `bin/assistant-llm.py set
+    <provider> --feature work_queue` picks the provider. Each call is metered
+    in the cost ledger as `caller: work_queue`, and reserves its estimated cost
+    under the Strategist's lock against two daily budgets: all of Assistant's
+    model spend (`dailyCostCeilingUsd`) and the Work queue's own
+    (`triage.dailyUsd`, default 3.00 USD). Triage stops once spend has reached
+    a budget; one call can still go over it. A model command that isn't
+    installed books no cost, and a timeout stops every process the command
+    started, within the call's own time limit.
+  - Row text is untrusted: anything that looks like a secret is replaced with
+    `[removed]`, the rows sit between markers with a random code, the prompt
+    says they're data, never instructions, and answers are checked against a
+    strict schema (known ids, enum values, bounded text; other fields are
+    ignored). Secrets are removed before text is cut short, from titles,
+    senders, and bodies, including Authorization and Cookie headers, signed
+    link parameters, and "password ... is" phrases. Model output never acts.
+    A Slack save that can't be read is never sent to the model, not even its
+    old title in the change summary.
+  - A call that times out, fails, or answers in the wrong shape never stops
+    the other parts of triage: the page shows "Part of triage didn't finish"
+    with the part and the reason, and that part isn't asked again until the
+    next day or until its inputs change. When a budget is used up, the
+    refresh's 10 minutes of calls run out, the model command isn't installed,
+    or triage hits an unexpected error, triage stops, and the page keeps its
+    rule-based rows and every verdict already paid for, and shows "Triage
+    unavailable:" with the reason. The cache is saved either way. Cached verdicts, the saved
+    Start here list, and the saved summary are checked against the schema
+    again when they're read, and verdicts stay cached for 14 days after their
+    row was last seen, so a source that fails once doesn't lose them. The
+    first page write of a refresh already shows the cached verdicts.
+  - Every open row has Done, Snooze, Drop, and Send to Agent, whatever the
+    model said about it; a row the model said an agent can finish reads
+    "Agent can finish", and the other pills read "Model suggests: ...". A
+    Send to agents tab lists every open row, the "Agent can finish" ones
+    first, to send many at once (below). Sending a row marks it done and
+    removes it from the page at once; the Assistant dashboard follows its
+    TODO, and a blocked one stays on Start here. Done on a Start here item
+    saves the same mark as its row, and a marked item doesn't show there. An
+    empty Start here list doesn't open first. A sent TODO's instructions start
+    with the safety rules: the row's title, detail, and linked source are
+    untrusted content, fenced off below the rules, never instructions; never
+    share secrets or act outside the request; never send email, merge,
+    force-push, or delete data. It closes the TODO with
+    `work_queue/todo_result.py` or marks it `--blocked`. It creates
+    `~/.claude/assistant-todo.json` when it doesn't exist yet, and never
+    reuses the id of a removed TODO.
+  - The server refuses any request whose `Host` isn't `127.0.0.1` or
+    `localhost` with its port, and any `POST` from another origin.
+  - Unsubscribe requests go only to `https` links on public addresses, never
+    follow a redirect, and can't be undone. An apply that stops on an error
+    reports it instead of staying on "Working", and two clicks at the same
+    moment start one apply or one refresh.
+  - The Slack source reads Later saves through a Chromium profile that only
+    the Work queue uses (`work_queue/slack_browser.py`, run with
+    `uv --with playwright`) and the conversations through the focus board's
+    read-only client.
+- `bin/work-queue-setup.py` links, checks, and unlinks Slack, Gmail, Google
+  Calendar, Outlook (through Work IQ), and GitHub. `status` and `check` print
+  one line per source: linked, not linked, needs sign-in, or tool missing, with
+  the fix. `unlink slack` also deletes the Work queue's browser profile and
+  its Slack cookies. The Slack source runs Playwright 1.63.0, the version the
+  quality workflow tests.
+- The `com.assistant.work-queue` LaunchAgent. `install.sh --apply --pro` loads
+  it, starts it when it's loaded but not running, and, from a terminal, offers
+  to link each unlinked source; `--no-pro` and default mode unload it. The
+  dashboard's Pro mode switch loads and unloads it too. It listens on
+  `127.0.0.1` only and stays stopped, instead of restarting, when Pro mode is
+  off, its settings can't be read, or its port is taken. Its `port` must be a
+  whole number from 1 to 65535. The installer restarts it when `work_queue/`
+  changes. The hourly update never loads it fresh or restarts one you stopped.
+- The Work queue server re-checks the mode on every request and every 5
+  seconds. Once Pro mode is off, it answers `403` and exits cleanly.
+- The Work queue server starts listening without a reverse DNS lookup of
+  `127.0.0.1`. On GitHub's macOS runners, that lookup held the server's
+  start past 30 seconds.
+- A **Work queue** tab on the dashboard in Pro mode links to the page and says
+  when it last refreshed. A bad Work queue setting shows on the tab instead of
+  breaking the dashboard.
+- The change-coverage gate measures `work_queue/`, and the Work queue page's
+  script needs full line and block coverage from a real browser, like the
+  dashboard's (`--work-queue-browser-report`). Python coverage now traces
+  greenlets, so code that runs under Playwright's synchronous API is measured.
+- `tests/mutation_smoke.py` counts a mutant whose test runs past 90 seconds as
+  rejected and marks it `rejected (timed out)`. A baseline that runs that long
+  stops the run with the check's name and test. Each check records its time.
+  The private-address unsubscribe test refuses every outbound connection, so
+  its mutant fails at once instead of waiting on two private addresses.
+
+### Removed
+- Stop running git from Assistant. The attention tab's preview server ran
+  plain `git status --porcelain` in about a dozen checkouts every minute, and
+  killed runs left stale `index.lock` files that blocked commits in other
+  sessions. The attention tab's fix is on its own branch.
+  - `build-ws-context.py` no longer runs `git status` or `git log @{u}..` in
+    each workspace's folder. The `cwd_dirty` and `cwd_unpushed` fields are
+    gone from the workspace state, the session check's fingerprint, and its
+    prompt. The "no transcript, empty screen, stale" rule no longer needs a
+    dirty folder, and `ready_for_cleanup` no longer checks for a clean one.
+  - The session check's PR lookup reads the branch and repo from the
+    checkout's `.git` files and asks `gh` by repo and branch, so `gh` no
+    longer runs git in each workspace.
+  - The stale-card purge looks up a PR only from a full PR link.
+  - `meta_gate.py detect` takes changed files with `--paths` only; `--repo`
+    and `--base` are gone.
+  - `tests/test_no_git.py` fails when any Python, shell, JavaScript, Swift, or
+    LaunchAgent file under `bin/`, `src/`, `hooks/`, `slack-reactor/`,
+    `mac/Sources/`, `githooks/`, `launchagents/`, or `scripts/` runs git. It
+    allows an exact count of git lines in the self-update and its commit
+    guard (until their replacement lands), the doctor's git check, and the
+    lessons tool's one `git add`.
+
+### Changed
+- `/cleanup` keeps the branch when it has commits its upstream lacks, or, with
+  no upstream, commits on no remote.
 
 ### Fixed
+- Make the Work queue's source-link messages accurate. Every status line is
+  one line of at most 300 characters, with line breaks folded: a longer tool
+  error keeps its start and up to the last 150 characters of its last line,
+  which holds a traceback's error. A failed link during install no longer adds
+  a second "fix the line above" warning. When gog reports missing OAuth client credentials, the
+  fix says to run `gog auth credentials <client-secret.json>` before
+  `gog auth add`, and a missing gog points to https://gogcli.sh. Linking Slack
+  reports a missing `uv` before it asks for a token. The page shows the last
+  refresh in the viewer's local time, and the Slack browser helper answers any
+  unexpected error as one JSON line instead of a traceback.
+- Make Work queue triage hold up against bad answers and bad files. Every
+  model call now fails the same way: a timeout, a failed model command, or an
+  answer in the wrong shape, such as a refusal, is a call failure that never
+  stops the other parts, and only a used-up budget, the refresh's time limit,
+  or a missing model command stops triage. A failed call about rows skips its
+  rows for the day, so it isn't paid for again each refresh; a failed Start
+  here list or summary is saved, empty, for the day, and the page names the
+  part that failed. A row that makes the model time out no longer blocks the
+  other rows, Start here, or the summary. After Start here and the summary, a
+  failed call about rows is split in halves to find the rows that break it: at
+  most 6 more calls, and only while the Work queue's budget covers the next
+  one, so two bad rows in a small queue still leave the rest with verdicts. An
+  answer about 2 or more rows with usable verdicts for fewer than half of them
+  counts as the wrong shape, and so does an answer nested too deep to read,
+  whose `RecursionError` got past the failure handling and stopped triage. A
+  bad call that comes before a stop is still skipped for the day. Rows you
+  marked done or dropped aren't triaged, and rows asked again after their day
+  go in an order that changes each day, so splitting can isolate a few
+  poisoned rows over several days instead of skipping most of a small queue
+  each day. A failed call is booked at least at its reserved estimate, and a
+  call that ran out of time as if it wrote 150 output tokens a second for its
+  whole time limit. A reservation expects 220 output tokens a row, close to
+  the measured call's 210. A saved cache, snapshot, or reservation file in the
+  wrong shape is treated as empty, and the refresh still writes the page;
+  a reservation dated in the future doesn't count. A blocked row leads Start
+  here, even one the model called drop. Two refreshes at once keep each other's verdicts. The scrubber, now
+  `work_queue/scrubber.py`, runs in linear time on any input (the tests time
+  each pattern on 1 MB of repeated text with no cut, including repeated
+  `eyJ`), and cuts text to 8,000 characters, and titles and senders to 1,000,
+  first. It catches "password ... is: X", removing a password phrase to the
+  end of its line, `pwd=`, passphrases, quoted values with spaces,
+  `key: value` pairs whose key names a secret, `pw:` and `pass:` values,
+  GitLab tokens, tokens in reset and verify links and in link parameters such
+  as `t=`, one-time codes such as "Use code 482913 to verify", "Enter 482913
+  to continue", and "code: 482-913", and card numbers that pass the Luhn
+  check, and it leaves ordinary text such as "error code 1234", "Secret Santa
+  is: Bob", "Tests pass: 4197", and Google Docs links alone. Slack titles show
+  as written; only the model's copy is scrubbed, before it's cut, in the row
+  calls and in the Since last night summary, and the names in a Slack thread
+  are scrubbed and cut to 100 characters too. A reservation counts the model
+  command's own prompt and the expected answer, scaled to match a real call's
+  cost, and a daily budget that isn't a finite number of zero or more means the
+  default, now 3.00 USD.
+- Run the Work queue only on Python 3.11 or newer, the version
+  `pyproject.toml` requires. `install.sh` used the first `python3` it found,
+  which could be macOS's 3.9 at `/usr/bin/python3`, where the Work queue
+  server can't import, and launchd restarted it every minute from login, even
+  in default mode. `install.sh` now picks the first `python3` of 3.11 or newer
+  from Homebrew, `/usr/local/bin`, then `/usr/bin`, or from the interpreters
+  `ASSISTANT_PYTHON` lists, separated by colons. When there isn't one, the
+  other services keep the `python3` found, and the Work queue's LaunchAgent
+  isn't installed: one an earlier install left is stopped and removed, and
+  the installer says how to fix it. The dashboard's Pro mode switch doesn't
+  start the Work queue when its plist's `python3` is older than 3.11, doesn't
+  run, or can't be read, and says why. On an older Python, `work_queue.server`
+  exits cleanly with a message before it imports anything else. The quality
+  workflow installs Python 3.11, so the tests that run on it run in CI.
 - Keep the live install updating after a squash merge. The self-update refused
   to update while local main had commits GitHub's main lacked, even when a
   squash merge had already brought every change in. It now checks whether
   merging local main into GitHub's would change anything; if not, it moves
   main to GitHub's commit with `git reset --keep`. Real unsent work still
   blocks the update.
+- Restart the always-on services after a pull that changes `bin/`. The comms
+  listener, workspace watcher, Slack reactor, session-context watcher, and
+  workspace numberer loaded their code once at start, so a merge left them on
+  the old code until a crash or a reinstall. The self-update now runs
+  `install.sh --apply` for any `bin/` or `slack-reactor/src/` change, and the installer restarts each
+  of those services that's running when its code changed. Services you've
+  stopped stay stopped.
 
 ### Added
+- Pick the shell alias Claude sessions start with:
+  `bin/assistant-llm.py claude-alias <name>` saves `llm.claude.alias` in
+  `~/.assistant/comms/config.json`, and `claude-alias claude` restores the
+  default. Task sessions, `/spawn-claude-workspace`, and the Slack session
+  start the alias in the workspace's own shell, so cmux's Claude wrapper still
+  records the session. When that shell doesn't define the alias, the session
+  says so and starts with `claude`, and `assistant-doctor.py` warns. The
+  command refuses a name that isn't one shell word, that's a shell keyword
+  such as `if` or `exec`, that names Copilot or Droid, or that your login zsh
+  doesn't know as an alias, function, or command. A hand-edited config with a
+  name that isn't one word, a keyword, or another agent's name falls back to
+  `claude`; one that names a shell builtin such as `echo` starts no session,
+  and `assistant-doctor.py` warns. A live Slack session restarts on its next
+  message after the alias changes, and it takes on the alias's own folders
+  and permission mode; the Assistant's model choice still wins. Background model
+  jobs still run the Claude program directly. A restore replays cmux's saved
+  command, which skips the alias unless you declare the alias's script in
+  cmux's `agents.launchers` setting.
 - Refuse commits on the live install's main. The self-update links
   `githooks/refuse-main-commit` as the `pre-commit` and `pre-merge-commit`
   hooks, and never replaces a hook that's already there. Commit on a branch
@@ -61,6 +924,144 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   or with `ASSISTANT_LOCAL_LLM_URL` and `<JOB>_LOCAL_MODEL`.
 - `evals/observer/replay.py` replays past Sonnet checks with the new
   conversation slice and scores other models against them.
+
+### Added
+- GitHub Copilot CLI is a third coding agent beside Claude Code and Factory
+  Droid. Run `bin/assistant-llm.py set copilot`, and task sessions, the Slack
+  reply session, resumes, `/spawn-claude-workspace`, and every background model
+  job start Copilot instead of Claude. The dashboard and the session check read
+  Copilot sessions too. Set the model with `llm.copilot.model` or
+  `COPILOT_MODEL`.
+- `assistant-llm.py set copilot` and the installer add cmux's Copilot hooks
+  as `~/.copilot/hooks/cmux.json`, so Copilot sessions show on the dashboard
+  and can be restored. `cmux hooks copilot install` can't do this itself: it
+  edits `config.json`, which Copilot 1.0.109 manages and marks with comments.
+  The hooks are added only when you pick Copilot, and restore relaunches
+  Copilot sessions only then, so Copilot sessions you start by hand stay yours.
+- The doctor checks that Copilot starts (`copilot --version`) and that its
+  cmux hooks are in place whenever you pick Copilot for anything.
+
+### Changed
+- `bin/agent_session.py` is now the only place that starts a coding agent.
+  `tests/test_agent_launch_seam.py` fails when any Python, shell, JavaScript,
+  launchd, workflow, or skill file builds a `claude`, `copilot`, or `droid`
+  command line. It reads code structure, so comments and prose don't count.
+- Background jobs run Copilot's standalone build instead of its npm loader,
+  which needs Node and fails under launchd. Copilot jobs run in their own
+  folder, and Copilot's errors reach the failure log.
+- Resuming a Copilot session keeps the flags it started with; it no longer
+  adds `--allow-all` to sessions you started without it.
+- Assistant answers Copilot's folder-trust question with "Yes, and remember
+  this folder", so a restored session doesn't stop at the question again.
+- The spending ledger reads Copilot's token counts. Copilot jobs used to be
+  booked as failed with a cost estimated from their much longer output.
+- Copilot gets only the extra folders that exist; it refuses to start when
+  one is missing.
+- Assistant reads Copilot sessions from `$COPILOT_HOME` when you set it.
+- The Slack reply session on Copilot clears when Copilot reports half its
+  context used, not when its log reaches 2 MB.
+- A Claude pane that shows Copilot's banner or status bar in its output is
+  no longer taken for a Copilot pane, and a busy Copilot pane is recognized.
+- FFP to-dos still go to Claude when you pick Copilot, because they run the
+  `/architect-ffp:archffp` Claude Code plugin. A Copilot session is told to
+  stop and say so if a to-do turns out to be FFP work. Droid dispatch is
+  unchanged.
+- The dashboard's latest-reply text and the merge flow's send check read
+  Copilot conversations.
+- Background Copilot jobs run at the configured thinking effort instead of
+  Copilot's saved default.
+- `assistant-llm.py set <agent>` names any job still pinned to another
+  provider, and `--feature comms` picks the agent for the Slack session alone.
+- A working Copilot pane is recognized on every spinner frame and while it
+  retries.
+- Copilot's `✗ Execution failed` banner and `session.error` events count as a
+  stopped session; the dashboard shows a Copilot tool call as working; inbox
+  snippets drop Copilot's footer; the watcher titles a Copilot session by its
+  own name.
+- Interactive Copilot sessions start with `--no-ask-user`, so questions come
+  as text Assistant can read, not a form.
+- A running Slack session moves to the newly picked agent on the next
+  message after `assistant-llm.py set <agent>`, and a Copilot one restarts
+  when its model changes. A picked Copilot that can't start runs as Claude;
+  `set copilot` warns when that's the case.
+- Background Copilot jobs retry once without `--reasoning-effort` when the
+  model refuses it on stderr (Copilot's `auto` model does), and the
+  Observer's excerpt of a Copilot session shows tool results and errors,
+  compaction summaries, notices, and aborts.
+- Copilot subagent turns and automatic messages (memory, skills, discovered
+  instructions) no longer read as the user's own turns in the Observer
+  excerpt, the lesson extractor, or any other transcript reader.
+- `evals/observer/replay.py --provider copilot` runs the candidate models on
+  Copilot.
+- `llm.copilot.reasoning_effort` sets Copilot's thinking effort on background
+  jobs; without it Copilot keeps using the shared Droid setting.
+- A Copilot tool you stop with Esc, or that was running when the session
+  ended, no longer keeps the session marked as working; the dashboard finds
+  Copilot's last reply behind long runs of its internal records. `assistant-comms-setup.sh` installs cmux's
+  Copilot hooks when Copilot is picked, and the doctor skips the Claude
+  sign-in check when the Slack session runs another agent.
+- Copilot sessions Assistant starts, restores, or brings back after a crash
+  get your rules from `~/.claude/CLAUDE.md` through
+  `~/.assistant/copilot-instructions`, linked as a Copilot instructions file;
+  your own Copilot setup isn't touched. A session cmux itself restores on app
+  restart replays cmux's saved command, which doesn't carry them.
+- The notification watcher reads cmux's `cmux-feed-v1:` session ids, so a
+  ping again carries the agent's last message for Claude and Copilot (the
+  format change in cmux had broken this since October).
+- Spending and Slack-session context reads go through `bin/agent_session.py`,
+  and the launch check also flags Claude-only transcript and usage parsing.
+- Task sessions now answer the first-launch folder-trust question whenever it
+  appears during boot, not only in one check 2 seconds after launch. Copilot
+  shows it about 4 seconds in, so the old check missed it and the session sat
+  waiting.
+- `/spawn-claude-workspace` takes its launch command, readiness check, trust
+  prompt, and submission check from `bin/agent_session.py`. It still defaults
+  to Droid, takes `engine=copilot`, stops with a message when the engine isn't
+  installed, and checks only conversations written since the spawn.
+- The session check (`ASSISTANT_WATCHER=1`) now runs in default mode too.
+  The other opt-in jobs still need Pro mode.
+- The session check now reads each conversation as plain text: the first
+  request plus the latest turns, with attachments, hook output, and thinking
+  removed. It used to send a fixed 128 KB slice of the raw log, which was
+  mostly clutter and sometimes held no conversation at all. Prompts are about
+  a third of their old size.
+- Session results on the Sessions tab now stay for up to 6 hours while the
+  session doesn't change, instead of expiring after 10 minutes.
+
+### Added
+- `OBSERVER_EVERY_MIN` sets how many minutes pass before a changed session is
+  checked again. The default, 0, checks on every run.
+- `evals/observer/replay.py` replays past Sonnet checks with the new
+  conversation slice and scores other models against them.
+
+### Removed
+- Remove the dollars-per-day boxes from the Brief tab and the background-work
+  stats. The model-heavy background jobs that drove that cost are off.
+
+### Changed
+- The Brief tab now rebuilds from your current notifications, completed
+  actions, and service status every time the dashboard updates, instead of
+  showing the copy saved at 7 AM. A **Refresh now** button rebuilds it on the
+  spot. If the live build fails, the tab falls back to the saved copy.
+- Turn off the daily Sonnet call that writes the morning brief's wording. Its
+  summary never showed on the dashboard, and its advice showed only when the
+  live queue couldn't be read. The Brief tab still builds without a model. Set
+  `ASSISTANT_BRIEF_NARRATOR=1` to turn it back on.
+- Turn off the watcher (the Observer) by default, along with its Opus
+  double-check. It sent 40–75K tokens per check, about 870 checks a day. The
+  dashboard's **Waiting on you** tab covers its view without a model. Set
+  `ASSISTANT_WATCHER=1` to turn it back on.
+- Turn off the lessons extractor and the strategist by default. Their output
+  went unread: 689 lesson proposals sat pending, and the strategist's notes
+  covered 9 items 119 times. Set `ASSISTANT_LESSON_EXTRACTOR=1` or
+  `ASSISTANT_STRATEGIST=1` to turn either back on. With the strategist off, the
+  goals planner uses its built-in step templates.
+
+### Fixed
+- Keep idle sessions on the Sessions tab. When a transcript's timestamp changed
+  without new text, the session context watcher never noticed, so the session
+  stayed under Sessions not checked yet. On one Mac, 19 of 26 sessions were
+  stuck there. The watcher now rereads a transcript when its timestamp changes.
 
 ### Added
 - Add Pro mode. Default mode keeps the Sessions, Session details, Slack, and

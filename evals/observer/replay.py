@@ -104,7 +104,8 @@ def slice_prompt(case: dict, end: int) -> str:
     return fixture_eval.OBSERVER_PROMPT.read_text() + tail
 
 
-def ask(model: str, prompt: str, run_dir: Path) -> tuple[str | None, dict]:
+def ask(model: str, prompt: str, run_dir: Path,
+        provider: str = "claude") -> tuple[str | None, dict]:
     run_dir.mkdir(parents=True, exist_ok=True)
 
     def run_cmd(cmd, *, input_text=None, timeout=None, env=None, merge_bedrock=False):
@@ -113,8 +114,8 @@ def ask(model: str, prompt: str, run_dir: Path) -> tuple[str | None, dict]:
         return proc.returncode, proc.stdout, proc.stderr
 
     result = llm_runner.invoke(
-        provider="claude", prompt=prompt, model=model, run_dir=run_dir,
-        timeout=300, run=run_cmd, claude_bin=fixture_eval.CLAUDE_BIN,
+        provider=provider, prompt=prompt, model=model, run_dir=run_dir,
+        timeout=300, run=run_cmd,
         disable_tools=True, json_schema=fixture_eval.OBSERVER_RESPONSE_SCHEMA,
         extra_dirs=[run_dir], tag="assistant-observer-replay")
     verdict = fixture_eval.extract_verdict(result.result_text) if result.usable else None
@@ -132,6 +133,8 @@ def main() -> int:
     parser.add_argument("--models", nargs="+", default=[
         "claude-haiku-4-5:raw", "claude-haiku-4-5:slice", "claude-sonnet-5-5:slice"])
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--provider", choices=llm_runner.PROVIDERS, default="claude",
+                        help="agent that runs the candidate models (baselines stay Claude Sonnet runs)")
     args = parser.parse_args()
 
     dirs = sorted(args.runs.glob("*/batch-*"))
@@ -161,7 +164,8 @@ def main() -> int:
         i, spec = job
         model, form = spec.rsplit(":", 1)
         prompt = cases[i]["prompt"] if form == "raw" else cases[i]["slice_prompt"]
-        verdict, usage = ask(model, prompt, work_dir / spec.replace(":", "-") / str(i))
+        verdict, usage = ask(model, prompt, work_dir / spec.replace(":", "-") / str(i),
+                             provider=args.provider)
         return i, spec, verdict, usage
 
     with ThreadPoolExecutor(args.workers) as pool:

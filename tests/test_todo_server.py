@@ -12,14 +12,19 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import socket
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import HTTPServer
 from pathlib import Path
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+from assistant import apitoken  # noqa: E402
 
 _BIN = Path(__file__).resolve().parent.parent / "bin"
 
@@ -49,6 +54,8 @@ def env(tmp_path, monkeypatch):
     props_dir = tmp_path / "proposals"
     props_dir.mkdir()
 
+    # The per-install token lives under HOME: keep it out of the real one.
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(mod, "JSON_PATH", json_path)
     monkeypatch.setattr(mod, "DASHBOARD_HTML_PATH", dash_path)
     monkeypatch.setattr(mod, "PROPOSALS_DIR", props_dir)
@@ -107,7 +114,7 @@ def test_rerender_invokes_subprocess(env, monkeypatch):
     calls = []
     monkeypatch.setattr(mod.subprocess, "run", lambda argv, **kw: calls.append(argv))
     mod.rerender()
-    assert calls and calls[0][0] == "python3"
+    assert calls and calls[0][0] == sys.executable
     assert str(mod.RENDER_SCRIPT) in calls[0][1]
 
 
@@ -125,7 +132,7 @@ def test_rerender_dashboard_invokes_subprocess(env, monkeypatch):
     calls = []
     monkeypatch.setattr(mod.subprocess, "run", lambda argv, **kw: calls.append(argv))
     mod.rerender_dashboard()
-    assert calls and calls[0][0] == "python3"
+    assert calls and calls[0][0] == sys.executable
 
 
 def test_rerender_dashboard_swallows_exception(monkeypatch):
@@ -323,12 +330,12 @@ def test_proposal_action_run_now_dispatches(env, monkeypatch):
     })
     calls = []
     monkeypatch.setattr(mod.subprocess, "run",
-                        lambda argv, **kw: calls.append(argv))
+                        lambda argv, **kw: calls.append(argv) or type("Done", (), {"returncode": 0, "stderr": ""})())
     ok, _ = mod.proposal_action("prop-1", "run-now", {})
     assert ok is True
-    # cmux send + send-key both invoked with the workspace ref
-    assert calls[0] == ["/bin/true", "send", "--workspace", "workspace:7", "do the thing"]
-    assert calls[1] == ["/bin/true", "send-key", "--workspace", "workspace:7", "Enter"]
+    # The text now goes through cmux-send.py (which records it and types into the terminal), not `cmux send`.
+    assert len(calls) == 1 and calls[0][1].endswith("bin/cmux-send.py")
+    assert calls[0][2:6] == ["--ws", "workspace:7", "--text", "do the thing"] and "--enter" in calls[0]
     d = json.loads(p.read_text())
     assert d["status"] == "working"
     assert d["thread"][-1]["actor"] == "assistant"
@@ -450,10 +457,115 @@ def server(env):
         t.join(timeout=5)
 
 
-def _request(base, method, path, body=None, headers=None):
+def test_a_connection_that_sends_nothing_cannot_hold_the_server(server, monkeypatch):
+    """The server answers one connection at a time, and a browser keeps spare connections open that send nothing.
+    Without a limit the first of those froze the dashboard (and, in CI, a test's shutdown for 50 minutes)."""
+    monkeypatch.setattr(mod.Handler, "timeout", 0.3)
+    host, port = server.base.removeprefix("http://").split(":")
+    idle = socket.create_connection((host, int(port)))
+    try:
+        # urlopen below gives up after 5 s; with the idle connection never dropped, it would.
+        assert _request(server.base, "GET", "/healthz")[0] == 200
+        assert _request(server.base, "GET", "/healthz")[0] == 200
+    finally:
+        idle.close()  # so a server that is still holding it can shut down
+
+
+def _closed_by_the_server(sock):
+    """Read until the server closes the connection; returns what it sent first."""
+    sock.settimeout(30)
+    got = b""
+    while chunk := sock.recv(65536):
+        got += chunk
+    return got
+
+
+def test_dropping_a_silent_connection_writes_no_log_line_but_a_cut_off_request_still_does(server, monkeypatch, capsys):
+    monkeypatch.setattr(mod.Handler, "timeout", 0.3)
+    address = server.base.removeprefix("http://").split(":")
+    address = (address[0], int(address[1]))
+    with socket.create_connection(address) as silent:
+        assert _closed_by_the_server(silent) == b""
+    assert _request(server.base, "GET", "/healthz")[0] == 200  # the server has finished with the silent one
+    lines = [line for line in capsys.readouterr().err.splitlines() if line.strip()]
+    assert lines and all("/healthz" in line for line in lines), lines  # the request's own line and nothing else
+
+    with socket.create_connection(address) as cut_off:  # a request line, then nothing
+        cut_off.sendall(b"GET /healthz HTTP/1.1\r\n")
+        assert _closed_by_the_server(cut_off) == b""
+    assert _request(server.base, "GET", "/healthz")[0] == 200
+    assert "Request timed out" in capsys.readouterr().err
+
+    with socket.create_connection(address) as malformed:
+        malformed.sendall(b"NOT-HTTP\r\n\r\n")
+        _closed_by_the_server(malformed)
+    assert _request(server.base, "GET", "/healthz")[0] == 200
+    assert "code 400" in capsys.readouterr().err
+
+
+def test_a_silent_connection_is_closed_after_about_two_seconds(server):
+    """With the limit the server really runs with, not one a test set. Waits about two seconds."""
+    host, port = server.base.removeprefix("http://").split(":")
+    with socket.create_connection((host, int(port))) as silent:
+        started = time.monotonic()
+        assert _closed_by_the_server(silent) == b""  # fails after 30 s if the server never lets go
+        assert time.monotonic() - started >= 1, "a limit this short would drop a real request on a slow link"
+
+
+def test_a_large_page_sent_to_a_slow_reader_arrives_whole(server, monkeypatch):
+    """The limit on a send is the total time for the whole send. With the two-second limit on it, a page too big
+    for the socket's buffers was cut off part-way whenever the reader was slower than that."""
+    monkeypatch.setattr(mod.Handler, "timeout", 0.2)
+    page = b"<!doctype html>" + b"x" * (32 * 1024 * 1024)
+    mod.DASHBOARD_HTML_PATH.write_bytes(page)
+    host, port = server.base.removeprefix("http://").split(":")
+    with socket.create_connection((host, int(port))) as reader:
+        reader.sendall(f"GET / HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n".encode())
+        time.sleep(0.8)  # reads nothing for longer than the limit on waiting for a request
+        head, _, body = _closed_by_the_server(reader).partition(b"\r\n\r\n")
+    assert head.startswith(b"HTTP/1.0 200"), head[:80]
+    assert len(body) == len(page)
+
+
+def test_a_reader_that_stops_reading_cannot_hold_the_server(server, monkeypatch):
+    """Sending has a limit too: a client that asks for a large page and never reads it is let go."""
+    monkeypatch.setattr(mod, "SEND_TIMEOUT_SEC", 0.5)
+    page = b"<!doctype html>" + b"x" * (32 * 1024 * 1024)
+    mod.DASHBOARD_HTML_PATH.write_bytes(page)
+    host, port = server.base.removeprefix("http://").split(":")
+    with socket.create_connection((host, int(port))) as stalled:  # closed on the way out even if this fails
+        stalled.sendall(f"GET / HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n".encode())
+        assert _request(server.base, "GET", "/healthz")[0] == 200  # gives up after 5 s if the server is still held
+        received = len(_closed_by_the_server(stalled))
+    assert 0 < received < len(page)
+
+
+def test_the_server_drops_a_silent_connection_after_a_couple_of_seconds():
+    assert mod.Handler.timeout == mod.IDLE_TIMEOUT_SEC and 0 < mod.IDLE_TIMEOUT_SEC <= 5
+    assert mod.SEND_TIMEOUT_SEC >= 10 * mod.IDLE_TIMEOUT_SEC
+
+
+def test_a_slow_route_is_not_cut_off_by_the_limit_on_silent_connections(server, monkeypatch):
+    """The limit is on waiting for the socket, not on the work: a route that takes longer than it still answers."""
+    monkeypatch.setattr(mod.Handler, "timeout", 0.2)
+    slow = threading.Event()
+    real = mod.Handler.do_GET
+
+    def do_get(handler):
+        slow.wait(0.6)
+        return real(handler)
+
+    monkeypatch.setattr(mod.Handler, "do_GET", do_get)
+    assert _request(server.base, "GET", "/healthz")[0] == 200
+
+
+def _request(base, method, path, body=None, headers=None, token=True):
     """Returns (status, body_text). Non-2xx is captured via HTTPError."""
     data = body.encode() if isinstance(body, str) else body
     req = urllib.request.Request(base + path, data=data, method=method)
+    # A command-line caller: no Origin unless the test gives one, so the per-install token.
+    if token:
+        req.add_header("X-Assistant-Token", apitoken.ensure())
     for k, v in (headers or {}).items():
         req.add_header(k, v)
     try:
@@ -881,9 +993,10 @@ def test_slack_focus_store_import_adds_src_to_the_path(slack_home, monkeypatch):
 
 def test_slack_focus_routes_refuse_a_null_origin(server, slack_home):
     for path in ("/slack-focus/status", "/slack-focus/refresh", "/slack-focus/done"):
-        status, _ = _request(server.base, "POST", path, json.dumps({"fp": "a" * 64}), headers={"Origin": "null"})
+        status, _ = _request(server.base, "POST", path, json.dumps({"fp": "a" * 64}),
+                             headers={"Origin": "null"}, token=False)
         assert status == 403, path
-    status, _ = _request(server.base, "POST", "/slack-focus/status", headers={"Origin": f"http://127.0.0.1:{mod.PORT}"})
+    status, _ = _request(server.base, "POST", "/slack-focus/status", headers={"Origin": server.base})
     assert status == 200
     assert _FakeProc.made == []
 
@@ -906,7 +1019,7 @@ def test_brief_refresh_rebuilds_the_page_for_same_origin_only(server, monkeypatc
                     headers={"Origin": "https://evil.example"})[0] == 403
     assert renders == []
     assert _request(server.base, "POST", "/brief/refresh",
-                    headers={"Origin": "null"})[0] == 403
+                    headers={"Origin": "null"}, token=False)[0] == 403
     assert renders == []
     assert _request(server.base, "POST", "/brief/refresh") == (200, "rebuilt")
     assert renders == [1]
@@ -916,9 +1029,10 @@ def test_mode_switch_needs_the_dashboard_header_and_a_real_origin(server, monkey
     calls = []
     monkeypatch.setattr(mod, "set_mode", lambda value: calls.append(value) or (True, value))
     assert _request(server.base, "POST", "/mode?value=pro")[0] == 403
-    for origin in ("null", "https://evil.example"):
-        assert _request(server.base, "POST", "/mode?value=pro",
-                        headers={"Origin": origin, "X-Assistant-Human": "1"})[0] == 403
+    assert _request(server.base, "POST", "/mode?value=pro",
+                    headers={"Origin": "null", "X-Assistant-Human": "1"}, token=False)[0] == 403
+    assert _request(server.base, "POST", "/mode?value=pro",
+                    headers={"Origin": "https://evil.example", "X-Assistant-Human": "1"})[0] == 403
     assert calls == []
     assert _request(server.base, "POST", "/mode?value=pro",
                     headers={"X-Assistant-Human": "1"}) == (200, "pro")

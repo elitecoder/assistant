@@ -776,6 +776,42 @@ class TestLastMessage(unittest.TestCase):
                          {"question": None, "last_text": None, "pending_tool": None,
                           "api_error": False, "title": None})
 
+    def _copilot_events(self, session_id, records):
+        d = self.home / ".copilot" / "session-state" / session_id
+        d.mkdir(parents=True)
+        p = d / "events.jsonl"
+        p.write_text("".join(json.dumps(r) + "\n" for r in records))
+        return p
+
+    def test_copilot_idle_alert_quotes_its_last_reply(self):
+        # No ~/.claude/projects on this machine: only the Copilot session exists.
+        uuid = "c0b11071-9eca-4f38-9eb6-89a126ff3b53"
+        self._copilot_events(uuid, [
+            {"type": "session.start", "data": {"sessionId": uuid}},
+            {"type": "user.message", "data": {"content": "Ship the fix."}},
+            {"type": "assistant.message", "data": {"content": "Tests pass. Want me to open the PR?"}},
+        ])
+        bank = self.mod.PatternBank(self.home / ".assistant" / "pattern_bank.json")
+        for session_id in (uuid, f"copilot-{uuid}"):
+            res = self.mod.handle_event(
+                _evt("agent.hook.Notification", request_id=session_id, cwd="/Users/me/dev/proj",
+                     session_id=session_id),
+                bank, self.mod.WatcherState(cooldown_sec=0), FakeResolver(title="T"),
+                screen_reader=lambda ws: "")
+            item = json.loads(Path(res["path"]).read_text())
+            self.assertEqual(item["last_message"], "Tests pass. Want me to open the PR?")
+
+    def test_copilot_current_turn_starts_at_the_newest_typed_prompt(self):
+        uuid = "c0b11071-1111-4f38-9eb6-89a126ff3b53"
+        self._copilot_events(uuid, [
+            {"type": "user.message", "data": {"content": "Deploy it."}},
+            {"type": "assistant.message", "data": {"content": "Should I deploy to staging?"}},
+            {"type": "user.message", "data": {"content": "Yes, staging."}},
+            {"type": "assistant.message", "data": {"content": "", "toolRequests": [
+                {"toolCallId": "call-1", "name": "bash"}]}},
+        ])
+        self.assertIsNone(self.mod.read_session("/Users/me/dev/proj", uuid)["last_text"])
+
     def test_read_session_never_raises(self):
         # No ~/.claude/projects at all: the scan fails, the drop must not.
         self.assertIsNone(self.mod.read_session("/nowhere", "sess-x"))
