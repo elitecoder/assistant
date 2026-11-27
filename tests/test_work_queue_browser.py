@@ -1564,6 +1564,7 @@ def test_slash_searches_the_tab_you_are_on_by_row_text_and_clears_on_escape_or_a
         assert tab.evaluate("agPicks().map(r => r.dataset.key)") == [pr(15)["key"]]
         tab.locator("#tab-search").fill("")
         assert text(tab, "#ag-go") == "Send 1 to agents", "rows the search hid aren't left picked when it clears"
+        assert not tab.is_checked("#ag-all"), "a new search unticks Select all"
 
         tab.locator('#tabs .tab[data-t="mailbox"]').click()
         tab.wait_for_selector('#tabs .tab.on[data-t="mailbox"]')
@@ -1578,7 +1579,9 @@ def test_slash_searches_the_tab_you_are_on_by_row_text_and_clears_on_escape_or_a
         tab.locator("#tab-search").fill("")
         news = '#mailbox details[data-group="gmail-news"] .ap-all'
         many = text(tab, news)
+        tab.evaluate("$('ap-msg').textContent = 'Not saved: 500'")
         tab.locator("#tab-search").fill("g-plain")
+        assert text(tab, "#ap-msg") == "Not saved: 500", "a search keeps the Apply bar's message"
         assert many != "Approve all 1" and text(tab, news) == "Approve all 1", "Approve all counts only the rows shown"
         tab.locator(news).click()
         assert wait_for(lambda: json.loads((wq.data / "decisions.json").read_text()).get("g-plain", {}).get("decision") == "approve")
@@ -2501,6 +2504,7 @@ def test_every_kind_of_item_offers_its_own_choices_and_says_what_it_is(site, wq)
             tab.wait_for_function("([n, t]) => (document.querySelector(n) || {}).textContent?.startsWith('You said: ' + t + '. Add a reason')", arg=[note, plain])
             tab.locator(f"{note} button", has_text="Add a reason").click()
             assert labels(tab, f"{fb} .fb-pop button")[:-1] == choices and labels(tab, f"{fb} .fb-pop button")[-1] == "Skip", kind
+            assert tab.locator(".fb-pop:visible").count() == 1, f"{kind}: the choices open in one place only"
             tab.locator(f"{fb} .fb-pop button").nth(len(choices) - 1).click()
             tab.wait_for_selector(f"{fb} .fb-pop", state="hidden")
         got = {r["kind"]: r for r in fb_lines(wq) if r["signal"] == "thumbs_down" and r.get("amends")}
@@ -3058,9 +3062,9 @@ def test_escape_in_the_search_clears_it_and_leaves_an_open_why_block_open(site, 
         tab.press("#tab-search", "Escape")
         assert tab.input_value("#tab-search") == ""
         assert tab.locator(box).count() == 1, "the Why block stays open"
-        tab.locator(f"{box} .why-steps li").first.click()
+        tab.focus("#tab-search")
         tab.keyboard.press("Escape")
-        tab.wait_for_selector(box, state="detached")
+        tab.wait_for_selector(box, state="detached")  # with nothing to clear, Escape closes the Why block
         cov.snap()
         browser.close()
 

@@ -1301,15 +1301,15 @@ CHECKS = (
     (
         'Send N to agents stays off during a batch',
         'work_queue/page.py',
-        'b.disabled=!API||!n||sending}',
-        'b.disabled=!API||!n}',
+        'b.disabled=!API||!n||sending;',
+        'b.disabled=!API||!n;',
         'tests/test_work_queue_browser.py::test_send_to_agents_lists_every_open_row_and_sends_the_picked_ones_one_at_a_time',
     ),
     (
         'Send N to agents needs the server',
         'work_queue/page.py',
-        'b.disabled=!API||!n||sending}',
-        'b.disabled=!n||sending}',
+        'b.disabled=!API||!n||sending;',
+        'b.disabled=!n||sending;',
         'tests/test_work_queue_browser.py::test_send_to_agents_lists_every_open_row_and_sends_the_picked_ones_one_at_a_time',
     ),
     (
@@ -3156,8 +3156,8 @@ CHECKS = (
     (
         'Approve all leaves hidden email out',
         'work_queue/page.py',
-        "querySelectorAll('.ap-row:not(.applied):not(.approved):not(.kept):not(.em-gone)')].map(r=>r.dataset.key)",
-        "querySelectorAll('.ap-row:not(.applied):not(.approved):not(.kept)')].map(r=>r.dataset.key)",
+        "querySelectorAll('.ap-row:not(.applied):not(.approved):not(.kept):not(.em-gone):not(.q-miss)')].map(r=>r.dataset.key)",
+        "querySelectorAll('.ap-row:not(.applied):not(.approved):not(.kept):not(.q-miss)')].map(r=>r.dataset.key)",
         'tests/test_work_queue_browser.py::test_email_rows_send_snooze_archive_mark_read_undo_and_stay_out_of_approvals',
     ),
     (

@@ -238,6 +238,7 @@ is this here?** Focus moves into it, so one Tab reaches **Close**. It lists what
 Assistant recorded about the item, oldest first, each step with its time.
 A second click on **Why?**, **Close** or Esc closes it. Esc closes a note box or
 the list of reasons first if one is open, and otherwise the box you opened last.
+Esc in a search box with words in it clears only the search.
 Changing tabs closes any open box. A Ready for you result shows the steps of the
 row it came from.
 

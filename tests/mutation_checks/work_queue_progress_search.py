@@ -65,8 +65,8 @@ CHECKS = (
     (
         "search hides a lane with no match",
         "work_queue/page.py",
-        "'.sf-lane, .sf-group, .ready, .ap-group, .mb-sec'",
-        "'.sf-group, .ready, .ap-group, .mb-sec'",
+        "document.querySelectorAll('.sf-lane, .sf-group, .ready, details')",
+        "document.querySelectorAll('.sf-group, .ready, details')",
         SEARCH,
     ),
     (
@@ -184,14 +184,14 @@ CHECKS = (
     (
         "the search recounts Send and Approve all",
         "work_queue/page.py",
-        ".some(el=>el.offsetParent!==null);agCount();renderAp()}",
+        ".some(el=>el.offsetParent!==null);agCount(true);apCounts()}",
         ".some(el=>el.offsetParent!==null)}",
         SEARCH,
     ),
     (
         "Escape in the search leaves a Why block open",
         "work_queue/page.py",
-        "||!Object.keys(WHY).length||ev.target.id==='tab-search')return;",
+        "||!Object.keys(WHY).length||ev.target.id==='tab-search'&&ev.target.value)return;",
         "||!Object.keys(WHY).length)return;",
         ESCAPE_WHY,
     ),
@@ -201,5 +201,26 @@ CHECKS = (
         "if(s&&s.value){s.value='';filterTab('')}",
         "if(s.value){s.value='';filterTab('')}",
         PLACEHOLDER,
+    ),
+    (
+        "Escape in an empty search still closes a Why block",
+        "work_queue/page.py",
+        "ev.target.id==='tab-search'&&ev.target.value)return;",
+        "ev.target.id==='tab-search')return;",
+        ESCAPE_WHY,
+    ),
+    (
+        "a search keeps the Apply bar's message",
+        "work_queue/page.py",
+        ";agCount(true);apCounts()}",
+        ";agCount(true);renderAp()}",
+        SEARCH,
+    ),
+    (
+        "a new search unticks Select all",
+        "work_queue/page.py",
+        "if(clear)$('ag-all').checked=false}",
+        "}",
+        SEARCH,
     ),
 )
