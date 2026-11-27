@@ -129,6 +129,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   the next update would lose, and the setup check stops requiring git. See
   [Update by download, without git](docs/configuration.md#update-by-download-without-git)
   for what changes while it's on and how to turn it off.
+- When the self-update step itself crashes, in either update mode, the pulse
+  writes a failed row to the ledger once an hour instead of only logging it.
 - The `/back-off`, `/attend`, and `/goal` skills and the Slack session run
   Assistant's scripts from `~/.claude/bin` or their own folder, not
   `~/dev/assistant`.

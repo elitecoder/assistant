@@ -84,11 +84,16 @@ nothing is deleted until it works.
 
 Download updates don't support the opt-in single-process daemon
 (`com.mukul.assistant-daemon`), which runs the pulse inside itself and can't be
-restarted by its own update. While it's loaded, every update stops and says so.
+restarted by its own update. While it's running, every update stops and says
+so. Its LaunchAgent file is installed in `~/Library/LaunchAgents`, so if macOS
+starts it at login, stop it for good with `launchctl disable
+gui/$UID/com.mukul.assistant-daemon` and `launchctl bootout
+gui/$UID/com.mukul.assistant-daemon`.
 
 To go back one version, run `python3 ~/.assistant/app/previous/bin/app_update.py
 --rollback`, which works even when the current version's updater is broken. To
-undo a rollback, run it again. The rollback holds while main stays on the version you left; once main moves
+undo a rollback, run it again, or run `bin/app_update.py --force` from your
+checkout to go to main. The rollback holds while main stays on the version you left; once main moves
 to a newer commit, the next update installs that one.
 To update from a fork, add `"repo": "owner/name"`.
 
@@ -102,9 +107,10 @@ While it's on:
 - Edits made through `~/.claude/skills/<name>` or
   `~/.claude/assistant-operating-guide.md` land in the downloaded copy and are
   lost at the next update. Edit skills in your checkout and merge them instead.
-- If an update breaks the updater itself, the dashboard shows the error once an
-  hour. Roll back with the command above, or run `bin/app_update.py --force`
-  from your checkout.
+- If an update breaks the updater, the dashboard shows the error once an hour.
+  If it breaks the pulse before the update step, nothing shows on the
+  dashboard and updates stop. Either way, roll back with the command above, or
+  run `bin/app_update.py --force` from your checkout.
 - Semantic memory search uses plain word matching, because the downloaded copy
   has no `.venv-mem0`.
 - The Slack reactor installs its npm packages again the first time it starts

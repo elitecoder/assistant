@@ -176,11 +176,12 @@ def starts(tree: Path) -> tuple[bool, str]:
     return True, "ok"
 
 
-def daemon_loaded() -> bool:
-    """True when the opt-in single-process daemon is loaded. It runs the pulse
+def daemon_running() -> bool:
+    """True when the opt-in single-process daemon is running. It runs the pulse
     inside itself, so an update can't restart it."""
-    return subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{DAEMON_LABEL}"],
-                          capture_output=True).returncode == 0
+    p = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{DAEMON_LABEL}"],
+                       capture_output=True, text=True)
+    return p.returncode == 0 and "state = running" in p.stdout
 
 
 def target(link: Path) -> str | None:
@@ -349,9 +350,10 @@ def update(block: dict, *, now: float, from_pulse: bool, opener=None) -> dict:
             "download updates are on, but the pulse still runs from your checkout; "
             "run bin/app_update.py --force from your checkout once"))
         return result
-    if daemon_loaded():
-        result.update(skipped_reason="daemon-loaded", error=(
-            f"download updates don't support the opt-in single-process daemon; unload it with "
+    if daemon_running():
+        result.update(skipped_reason="daemon-running", error=(
+            f"download updates don't support the opt-in single-process daemon; stop it for good with "
+            f"launchctl disable gui/{os.getuid()}/{DAEMON_LABEL} and "
             f"launchctl bootout gui/{os.getuid()}/{DAEMON_LABEL}, or turn download updates off"))
         return result
     try:
@@ -362,7 +364,7 @@ def update(block: dict, *, now: float, from_pulse: bool, opener=None) -> dict:
         result.update(skipped_reason="fetch-failed", error=f"could not read {BRANCH}: {exc}"[:500])
         return result
     result["to_sha"] = _short(sha)
-    if marker.get("held") not in (None, sha):
+    if marker.get("held") not in (None, sha) or (marker.get("held") and not from_pulse):
         marker.pop("held")
         _write_marker(marker)
     if old == sha and (root / sha).is_dir() or marker.get("held") == sha:

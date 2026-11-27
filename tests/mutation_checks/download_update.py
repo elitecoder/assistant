@@ -352,11 +352,11 @@ CHECKS = (
         "tests/test_comms_listen_delivery.py::test_a_just_spawned_session_is_not_replaced_right_away",
     ),
     (
-        "a loaded daemon stops every update",
+        "a running daemon stops every update",
         AU,
-        "    if daemon_loaded():\n",
+        "    if daemon_running():\n",
         "    if False:\n",
-        T + "test_a_loaded_daemon_stops_every_update",
+        T + "test_a_running_daemon_stops_every_update",
     ),
     (
         "a commit whose updater won't start is refused",
@@ -455,5 +455,19 @@ CHECKS = (
         "            tmp.replace(GIT_UPDATE_MARKER)\n        except OSError as e:\n",
         "            tmp.replace(GIT_UPDATE_MARKER)\n        except ValueError as e:\n",
         T + "test_a_dirty_clock_that_cant_be_cleared_never_stops_the_update",
+    ),
+    (
+        "a daemon that is loaded but not running doesn't stop updates",
+        AU,
+        '    return p.returncode == 0 and "state = running" in p.stdout\n',
+        "    return p.returncode == 0\n",
+        T + "test_a_daemon_that_is_loaded_but_not_running_doesnt_stop_updates",
+    ),
+    (
+        "a manual run ends a rollback hold",
+        AU,
+        ' or (marker.get("held") and not from_pulse):\n',
+        ":\n",
+        T + "test_a_manual_run_ends_a_rollback_hold",
     ),
 )

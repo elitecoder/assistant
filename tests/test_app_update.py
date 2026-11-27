@@ -758,15 +758,32 @@ def test_the_services_with_the_older_names_are_moved_too(au, tmp_path, launchctl
     assert result["moved_services"] == ["com.mukul.assistant-cmux-watcher"]
 
 
-def test_a_loaded_daemon_stops_every_update(au, tmp_path, launchctl):
+def test_a_running_daemon_stops_every_update(au, tmp_path, launchctl):
     set_up(au, tmp_path)
     (tmp_path / "loaded").mkdir(exist_ok=True)
-    (tmp_path / "loaded/com.mukul.assistant-daemon").write_text("state = running\n")
+    (tmp_path / "loaded/com.mukul.assistant-daemon").write_text("\tstate = running\n")
     gh = GitHub(NEW, {NEW: archive(NEW)})
     for from_pulse in (True, False):
         result = au.maybe_update(now=5000, force=True, from_pulse=from_pulse, opener=gh)
-        assert result["skipped_reason"] == "daemon-loaded" and "bootout" in result["error"]
+        assert result["skipped_reason"] == "daemon-running"
+        assert "launchctl disable" in result["error"] and "bootout" in result["error"]
     assert gh.urls == [] and os.readlink(tmp_path / ".assistant/app/current") == OLD
+
+
+def test_a_daemon_that_is_loaded_but_not_running_doesnt_stop_updates(au, tmp_path, launchctl):
+    set_up(au, tmp_path)
+    (tmp_path / "loaded").mkdir(exist_ok=True)
+    (tmp_path / "loaded/com.mukul.assistant-daemon").write_text("\tstate = not running\n")
+    assert au.maybe_update(now=5000, opener=GitHub(NEW, {NEW: archive(NEW)}))["changed"]
+
+
+def test_a_manual_run_ends_a_rollback_hold(au, tmp_path):
+    set_up(au, tmp_path)
+    au.maybe_update(now=5000, opener=GitHub(NEW, {NEW: archive(NEW)}))
+    au.rollback()
+    result = au.maybe_update(now=9000, from_pulse=False, opener=GitHub(NEW))
+    assert result["changed"] and os.readlink(tmp_path / ".assistant/app/current") == NEW
+    assert "held" not in json.loads((tmp_path / ".assistant/app-update.json").read_text())
 
 
 def test_a_commit_whose_updater_wont_start_is_refused(au, tmp_path):
