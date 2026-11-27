@@ -43,6 +43,11 @@ def au(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "self_update", load("self_update", REPO / "bin/self_update.py"))
     mod = load("app_update_mod", REPO / "bin/app_update.py")
     monkeypatch.setattr(mod, "HERE", (tmp_path / ".assistant/app/running/bin/app_update.py").resolve())
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    (fake_bin / "launchctl").write_text(FAKE_LAUNCHCTL)
+    (fake_bin / "launchctl").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
     return mod
 
 
@@ -609,6 +614,7 @@ case "$1" in
   print) [ -f "$HOME/loaded/$label" ] || exit 113; cat "$HOME/loaded/$label" ;;
   bootout) rm -f "$HOME/loaded/$label" ;;
   bootstrap) label="$(basename "$3" .plist)"; echo "arguments = { $HOME/.assistant/app/current/bin/x }" > "$HOME/loaded/$label" ;;
+  load) label="$(basename "$2" .plist)"; echo "arguments = { $HOME/.assistant/app/current/bin/x }" > "$HOME/loaded/$label" ;;
 esac
 """
 
@@ -623,12 +629,7 @@ def agent(home: Path, label: str, program: str, loaded_from: str | None) -> None
 
 
 @pytest.fixture
-def launchctl(tmp_path, monkeypatch):
-    fake_bin = tmp_path / "fake-bin"
-    fake_bin.mkdir()
-    (fake_bin / "launchctl").write_text(FAKE_LAUNCHCTL)
-    (fake_bin / "launchctl").chmod(0o755)
-    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
+def launchctl(au, tmp_path):
     return lambda: (tmp_path / "launchctl-calls").read_text().splitlines() if (tmp_path / "launchctl-calls").exists() else []
 
 
@@ -651,7 +652,7 @@ def test_the_pulse_never_reloads_services_itself(au, tmp_path, launchctl):
     set_up(au, tmp_path)
     agent(tmp_path, "com.assistant.slack-reactor", f"{tmp_path}/.assistant/app/current/bin/r.sh", "/old/bin/r.sh")
     au.maybe_update(now=5000, opener=GitHub(NEW, {NEW: archive(NEW)}))
-    assert launchctl() == []
+    assert not [c for c in launchctl() if c.startswith(("bootout", "bootstrap", "load"))]
 
 
 def test_a_manual_run_when_up_to_date_still_moves_services(au, tmp_path, launchctl):
@@ -665,9 +666,22 @@ def test_a_service_that_wont_start_is_named_with_the_reason(au, tmp_path, launch
     set_up(au, tmp_path)
     agent(tmp_path, "com.assistant.slack-reactor", f"{tmp_path}/.assistant/app/current/bin/r.sh", "/old/bin/r.sh")
     (tmp_path / "fake-bin/launchctl").write_text(FAKE_LAUNCHCTL.replace(
+        'bootstrap) label', 'bootstrap) echo "Bootstrap failed: 5" >&2; exit 5; label').replace(
+        'load) label', 'load) echo "Load failed: 5" >&2; exit 5; label'))
+    result = au.maybe_update(now=5000, from_pulse=False, opener=GitHub(OLD))
+    assert result["moved_services"] == ["com.assistant.slack-reactor (couldn't start: Load failed: 5)"]
+    assert result["error"] == "couldn't start com.assistant.slack-reactor (couldn't start: Load failed: 5)"
+    assert [c.split()[0] for c in launchctl()].count("bootstrap") >= 2
+
+
+def test_a_service_that_bootstrap_refuses_is_loaded_instead(au, tmp_path, launchctl):
+    set_up(au, tmp_path)
+    agent(tmp_path, "com.assistant.slack-reactor", f"{tmp_path}/.assistant/app/current/bin/r.sh", "/old/bin/r.sh")
+    (tmp_path / "fake-bin/launchctl").write_text(FAKE_LAUNCHCTL.replace(
         'bootstrap) label', 'bootstrap) echo "Bootstrap failed: 5" >&2; exit 5; label'))
     result = au.maybe_update(now=5000, from_pulse=False, opener=GitHub(OLD))
-    assert result["moved_services"] == ["com.assistant.slack-reactor (couldn't start: Bootstrap failed: 5)"]
+    assert result["moved_services"] == ["com.assistant.slack-reactor"] and "error" not in result
+    assert f"load {tmp_path}/Library/LaunchAgents/com.assistant.slack-reactor.plist" in launchctl()
 
 
 def test_an_unreadable_launch_agent_is_left_alone(au, tmp_path, launchctl):
@@ -742,3 +756,51 @@ def test_the_services_with_the_older_names_are_moved_too(au, tmp_path, launchctl
           "/Users/me/dev/assistant/bin/cmux-watcher.py")
     result = au.maybe_update(now=5000, from_pulse=False, opener=GitHub(OLD))
     assert result["moved_services"] == ["com.mukul.assistant-cmux-watcher"]
+
+
+def test_a_loaded_daemon_stops_every_update(au, tmp_path, launchctl):
+    set_up(au, tmp_path)
+    (tmp_path / "loaded").mkdir(exist_ok=True)
+    (tmp_path / "loaded/com.mukul.assistant-daemon").write_text("state = running\n")
+    gh = GitHub(NEW, {NEW: archive(NEW)})
+    for from_pulse in (True, False):
+        result = au.maybe_update(now=5000, force=True, from_pulse=from_pulse, opener=gh)
+        assert result["skipped_reason"] == "daemon-loaded" and "bootout" in result["error"]
+    assert gh.urls == [] and os.readlink(tmp_path / ".assistant/app/current") == OLD
+
+
+def test_a_commit_whose_updater_wont_start_is_refused(au, tmp_path):
+    set_up(au, tmp_path)
+    broken = archive(NEW, {"bin/app_update.py": "import no_such_module_for_this_test\n"})
+    result = au.maybe_update(now=5000, opener=GitHub(NEW, {NEW: broken}))
+    assert result["skipped_reason"] == "syntax-fail" and "won't start" in result["syntax_error"]
+    assert "no_such_module_for_this_test" in result["syntax_error"]
+    assert os.readlink(tmp_path / ".assistant/app/current") == OLD
+
+
+def test_the_real_updater_starts_from_a_copy_of_this_tree(au, tmp_path):
+    copy = tmp_path / "copy"
+    shutil.copytree(REPO, copy, ignore=shutil.ignore_patterns(".git", ".venv", ".worktrees", "__pycache__", "node_modules"))
+    assert au.starts(copy) == (True, "ok")
+
+
+def test_an_update_whose_restart_failed_is_a_failed_ledger_row(pulse, tmp_path, monkeypatch):
+    turn_on(tmp_path)
+    done = {"attempted": True, "changed": True, "installed": True, "install_rc": 0, "skipped_reason": None,
+            "source": "download", "from_sha": OLD[:12], "to_sha": NEW[:12],
+            "error": "install.sh couldn't restart a running service; the next run tries again"}
+    monkeypatch.setitem(sys.modules, "app_update", fake("app_update", done, []))
+    pulse.self_update_pulse(7)
+    (row,) = [r for r in ledger(tmp_path) if r["kind"] == "self-update"]
+    assert row["outcome"] == "failed" and "couldn't restart" in row["evidence"]
+
+
+def test_the_lessons_tool_still_opens_a_checkout_store_for_trimming(au, tmp_path, monkeypatch):
+    curator = load("curator_trim_checkout", REPO / "bin/assistant-curator.py")
+    monkeypatch.setitem(curator.TARGETS["claude"], "path", tmp_path / ".claude/CLAUDE.md")
+    opened = []
+    monkeypatch.setattr(curator.os, "execvp", lambda editor, argv: opened.append(argv))
+    monkeypatch.setenv("EDITOR", "true")
+    monkeypatch.setattr(sys, "argv", ["assistant-curator.py", "trim", "--target", "claude"])
+    curator.main()
+    assert opened == [["true", str(tmp_path / ".claude/CLAUDE.md")]]

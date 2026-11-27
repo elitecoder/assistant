@@ -54,6 +54,7 @@ SHA = re.compile(r"[0-9a-f]{40}")
 SLUG = re.compile(r"[\w.-]+/[\w.-]+")
 SELF_PLIST = f"launchagents/{self_update.SELF_PLIST_LABEL}.plist"
 REQUIRED_FILES = ("install.sh", "bin/pulse.py", "bin/app_update.py")
+DAEMON_LABEL = "com.mukul.assistant-daemon"
 HERE = Path(__file__).resolve()
 
 
@@ -163,6 +164,26 @@ def check_tree(tree: Path) -> tuple[bool, str]:
     return True, "ok"
 
 
+def starts(tree: Path) -> tuple[bool, str]:
+    """(True, "ok") when the new copy's updater loads its imports and starts,
+    so the next update can run; else (False, why)."""
+    try:
+        p = subprocess.run([sys.executable, "-I", str(tree / "bin/app_update.py"), "--help"],
+                           capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return False, "bin/app_update.py --help didn't finish in 60s"
+    if p.returncode:
+        return False, f"bin/app_update.py won't start: {(p.stderr or p.stdout).strip()[-300:]}"
+    return True, "ok"
+
+
+def daemon_loaded() -> bool:
+    """True when the opt-in single-process daemon is loaded. It runs the pulse
+    inside itself, so an update can't restart it."""
+    return subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{DAEMON_LABEL}"],
+                          capture_output=True).returncode == 0
+
+
 def target(link: Path) -> str | None:
     try:
         return os.readlink(link)
@@ -245,8 +266,12 @@ def repoint_services(root: Path) -> list[str]:
         if loaded.returncode != 0 or current in loaded.stdout:
             continue
         subprocess.run(["launchctl", "bootout", f"{domain}/{label}"], capture_output=True)
-        started = subprocess.run(["launchctl", "bootstrap", domain, str(plist)],
-                                 capture_output=True, text=True)
+        for attempt in (["bootstrap", domain, str(plist)], ["bootstrap", domain, str(plist)],
+                        ["load", str(plist)]):
+            started = subprocess.run(["launchctl", *attempt], capture_output=True, text=True)
+            if started.returncode == 0:
+                break
+            time.sleep(1)
         moved.append(label if started.returncode == 0
                      else f"{label} (couldn't start: {started.stderr.strip()[:200]})")
     return moved
@@ -276,6 +301,13 @@ def _write_marker(data: dict) -> None:
 
 def _short(name: str | None) -> str:
     return (name or "")[:12]
+
+
+def _move_services(root: Path, result: dict) -> None:
+    result["moved_services"] = moved = repoint_services(root)
+    stuck = [m for m in moved if "couldn't start" in m]
+    if stuck:
+        result["error"] = "couldn't start " + "; ".join(stuck)
 
 
 def _linked(root: Path) -> bool:
@@ -315,6 +347,11 @@ def update(block: dict, *, now: float, from_pulse: bool, opener=None) -> dict:
             "download updates are on, but the pulse still runs from your checkout; "
             "run bin/app_update.py --force from your checkout once"))
         return result
+    if daemon_loaded():
+        result.update(skipped_reason="daemon-loaded", error=(
+            f"download updates don't support the opt-in single-process daemon; unload it with "
+            f"launchctl bootout gui/{os.getuid()}/{DAEMON_LABEL}, or turn download updates off"))
+        return result
     try:
         slug = repo_slug(block)
         result["remote"], result["branch"] = slug, BRANCH
@@ -332,7 +369,7 @@ def update(block: dict, *, now: float, from_pulse: bool, opener=None) -> dict:
         if old and (marker.get("installed") != old or restart_failed() or not _linked(root)):
             _install(root, result, marker, old, from_pulse)
         if old and not from_pulse and not result.get("error"):
-            result["moved_services"] = repoint_services(root)
+            _move_services(root, result)
         return result
     if marker.get("rejected") == _rejected_key(sha) \
             and now - marker.get("rejected_ts", 0) < REJECT_REMIND_SEC:
@@ -344,6 +381,8 @@ def update(block: dict, *, now: float, from_pulse: bool, opener=None) -> dict:
         result.update(skipped_reason="fetch-failed", error=f"could not download {sha[:12]}: {exc}"[:500])
         return result
     ok, detail = check_tree(tree)
+    if ok:
+        ok, detail = starts(tree)
     if not ok:
         shutil.rmtree(tree)
         marker.update(rejected=_rejected_key(sha), rejected_ts=now)
@@ -357,7 +396,7 @@ def update(block: dict, *, now: float, from_pulse: bool, opener=None) -> dict:
     if not result.get("error") and from_pulse and plist_changed:
         result["self_plist_reload_deferred"] = True
     if not result.get("error") and not from_pulse:
-        result["moved_services"] = repoint_services(root)
+        _move_services(root, result)
     if not result.get("error"):
         result["pruned"] = prune(root)
     return result

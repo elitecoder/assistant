@@ -1006,6 +1006,10 @@ if [[ "$(cat "$CODE_STAMP" 2>/dev/null || true)" != "$CODE_SHA" ]]; then
             com.mukul.assistant-{cmux-watcher,daemon}; do
         [[ " ${CHANGED_LABELS[*]:-} " == *" $label "* ]] && continue
         launchctl print "gui/$UID/$label" 2>/dev/null | grep -q "state = running" || continue
+        if [[ "${ASSISTANT_SELF_UPDATE:-0}" == "1" && "$label" == "com.mukul.assistant-daemon" ]]; then
+            note "skip restart of $label (this update runs inside it; restart it by hand)"
+            continue
+        fi
         if [[ $APPLY -eq 0 ]]; then
             note "would restart $label (its code changed)"
         elif launchctl kickstart -k "gui/$UID/$label" >/dev/null 2>&1; then

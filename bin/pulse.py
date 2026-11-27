@@ -611,6 +611,9 @@ def self_update_pulse(pulse_idx: int) -> None:
         if result.get("install_rc") not in (None, 0):
             outcome = "failed"
             evidence += f" install_rc={result.get('install_rc')}"
+        elif result.get("error"):
+            outcome = "failed"
+            evidence += f"; {result['error']}"[:300]
         if result.get("self_plist_reload_deferred"):
             evidence += "; pulse-plist reload deferred"
         key = f"self-update-{result.get('to_sha', pulse_idx)}"

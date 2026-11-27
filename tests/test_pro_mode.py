@@ -900,7 +900,7 @@ def test_the_installer_restarts_running_services_when_the_folder_behind_current_
 def test_the_installer_restarts_the_older_named_assistant_services_when_code_changes(tmp_path):
     home = tmp_path / "home"
     (home / ".assistant").mkdir(parents=True)
-    env = {**installer_env(home), "ASSISTANT_SELF_UPDATE": "1"}
+    env = installer_env(home)
     watcher, daemon = "com.mukul.assistant-cmux-watcher", "com.mukul.assistant-daemon"
     log = fake_launchctl(env, running={watcher, daemon})
     (home / ".assistant/service-code.sha256").write_text("old\n")
@@ -908,3 +908,17 @@ def test_the_installer_restarts_the_older_named_assistant_services_when_code_cha
     kicks = log.read_text()
     assert f"kickstart -k gui/{os.getuid()}/{watcher}" in kicks
     assert f"kickstart -k gui/{os.getuid()}/{daemon}" in kicks
+
+
+def test_an_automatic_update_never_restarts_the_daemon_it_runs_inside(tmp_path):
+    home = tmp_path / "home"
+    (home / ".assistant").mkdir(parents=True)
+    env = {**installer_env(home), "ASSISTANT_SELF_UPDATE": "1"}
+    watcher, daemon = "com.mukul.assistant-cmux-watcher", "com.mukul.assistant-daemon"
+    log = fake_launchctl(env, running={watcher, daemon})
+    (home / ".assistant/service-code.sha256").write_text("old\n")
+    proc = run_installer(env)
+    kicks = log.read_text()
+    assert f"kickstart -k gui/{os.getuid()}/{watcher}" in kicks
+    assert f"kickstart -k gui/{os.getuid()}/{daemon}" not in kicks
+    assert f"skip restart of {daemon}" in proc.stdout

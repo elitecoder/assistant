@@ -69,9 +69,11 @@ From then on, about once an hour, the pulse:
 
 - asks the GitHub API for main's newest commit, with no sign-in;
 - when it's new, downloads that commit's archive from codeload.github.com;
-- refuses the commit if the archive holds anything but plain files and
-  folders, if a file Assistant runs or installs has a conflict marker, or if a
-  Python file won't parse, and keeps the version it has;
+- refuses the commit, and keeps the version it has, if the archive holds
+  anything but plain files and folders, if `install.sh`, `bin/pulse.py`, or
+  `bin/app_update.py` is missing, if a file Assistant runs or installs has a
+  conflict marker, if a Python file won't parse, or if the new copy's updater
+  won't start;
 - points `previous` at the version it has and `current` at the new folder,
   runs `install.sh --apply`, which restarts every running Assistant service
   onto the new folder, and then deletes every other downloaded folder. The
@@ -79,6 +81,10 @@ From then on, about once an hour, the pulse:
 
 A failed install or service restart is tried again on the next run, and
 nothing is deleted until it works.
+
+Download updates don't support the opt-in single-process daemon
+(`com.mukul.assistant-daemon`), which runs the pulse inside itself and can't be
+restarted by its own update. While it's loaded, every update stops and says so.
 
 To go back one version, run `python3 ~/.assistant/app/current/bin/app_update.py
 --rollback`. The rollback holds while main stays on the version you left; once main moves

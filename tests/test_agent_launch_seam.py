@@ -3201,6 +3201,8 @@ def test_a_live_slack_session_restarts_when_assistant_moves_to_a_new_folder(
     logged = []
     monkeypatch.setattr(listen, "log", logged.append)
     listen.ensure_warm_session(cl.Paths.from_env({"HOME": str(home)}), respawn_on_stale=True)
+    assert rec["closed"] == [], "the listener's start never cuts off a reply"
+    listen.ensure_warm_session(cl.Paths.from_env({"HOME": str(home)}), respawn_on_stale=True, respawn_moved=True)
     assert rec["closed"] == (["workspace:18"] if respawned else [])
     assert any("code folder changed" in line for line in logged) == respawned
 
