@@ -194,17 +194,65 @@ def test_resending_the_same_text_after_an_error_is_not_a_return(tmp_path):
     ], text="continue") is None
 
 
-@pytest.mark.parametrize("minutes", ["abc", "1.5"])
-def test_an_odd_gap_setting_does_not_break_prompts(tmp_path, minutes):
+@pytest.mark.parametrize("minutes, fires", [("abc", False), ("nan", False), ("-5", False),
+                                             ("1.5", True)])
+def test_an_odd_gap_setting_does_not_break_prompts(tmp_path, minutes, fires):
     out = run(tmp_path, [reply(timedelta(minutes=30))],
               env={"ASSISTANT_IDLE_RETURN_MINUTES": minutes})
-    assert (out is None) == (minutes == "abc")
+    assert (out is not None) == fires
 
 
-def test_a_transcript_bigger_than_one_read_is_scanned_from_the_end(tmp_path):
-    filler = [attachment(timedelta(minutes=1))] * 12_000
-    out = run(tmp_path, [typed(timedelta(hours=4), "start"), reply(timedelta(hours=4)), *filler])
-    assert (tmp_path / "session.jsonl").stat().st_size > 1_000_000
+def test_an_agent_report_arriving_as_the_prompt_is_not_a_return(tmp_path):
+    assert run(tmp_path, [typed(timedelta(hours=3), "start"), reply(timedelta(hours=3))],
+               text="<task-notification> agent done </task-notification>") is None
+
+
+def queued(ago, text, origin):
+    return {"type": "attachment", "timestamp": stamp(ago),
+            "attachment": {"type": "queued_command", "prompt": text, "origin": origin,
+                           "commandMode": "prompt"}}
+
+
+def test_a_message_you_queue_during_a_report_turn_counts_as_you_being_there(tmp_path):
+    assert run(tmp_path, [
+        typed(timedelta(hours=5), "start"),
+        reply(timedelta(hours=5)),
+        agent_report(timedelta(minutes=30)),
+        queued(timedelta(minutes=28), "also check CI", {"kind": "human"}),
+        reply(timedelta(minutes=27), "CI is green."),
+    ]) is None
+
+
+def test_a_queued_agent_report_is_not_you_being_there(tmp_path):
+    out = run(tmp_path, [
+        typed(timedelta(hours=5), "start"),
+        reply(timedelta(hours=5)),
+        queued(timedelta(minutes=28), "<agent-message>done</agent-message>",
+               {"kind": "peer", "from": "a67e9ad3a6489115b"}),
+        reply(timedelta(minutes=27), "The agent is done."),
+    ])
+    assert "after 5 hours away" in out["additionalContext"]
+
+
+def test_a_half_written_last_line_does_not_break_prompts(tmp_path):
+    transcript = tmp_path / "session.jsonl"
+    run(tmp_path, [reply(timedelta(hours=2))])
+    with open(transcript, "ab") as f:
+        f.write('{"type": "user", "message": {"content": "caf'.encode() + "é".encode()[:1])
+    result = subprocess.run(
+        [sys.executable, "-I", str(HOOK)],
+        input=json.dumps({"transcript_path": str(transcript), "prompt": "status?"}),
+        capture_output=True, text=True, env={**os.environ, "ASSISTANT_IDLE_RETURN": "1"},
+        timeout=30, check=True)
+    assert "after 2 hours away" in result.stdout
+
+
+def test_a_record_longer_than_one_read_is_kept_whole(tmp_path):
+    report = agent_report(timedelta(minutes=5))
+    report["message"]["content"] += "é" * 1_500_000
+    out = run(tmp_path, [typed(timedelta(hours=4), "start"), reply(timedelta(hours=4)), report,
+                         reply(timedelta(minutes=4), "The agent is done.")])
+    assert (tmp_path / "session.jsonl").stat().st_size > 2_000_000
     assert "after 4 hours away" in out["additionalContext"]
 
 

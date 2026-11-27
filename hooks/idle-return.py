@@ -6,9 +6,11 @@ Off unless ASSISTANT_IDLE_RETURN is 1, true, yes, or on.
 ASSISTANT_IDLE_RETURN_MINUTES sets the gap, default 60.
 The gap runs from your last prompt, or Claude's last reply in a turn you started.
 Resume bookkeeping, hook output, API error stubs, and turns started by another
-session, a background task, or a `claude -p` call don't count as activity.
+session, a background task, or a `claude -p` call don't count as activity, and
+a prompt from another session or a background task never counts as your return.
 """
 import json
+import math
 import os
 import sys
 from datetime import datetime, timezone
@@ -18,7 +20,7 @@ JUST_SENT_SECONDS = 30
 MACHINE_ORIGINS = ("task-notification", "peer")
 MACHINE_SOURCES = ("system", "sdk")
 HUMAN_SOURCES = ("typed", "queued")
-MACHINE = ("<task-notification", "Another Claude session")
+MACHINE = ("<task-notification", "Another Claude session", "<agent-message", "<cross-session-message")
 TRANSPARENT = ("This session is being continued", "Caveat:", "<system-reminder", "<user-memory")
 
 INSTRUCTION = """The operator is returning to this session after {idle} away. They don't remember where it stood.
@@ -36,13 +38,19 @@ def enabled():
 
 def gap_minutes():
     try:
-        return float(os.environ.get("ASSISTANT_IDLE_RETURN_MINUTES", "60"))
+        minutes = float(os.environ.get("ASSISTANT_IDLE_RETURN_MINUTES", "60"))
     except ValueError:
         return 60.0
+    return minutes if math.isfinite(minutes) and minutes >= 0 else 60.0
 
 
 def prompt_kind(record):
     """Who started the turn this user record opens: "human", "machine", "transparent", or None."""
+    queued = record.get("attachment") if record.get("type") == "attachment" else None
+    if isinstance(queued, dict) and queued.get("type") == "queued_command":
+        if (queued.get("origin") or {}).get("kind") == "human":
+            return "human", str(queued.get("prompt", "")).strip()
+        return "machine", None
     if record.get("type") != "user" or record.get("isSidechain"):
         return None, None
     content = record.get("message", {}).get("content")
@@ -76,18 +84,18 @@ def stamp(record):
     return datetime.fromisoformat(record["timestamp"].replace("Z", "+00:00"))
 
 
-def last_activity(lines, prompt, now):
+def last_activity(lines, now):
     latest_reply = None
     for line in lines:
         try:
-            record = json.loads(line)
+            record = json.loads(line.decode("utf-8", "replace"))
         except json.JSONDecodeError:
             continue
         if not record.get("timestamp"):
             continue
-        kind, text = prompt_kind(record)
+        kind, _ = prompt_kind(record)
         if kind == "human":
-            if text == prompt.strip() and (now - stamp(record)).total_seconds() < JUST_SENT_SECONDS:
+            if latest_reply is None and (now - stamp(record)).total_seconds() < JUST_SENT_SECONDS:
                 continue
             return latest_reply or stamp(record)
         if kind == "machine":
@@ -125,8 +133,10 @@ def main():
     path = event.get("transcript_path")
     if not path or not os.path.exists(path):
         return
+    if str(event.get("prompt", "")).lstrip().startswith(MACHINE):
+        return
     now = datetime.now(timezone.utc)
-    then = last_activity(lines_from_end(path), event.get("prompt", ""), now)
+    then = last_activity(lines_from_end(path), now)
     if then is None:
         return
     minutes = (now - then).total_seconds() / 60

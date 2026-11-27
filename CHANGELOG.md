@@ -16,7 +16,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   catch-up, restate what a one-word "yes" approves, or open other replies with
   one line on where the work stands. The gap ignores resume bookkeeping, hook
   output, API error notices, and turns started by another session, a
-  background task, or a `claude -p` call while you were away. It's off by
+  background task, or a `claude -p` call while you were away, and a prompt
+  from another session or a background task never counts as your return. It's off by
   default; `ASSISTANT_IDLE_RETURN_MINUTES` sets the gap (default 60).
   `install.sh --apply` registers `hooks/idle-return.py` on `UserPromptSubmit`
   in Claude settings only.

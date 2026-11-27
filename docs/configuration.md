@@ -105,7 +105,9 @@ default is `60`, which is also used when the value isn't a number.
 The gap starts at your last prompt, or at Claude's last reply in a turn you
 started. Resuming a session, hook output, API error notices, and turns started
 by another session, a background task, or a `claude -p` call while you were
-away don't reset it. A prompt from `claude -p` never counts as your return. `install.sh --apply` registers the hook, `hooks/idle-return.py`, on
+away don't reset it. A message you queue while Claude is busy counts as you
+being there. A prompt from `claude -p`, another session, or a background task
+never counts as your return. `install.sh --apply` registers the hook, `hooks/idle-return.py`, on
 `UserPromptSubmit` in `~/.claude/settings.json`. It makes no model calls and
 runs in a few hundredths of a second.
 
