@@ -30,8 +30,18 @@ def reply(ago, text="Want me to merge PR #12?", model="claude-opus-5-5", **extra
             "message": {"model": model, "content": [{"type": "text", "text": text}]}}
 
 
-def prompt(ago, text):
-    return {"type": "user", "timestamp": stamp(ago), "message": {"content": text}}
+def prompt(ago, text, **extra):
+    return {"type": "user", "timestamp": stamp(ago), **extra, "message": {"content": text}}
+
+
+def typed(ago, text):
+    return prompt(ago, text, origin={"kind": "human"}, promptSource="typed")
+
+
+def agent_report(ago):
+    return prompt(ago, "Another Claude session sent a message: <agent-message>done</agent-message>",
+                  isMeta=True, origin={"kind": "peer", "from": "a67e9ad3a6489115b"},
+                  promptSource="system")
 
 
 def attachment(ago):
@@ -152,6 +162,50 @@ def test_a_slash_command_counts_as_you_being_there(tmp_path):
         reply(timedelta(days=1)),
         prompt(timedelta(minutes=5), "<command-name>/model</command-name>"),
     ]) is None
+
+
+def test_a_background_agent_report_and_its_reply_do_not_hide_the_gap(tmp_path):
+    out = run(tmp_path, [
+        typed(timedelta(hours=3, minutes=1), "review the PR in the background"),
+        reply(timedelta(hours=3), "Started the reviewer."),
+        agent_report(timedelta(minutes=5)),
+        reply(timedelta(minutes=4), "The reviewer found two bugs."),
+    ])
+    assert "after 3 hours away" in out["additionalContext"]
+
+
+def test_an_sdk_prompt_is_not_you_being_there(tmp_path):
+    out = run(tmp_path, [
+        typed(timedelta(hours=3, minutes=1), "ship it"),
+        reply(timedelta(hours=3), "Shipped."),
+        prompt(timedelta(minutes=5), "You are a verification gate.", origin={"kind": "human"},
+               promptSource="sdk"),
+        reply(timedelta(minutes=4), "PASS"),
+    ])
+    assert "after 3 hours away" in out["additionalContext"]
+
+
+def test_resending_the_same_text_after_an_error_is_not_a_return(tmp_path):
+    assert run(tmp_path, [
+        typed(timedelta(hours=20), "continue"),
+        reply(timedelta(hours=20), "Working on it."),
+        typed(timedelta(minutes=2), "continue"),
+        reply(timedelta(minutes=2), "API Error: overloaded", model="<synthetic>"),
+    ], text="continue") is None
+
+
+@pytest.mark.parametrize("minutes", ["abc", "1.5"])
+def test_an_odd_gap_setting_does_not_break_prompts(tmp_path, minutes):
+    out = run(tmp_path, [reply(timedelta(minutes=30))],
+              env={"ASSISTANT_IDLE_RETURN_MINUTES": minutes})
+    assert (out is None) == (minutes == "abc")
+
+
+def test_a_transcript_bigger_than_one_read_is_scanned_from_the_end(tmp_path):
+    filler = [attachment(timedelta(minutes=1))] * 12_000
+    out = run(tmp_path, [typed(timedelta(hours=4), "start"), reply(timedelta(hours=4)), *filler])
+    assert (tmp_path / "session.jsonl").stat().st_size > 1_000_000
+    assert "after 4 hours away" in out["additionalContext"]
 
 
 @pytest.mark.parametrize("event", [{}, {"transcript_path": "/nonexistent/session.jsonl"}])

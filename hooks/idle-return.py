@@ -6,14 +6,18 @@ Off unless ASSISTANT_IDLE_RETURN is 1, true, yes, or on.
 ASSISTANT_IDLE_RETURN_MINUTES sets the gap, default 60.
 The gap runs from your last prompt, or Claude's last reply in a turn you started.
 Resume bookkeeping, hook output, API error stubs, and turns started by another
-session or a background task notification don't count as activity.
+session, a background task, or a `claude -p` call don't count as activity.
 """
 import json
 import os
 import sys
 from datetime import datetime, timezone
 
-TAIL_BYTES = 1_000_000
+CHUNK_BYTES = 1_000_000
+JUST_SENT_SECONDS = 30
+MACHINE_ORIGINS = ("task-notification", "peer")
+MACHINE_SOURCES = ("system", "sdk")
+HUMAN_SOURCES = ("typed", "queued")
 MACHINE = ("<task-notification", "Another Claude session")
 TRANSPARENT = ("This session is being continued", "Caveat:", "<system-reminder", "<user-memory")
 
@@ -30,9 +34,16 @@ def enabled():
     return os.environ.get("ASSISTANT_IDLE_RETURN", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
+def gap_minutes():
+    try:
+        return float(os.environ.get("ASSISTANT_IDLE_RETURN_MINUTES", "60"))
+    except ValueError:
+        return 60.0
+
+
 def prompt_kind(record):
     """Who started the turn this user record opens: "human", "machine", "transparent", or None."""
-    if record.get("type") != "user" or record.get("isMeta") or record.get("isSidechain"):
+    if record.get("type") != "user" or record.get("isSidechain"):
         return None, None
     content = record.get("message", {}).get("content")
     if isinstance(content, list):
@@ -40,9 +51,15 @@ def prompt_kind(record):
             return None, None
         content = " ".join(b.get("text", "") for b in content
                            if isinstance(b, dict) and b.get("type") == "text")
-    if not isinstance(content, str) or not content.strip():
+    origin = (record.get("origin") or {}).get("kind")
+    source = record.get("promptSource")
+    if origin in MACHINE_ORIGINS or source in MACHINE_SOURCES:
+        return "machine", None
+    if record.get("isMeta") or not isinstance(content, str) or not content.strip():
         return None, None
     text = content.strip()
+    if origin == "human" or source in HUMAN_SOURCES:
+        return "human", text
     if text.startswith(MACHINE):
         return "machine", text
     if text.startswith(TRANSPARENT):
@@ -59,9 +76,9 @@ def stamp(record):
     return datetime.fromisoformat(record["timestamp"].replace("Z", "+00:00"))
 
 
-def last_activity(lines, prompt):
+def last_activity(lines, prompt, now):
     latest_reply = None
-    for line in reversed(lines):
+    for line in lines:
         try:
             record = json.loads(line)
         except json.JSONDecodeError:
@@ -69,9 +86,9 @@ def last_activity(lines, prompt):
         if not record.get("timestamp"):
             continue
         kind, text = prompt_kind(record)
-        if kind == "human" and text == prompt.strip() and latest_reply is None:
-            continue
         if kind == "human":
+            if text == prompt.strip() and (now - stamp(record)).total_seconds() < JUST_SENT_SECONDS:
+                continue
             return latest_reply or stamp(record)
         if kind == "machine":
             latest_reply = None
@@ -80,10 +97,18 @@ def last_activity(lines, prompt):
     return latest_reply
 
 
-def read_lines(path, limit):
+def lines_from_end(path):
     with open(path, "rb") as f:
-        f.seek(max(0, os.path.getsize(path) - limit))
-        return f.read().decode("utf-8", "replace").splitlines()
+        position = f.seek(0, os.SEEK_END)
+        rest = b""
+        while position > 0:
+            step = min(CHUNK_BYTES, position)
+            position -= step
+            f.seek(position)
+            lines = (f.read(step) + rest).split(b"\n")
+            rest = lines.pop(0)
+            yield from reversed(lines)
+        yield rest
 
 
 def humanize(minutes):
@@ -100,14 +125,12 @@ def main():
     path = event.get("transcript_path")
     if not path or not os.path.exists(path):
         return
-    prompt = event.get("prompt", "")
-    then = last_activity(read_lines(path, TAIL_BYTES), prompt)
-    if then is None and os.path.getsize(path) > TAIL_BYTES:
-        then = last_activity(read_lines(path, os.path.getsize(path)), prompt)
+    now = datetime.now(timezone.utc)
+    then = last_activity(lines_from_end(path), event.get("prompt", ""), now)
     if then is None:
         return
-    minutes = (datetime.now(timezone.utc) - then).total_seconds() / 60
-    if minutes < int(os.environ.get("ASSISTANT_IDLE_RETURN_MINUTES", "60")):
+    minutes = (now - then).total_seconds() / 60
+    if minutes < gap_minutes():
         return
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "UserPromptSubmit",
