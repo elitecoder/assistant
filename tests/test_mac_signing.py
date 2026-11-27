@@ -49,6 +49,11 @@ def keychain(tmp_path):
 def add_certificate(keychain: Path) -> str:
     made = run(str(MAC / "make-signing-cert.sh"), "--keychain", str(keychain))
     run("security", "set-key-partition-list", "-S", "apple-tool:,apple:", "-s", "-k", "", str(keychain))
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        certificate = keychain.with_suffix(".pem")
+        certificate.write_text(run("security", "find-certificate", "-c", "Assistant Local Signing", "-p", str(keychain)))
+        run("sudo", "security", "add-trusted-cert", "-d", "-r", "trustRoot", "-p", "codeSign",
+            "-k", "/Library/Keychains/System.keychain", str(certificate))
     return made
 
 

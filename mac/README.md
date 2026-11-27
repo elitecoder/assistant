@@ -286,6 +286,14 @@ prompt: enter your Mac password and select **Always Allow**. The next launch
 asks for microphone access one last time. Without the certificate, the build
 signs ad hoc and macOS asks again after every rebuild.
 
+On macOS 26 or earlier, `codesign` uses the certificate only after you mark it
+trusted for code signing. Run this once and enter your password:
+
+```bash
+security find-certificate -c "Assistant Local Signing" -p > /tmp/assistant-signing.pem
+security add-trusted-cert -r trustRoot -p codeSign -k ~/Library/Keychains/login.keychain-db /tmp/assistant-signing.pem
+```
+
 To start it with your Mac, select **Open at login** in the panel.
 
 ## How it finds sessions
