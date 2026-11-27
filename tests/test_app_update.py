@@ -856,3 +856,42 @@ def test_an_unreadable_config_in_a_downloaded_copy_says_to_fix_the_file(pulse, t
     (tmp_path / ".assistant/config.json").write_text("{not json")
     result = pulse._download_off_result(now=1000)
     assert "config.json can't be read" in result["error"] and "install.sh" not in result["error"]
+
+
+def test_a_launch_agent_with_a_comment_xml_parsers_reject_is_still_moved(au, tmp_path, launchctl):
+    set_up(au, tmp_path)
+    current = f"{tmp_path}/.assistant/app/current"
+    agents = tmp_path / "Library/LaunchAgents"
+    agents.mkdir(parents=True, exist_ok=True)
+    text = (REPO / "launchagents/com.assistant.connector-outlook.plist").read_text()
+    assert "--" in text.split("<!--", 1)[1].split("-->", 1)[0], "the real file still has the comment this test is about"
+    (agents / "com.assistant.connector-outlook.plist").write_text(text.replace("__REPO__", current))
+    (tmp_path / "loaded").mkdir(exist_ok=True)
+    (tmp_path / "loaded/com.assistant.connector-outlook").write_text("arguments = { /Users/me/dev/assistant/bin/x }\n")
+    result = au.maybe_update(now=5000, from_pulse=False, opener=GitHub(OLD))
+    assert result["moved_services"] == ["com.assistant.connector-outlook"]
+
+
+def test_a_load_that_exits_zero_but_starts_nothing_fails_the_run(au, tmp_path, launchctl):
+    set_up(au, tmp_path)
+    agent(tmp_path, "com.assistant.slack-reactor", f"{tmp_path}/.assistant/app/current/bin/r.sh", "/old/bin/r.sh")
+    (tmp_path / "fake-bin/launchctl").write_text(FAKE_LAUNCHCTL.replace(
+        'bootstrap) label', 'bootstrap) echo "Bootstrap failed: 5" >&2; exit 5; label').replace(
+        'load) label', 'load) exit 0; label'))
+    result = au.maybe_update(now=5000, from_pulse=False, opener=GitHub(OLD))
+    assert result["moved_services"] == ["com.assistant.slack-reactor (couldn't start: it isn't loaded from current afterwards)"]
+    assert result["error"]
+
+
+def test_a_dirty_clock_that_cant_be_cleared_never_stops_the_update(pulse, tmp_path, monkeypatch):
+    turn_on(tmp_path)
+    marker = tmp_path / ".assistant/self-update.json"
+    marker.write_text(json.dumps({"dirty_since_ts": 1}))
+    calls = []
+    monkeypatch.setitem(sys.modules, "app_update", fake("app_update", None, calls))
+    (tmp_path / ".assistant").chmod(0o500)
+    try:
+        pulse.self_update_pulse(7)
+    finally:
+        (tmp_path / ".assistant").chmod(0o700)
+    assert calls == [("app_update", ())]

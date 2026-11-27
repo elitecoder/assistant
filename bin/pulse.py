@@ -566,7 +566,12 @@ def _forget_git_dirty_clock() -> None:
     except (OSError, ValueError):
         return
     if isinstance(marker, dict) and marker.pop("dirty_since_ts", None) is not None:
-        GIT_UPDATE_MARKER.write_text(json.dumps(marker, indent=2))
+        tmp = GIT_UPDATE_MARKER.with_suffix(".tmp")
+        try:
+            tmp.write_text(json.dumps(marker, indent=2))
+            tmp.replace(GIT_UPDATE_MARKER)
+        except OSError as e:
+            log.warning("couldn't clear the git updater's dirty clock: %s", e)
 
 
 def self_update_pulse(pulse_idx: int) -> None:

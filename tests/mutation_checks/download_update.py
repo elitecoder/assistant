@@ -435,4 +435,25 @@ CHECKS = (
         "    if False:\n        why = (",
         T + "test_an_unreadable_config_in_a_downloaded_copy_says_to_fix_the_file",
     ),
+    (
+        "a launch agent XML parsers reject is still moved",
+        AU,
+        "            if current.encode() not in plist.read_bytes():\n",
+        "            if not plist.read_text().startswith(\"<?xml\") or current.encode() not in plist.read_bytes():\n                continue\n            import plistlib\n            plistlib.loads(plist.read_bytes())\n            if False:\n",
+        T + "test_a_launch_agent_with_a_comment_xml_parsers_reject_is_still_moved",
+    ),
+    (
+        "a start is confirmed before a service counts as moved",
+        AU,
+        "            if now.returncode == 0 and current in now.stdout:\n",
+        "            if started.returncode == 0:\n",
+        T + "test_a_load_that_exits_zero_but_starts_nothing_fails_the_run",
+    ),
+    (
+        "a dirty clock that can't be cleared never stops the update",
+        PULSE,
+        "            tmp.replace(GIT_UPDATE_MARKER)\n        except OSError as e:\n",
+        "            tmp.replace(GIT_UPDATE_MARKER)\n        except ValueError as e:\n",
+        T + "test_a_dirty_clock_that_cant_be_cleared_never_stops_the_update",
+    ),
 )

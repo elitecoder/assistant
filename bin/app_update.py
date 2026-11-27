@@ -27,7 +27,6 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-import plistlib
 import re
 import shutil
 import subprocess
@@ -255,10 +254,9 @@ def repoint_services(root: Path) -> list[str]:
     agents = Path(os.environ["HOME"]) / "Library/LaunchAgents"
     for plist in sorted([*agents.glob("com.assistant.*.plist"), *agents.glob("com.mukul.assistant-*.plist")]):
         try:
-            args = plistlib.loads(plist.read_bytes()).get("ProgramArguments", [])
-        except Exception:  # noqa: BLE001 — a file launchd can't read either is left to install.sh
-            continue
-        if not any(current in str(arg) for arg in args):
+            if current.encode() not in plist.read_bytes():
+                continue
+        except OSError:
             continue
         label = plist.stem
         loaded = subprocess.run(["launchctl", "print", f"{domain}/{label}"],
@@ -269,11 +267,15 @@ def repoint_services(root: Path) -> list[str]:
         for attempt in (["bootstrap", domain, str(plist)], ["bootstrap", domain, str(plist)],
                         ["load", str(plist)]):
             started = subprocess.run(["launchctl", *attempt], capture_output=True, text=True)
-            if started.returncode == 0:
+            now = subprocess.run(["launchctl", "print", f"{domain}/{label}"], capture_output=True, text=True)
+            if now.returncode == 0 and current in now.stdout:
                 break
             time.sleep(1)
-        moved.append(label if started.returncode == 0
-                     else f"{label} (couldn't start: {started.stderr.strip()[:200]})")
+        else:
+            why = started.stderr.strip() or "it isn't loaded from current afterwards"
+            moved.append(f"{label} (couldn't start: {why[:200]})")
+            continue
+        moved.append(label)
     return moved
 
 
