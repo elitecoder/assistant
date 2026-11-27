@@ -464,10 +464,17 @@ CHECKS = (
         T + "test_a_daemon_that_is_loaded_but_not_running_doesnt_stop_updates",
     ),
     (
-        "a manual run ends a rollback hold",
+        "a forced manual run ends a rollback hold",
         AU,
-        ' or (marker.get("held") and not from_pulse):\n',
+        ' or (marker.get("held") and force and not from_pulse):\n',
         ":\n",
-        T + "test_a_manual_run_ends_a_rollback_hold",
+        T + "test_only_a_forced_manual_run_ends_a_rollback_hold_and_says_so",
+    ),
+    (
+        "only a forced manual run ends a rollback hold",
+        AU,
+        ' or (marker.get("held") and force and not from_pulse):\n',
+        ' or (marker.get("held") and not from_pulse):\n',
+        T + "test_only_a_forced_manual_run_ends_a_rollback_hold_and_says_so",
     ),
 )

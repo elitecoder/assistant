@@ -777,12 +777,15 @@ def test_a_daemon_that_is_loaded_but_not_running_doesnt_stop_updates(au, tmp_pat
     assert au.maybe_update(now=5000, opener=GitHub(NEW, {NEW: archive(NEW)}))["changed"]
 
 
-def test_a_manual_run_ends_a_rollback_hold(au, tmp_path):
+def test_only_a_forced_manual_run_ends_a_rollback_hold_and_says_so(au, tmp_path):
     set_up(au, tmp_path)
     au.maybe_update(now=5000, opener=GitHub(NEW, {NEW: archive(NEW)}))
     au.rollback()
-    result = au.maybe_update(now=9000, from_pulse=False, opener=GitHub(NEW))
-    assert result["changed"] and os.readlink(tmp_path / ".assistant/app/current") == NEW
+    kept = au.maybe_update(now=9000, from_pulse=False, opener=GitHub(NEW))
+    assert kept["skipped_reason"] == "rolled-back" and os.readlink(tmp_path / ".assistant/app/current") == OLD
+    result = au.maybe_update(now=9000, force=True, from_pulse=False, opener=GitHub(NEW))
+    assert result["changed"] and result["ended_hold"] == NEW[:12]
+    assert os.readlink(tmp_path / ".assistant/app/current") == NEW
     assert "held" not in json.loads((tmp_path / ".assistant/app-update.json").read_text())
 
 

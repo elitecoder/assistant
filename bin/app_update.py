@@ -336,7 +336,7 @@ def _install(root: Path, result: dict, marker: dict, sha: str, from_pulse: bool)
     _write_marker(marker)
 
 
-def update(block: dict, *, now: float, from_pulse: bool, opener=None) -> dict:
+def update(block: dict, *, now: float, from_pulse: bool, opener=None, force: bool = False) -> dict:
     """One update attempt. Returns what happened in the shape the pulse logs.
     Never raises for a network, archive, or install failure."""
     root = app_root()
@@ -364,7 +364,9 @@ def update(block: dict, *, now: float, from_pulse: bool, opener=None) -> dict:
         result.update(skipped_reason="fetch-failed", error=f"could not read {BRANCH}: {exc}"[:500])
         return result
     result["to_sha"] = _short(sha)
-    if marker.get("held") not in (None, sha) or (marker.get("held") and not from_pulse):
+    if marker.get("held") not in (None, sha) or (marker.get("held") and force and not from_pulse):
+        if marker.get("held") == sha:
+            result["ended_hold"] = _short(sha)
         marker.pop("held")
         _write_marker(marker)
     if old == sha and (root / sha).is_dir() or marker.get("held") == sha:
@@ -436,7 +438,7 @@ def maybe_update(*, now: float | None = None, force: bool = False,
                 if log:
                     log.info("self-update: paused after repeating the same failure")
                 return None
-        result = update(block, now=now, from_pulse=from_pulse, opener=opener)
+        result = update(block, now=now, from_pulse=from_pulse, opener=opener, force=force)
     if log:
         log.info("self-update: %s", json.dumps({k: v for k, v in result.items() if k != "pruned"}))
     if watch and (result["skipped_reason"] not in ("syntax-fail-known", "rolled-back") or result.get("error")):
