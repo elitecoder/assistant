@@ -4,8 +4,9 @@ tell Claude to rebuild your context from live state before acting.
 
 Off unless ASSISTANT_IDLE_RETURN is 1, true, yes, or on.
 ASSISTANT_IDLE_RETURN_MINUTES sets the gap, default 60.
-The gap runs from the last human prompt or real model reply; resume bookkeeping,
-hook output, peer messages, and API error stubs don't count as activity.
+The gap runs from your last prompt, or Claude's last reply in a turn you started.
+Resume bookkeeping, hook output, API error stubs, and turns started by another
+session or a background task notification don't count as activity.
 """
 import json
 import os
@@ -13,8 +14,8 @@ import sys
 from datetime import datetime, timezone
 
 TAIL_BYTES = 1_000_000
-NOT_HUMAN = ("<", "Another Claude session", "This session is being continued", "Caveat:",
-             "[Request interrupted")
+MACHINE = ("<task-notification", "Another Claude session")
+TRANSPARENT = ("This session is being continued", "Caveat:", "<system-reminder", "<user-memory")
 
 INSTRUCTION = """The operator is returning to this session after {idle} away. They don't remember where it stood.
 Before acting on their message, check live state (git status, PR state via gh, running jobs), not your memory of it.
@@ -29,18 +30,24 @@ def enabled():
     return os.environ.get("ASSISTANT_IDLE_RETURN", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
-def human_prompt(record):
+def prompt_kind(record):
+    """Who started the turn this user record opens: "human", "machine", "transparent", or None."""
     if record.get("type") != "user" or record.get("isMeta") or record.get("isSidechain"):
-        return None
+        return None, None
     content = record.get("message", {}).get("content")
     if isinstance(content, list):
         if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
-            return None
+            return None, None
         content = " ".join(b.get("text", "") for b in content
                            if isinstance(b, dict) and b.get("type") == "text")
-    if not isinstance(content, str) or not content.strip() or content.lstrip().startswith(NOT_HUMAN):
-        return None
-    return content.strip()
+    if not isinstance(content, str) or not content.strip():
+        return None, None
+    text = content.strip()
+    if text.startswith(MACHINE):
+        return "machine", text
+    if text.startswith(TRANSPARENT):
+        return "transparent", text
+    return "human", text
 
 
 def model_reply(record):
@@ -48,7 +55,12 @@ def model_reply(record):
             and record.get("message", {}).get("model") != "<synthetic>")
 
 
+def stamp(record):
+    return datetime.fromisoformat(record["timestamp"].replace("Z", "+00:00"))
+
+
 def last_activity(lines, prompt):
+    latest_reply = None
     for line in reversed(lines):
         try:
             record = json.loads(line)
@@ -56,12 +68,16 @@ def last_activity(lines, prompt):
             continue
         if not record.get("timestamp"):
             continue
-        text = human_prompt(record)
-        if text == prompt.strip():
+        kind, text = prompt_kind(record)
+        if kind == "human" and text == prompt.strip() and latest_reply is None:
             continue
-        if text or model_reply(record):
-            return datetime.fromisoformat(record["timestamp"].replace("Z", "+00:00"))
-    return None
+        if kind == "human":
+            return latest_reply or stamp(record)
+        if kind == "machine":
+            latest_reply = None
+        elif model_reply(record) and latest_reply is None:
+            latest_reply = stamp(record)
+    return latest_reply
 
 
 def read_lines(path, limit):

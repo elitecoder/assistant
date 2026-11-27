@@ -1,9 +1,10 @@
 """hooks/idle-return.py runs as Claude runs it: a subprocess fed a UserPromptSubmit
 event on stdin, reading a transcript written into the test's tmp dir.
 
-It stays silent unless ASSISTANT_IDLE_RETURN is on and the last human prompt or
-real model reply is older than the gap. Resume bookkeeping, hook output, peer
-messages, and API error stubs written while you were away don't reset the gap.
+It stays silent unless ASSISTANT_IDLE_RETURN is on and your last prompt, or
+Claude's last reply in a turn you started, is older than the gap. Resume
+bookkeeping, hook output, API error stubs, and turns started by another session
+or a task notification while you were away don't reset the gap.
 """
 from __future__ import annotations
 
@@ -97,13 +98,55 @@ def test_resume_bookkeeping_and_error_stubs_do_not_hide_the_gap(tmp_path):
     assert "after 16.0 days away" in out["additionalContext"]
 
 
-def test_a_reply_after_a_task_notification_counts_as_activity(tmp_path):
+def test_turns_started_while_you_were_away_do_not_hide_the_gap(tmp_path):
     out = run(tmp_path, [
-        reply(timedelta(days=1)),
-        prompt(timedelta(minutes=30), "<task-notification> agent done </task-notification>"),
-        reply(timedelta(minutes=29), "The review is back."),
+        prompt(timedelta(hours=6, minutes=1), "run the evals"),
+        reply(timedelta(hours=6), "Started; I'll report back."),
+        prompt(timedelta(hours=2), "<task-notification> evals done </task-notification>"),
+        reply(timedelta(hours=2), "Evals passed. Want me to open the PR?"),
     ])
-    assert out is None
+    assert "after 6 hours away" in out["additionalContext"]
+
+
+def test_a_reply_in_your_own_turn_counts_as_activity(tmp_path):
+    assert run(tmp_path, [
+        prompt(timedelta(hours=3), "run the full suite"),
+        reply(timedelta(minutes=10), "The suite passed."),
+    ]) is None
+
+
+def test_a_compaction_summary_does_not_split_your_turn(tmp_path):
+    assert run(tmp_path, [
+        prompt(timedelta(hours=3), "finish the refactor"),
+        prompt(timedelta(hours=1), "This session is being continued from a previous conversation."),
+        reply(timedelta(minutes=10), "The refactor is done."),
+    ]) is None
+
+
+def test_a_compaction_summary_alone_is_not_you_being_there(tmp_path):
+    out = run(tmp_path, [
+        prompt(timedelta(hours=3, minutes=1), "finish the refactor"),
+        reply(timedelta(hours=3), "Done."),
+        prompt(timedelta(minutes=10), "This session is being continued from a previous conversation."),
+    ])
+    assert "after 3 hours away" in out["additionalContext"]
+
+
+def test_an_api_error_stub_is_not_a_reply(tmp_path):
+    out = run(tmp_path, [
+        prompt(timedelta(hours=5, minutes=1), "ship it"),
+        reply(timedelta(hours=5), "Shipped."),
+        reply(timedelta(minutes=5), "API Error: Could not load AWS credentials",
+              isApiErrorMessage=True, model="<synthetic>"),
+    ])
+    assert "after 5 hours away" in out["additionalContext"]
+
+
+def test_a_slash_command_counts_as_you_being_there(tmp_path):
+    assert run(tmp_path, [
+        reply(timedelta(days=1)),
+        prompt(timedelta(minutes=5), "<command-name>/model</command-name>"),
+    ]) is None
 
 
 @pytest.mark.parametrize("event", [{}, {"transcript_path": "/nonexistent/session.jsonl"}])

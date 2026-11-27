@@ -102,9 +102,9 @@ It's off by default. To turn it on, set `ASSISTANT_IDLE_RETURN=1` in
 or resume a session. `ASSISTANT_IDLE_RETURN_MINUTES` sets the gap; the default
 is `60`.
 
-The gap starts at your last prompt or Claude's last reply. Resuming a session,
-hook output, messages from other sessions, and API error notices don't reset
-it. `install.sh --apply` registers the hook, `hooks/idle-return.py`, on
+The gap starts at your last prompt, or at Claude's last reply in a turn you
+started. Resuming a session, hook output, API error notices, and turns started
+by another session or a background task while you were away don't reset it. `install.sh --apply` registers the hook, `hooks/idle-return.py`, on
 `UserPromptSubmit` in `~/.claude/settings.json`. It makes no model calls and
 runs in a few hundredths of a second.
 
