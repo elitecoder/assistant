@@ -238,7 +238,7 @@ def run_install(root: Path, *, from_pulse: bool) -> tuple[int, str]:
     try:
         p = subprocess.run(["bash", str(current / "install.sh"), "--apply"],
                            cwd=str(current), env=env, capture_output=from_pulse, text=True,
-                           timeout=INSTALL_TIMEOUT_SEC,
+                           timeout=INSTALL_TIMEOUT_SEC if from_pulse else None,
                            stdin=subprocess.DEVNULL if from_pulse else None)
     except subprocess.TimeoutExpired:
         return -1, f"install.sh --apply timed out after {INSTALL_TIMEOUT_SEC}s"
@@ -458,7 +458,7 @@ def _rollback(from_pulse: bool) -> dict:
     main moves past it, so the next hourly update doesn't undo the rollback."""
     root = app_root()
     cur, prev = target(root / "current"), target(root / "previous")
-    if not prev or not (root / prev).is_dir():
+    if not cur or not prev or not (root / prev).is_dir():
         return {"rolled_back": False, "error": f"there's no previous version in {root}"}
     _point(root / "previous", cur)
     _point(root / "current", prev)

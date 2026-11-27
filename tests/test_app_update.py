@@ -804,3 +804,55 @@ def test_the_lessons_tool_still_opens_a_checkout_store_for_trimming(au, tmp_path
     monkeypatch.setattr(sys, "argv", ["assistant-curator.py", "trim", "--target", "claude"])
     curator.main()
     assert opened == [["true", str(tmp_path / ".claude/CLAUDE.md")]]
+
+
+def test_the_manual_first_run_from_the_checkout_is_not_refused(au, tmp_path, monkeypatch):
+    turn_on(tmp_path)
+    monkeypatch.setattr(au, "HERE", REPO / "bin/app_update.py")
+    result = au.maybe_update(now=1000, from_pulse=False, opener=GitHub(NEW, {NEW: archive(NEW)}))
+    assert result["changed"] and result["install_rc"] == 0
+
+
+def test_a_manual_install_has_no_time_limit(au, tmp_path, monkeypatch):
+    turn_on(tmp_path)
+    monkeypatch.setattr(au, "INSTALL_TIMEOUT_SEC", 1)
+    monkeypatch.setenv("FAKE_INSTALL_SLEEP", "2")
+    result = au.maybe_update(now=1000, from_pulse=False, opener=GitHub(NEW, {NEW: archive(NEW)}))
+    assert result["install_rc"] == 0 and "error" not in result
+
+
+def test_rollback_with_no_current_version_says_so(au, tmp_path):
+    set_up(au, tmp_path)
+    au.maybe_update(now=5000, opener=GitHub(NEW, {NEW: archive(NEW)}))
+    (tmp_path / ".assistant/app/current").unlink()
+    assert au.rollback()["rolled_back"] is False
+
+
+def test_an_updater_that_crashes_is_a_failed_ledger_row_once_an_hour(pulse, tmp_path, monkeypatch):
+    turn_on(tmp_path)
+    broken = type(sys)("app_update")
+
+    def crash(**_):
+        raise ImportError("no module named self_update")
+    broken.maybe_update = crash
+    monkeypatch.setitem(sys.modules, "app_update", broken)
+    pulse.self_update_pulse(7)
+    pulse.self_update_pulse(8)
+    rows = [r for r in ledger(tmp_path) if r["kind"] == "self-update"]
+    assert len(rows) == 1 and rows[0]["outcome"] == "failed"
+    assert "the updater stopped with ImportError: no module named self_update" in rows[0]["evidence"]
+
+
+def test_download_updates_clear_the_git_updaters_dirty_clock(pulse, tmp_path, monkeypatch):
+    turn_on(tmp_path)
+    marker = tmp_path / ".assistant/self-update.json"
+    marker.write_text(json.dumps({"last_attempt_ts": 5, "dirty_since_ts": 1}))
+    monkeypatch.setitem(sys.modules, "app_update", fake("app_update", None, []))
+    pulse.self_update_pulse(7)
+    assert json.loads(marker.read_text()) == {"last_attempt_ts": 5}
+
+
+def test_an_unreadable_config_in_a_downloaded_copy_says_to_fix_the_file(pulse, tmp_path):
+    (tmp_path / ".assistant/config.json").write_text("{not json")
+    result = pulse._download_off_result(now=1000)
+    assert "config.json can't be read" in result["error"] and "install.sh" not in result["error"]

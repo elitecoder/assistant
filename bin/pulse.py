@@ -527,23 +527,46 @@ def load_state() -> dict:
 # ─── steps ──────────────────────────────────────────────────────────────────
 
 DOWNLOAD_OFF_NOTED = ASSISTANT_DIR / "app-update-off-noted"
+SELF_UPDATE_CRASH_NOTED = ASSISTANT_DIR / "self-update-crash-noted"
+GIT_UPDATE_MARKER = ASSISTANT_DIR / "self-update.json"
+
+
+def _due(stamp: Path, now: float, every: float) -> bool:
+    """True, and restamps, when `stamp` is older than `every` seconds or missing."""
+    try:
+        if now - stamp.stat().st_mtime < every:
+            return False
+    except OSError:
+        pass
+    stamp.touch()
+    os.utime(stamp, (now, now))
+    return True
 
 
 def _download_off_result(now: float | None = None) -> dict | None:
     """Once a day, the problem of running from a downloaded copy with download
     updates off. The git update must not run there."""
-    now = time.time() if now is None else now
+    if not _due(DOWNLOAD_OFF_NOTED, time.time() if now is None else now, 86400):
+        return None
+    broken = mode.config_error()
+    if broken:
+        why = (f"download updates are paused because config.json can't be read ({broken}); "
+               "fix the file and they resume")
+    else:
+        why = ("Assistant runs from a downloaded copy, but download updates are off; to go back "
+               "to git updates, run install.sh --apply from your checkout")
+    return {"attempted": True, "skipped_reason": "download-off", "error": why}
+
+
+def _forget_git_dirty_clock() -> None:
+    """Drop the git updater's dirty-checkout clock, so turning download updates
+    off later never counts the time they were on toward an auto-stash."""
     try:
-        if now - DOWNLOAD_OFF_NOTED.stat().st_mtime < 86400:
-            return None
-    except OSError:
-        pass
-    DOWNLOAD_OFF_NOTED.touch()
-    os.utime(DOWNLOAD_OFF_NOTED, (now, now))
-    return {"attempted": True, "skipped_reason": "download-off", "error": (
-        "Assistant runs from a downloaded copy, but download updates are off or "
-        "config.json can't be read; to go back to git updates, run install.sh --apply "
-        "from your checkout")}
+        marker = json.loads(GIT_UPDATE_MARKER.read_text())
+    except (OSError, ValueError):
+        return
+    if isinstance(marker, dict) and marker.pop("dirty_since_ts", None) is not None:
+        GIT_UPDATE_MARKER.write_text(json.dumps(marker, indent=2))
 
 
 def self_update_pulse(pulse_idx: int) -> None:
@@ -557,6 +580,7 @@ def self_update_pulse(pulse_idx: int) -> None:
     try:
         sys.path.insert(0, str(BIN))
         if mode.download_updates() is not None:
+            _forget_git_dirty_clock()
             import app_update  # noqa: PLC0415
             result = app_update.maybe_update(log=log)
         elif DOWNLOADED_COPY in REPO.parents:
@@ -566,7 +590,10 @@ def self_update_pulse(pulse_idx: int) -> None:
             result = self_update.maybe_update(REPO, log=log)
     except Exception as e:  # noqa: BLE001 — self-update must never break the pulse
         log.exception("self-update raised (ignored): %s", e)
-        return
+        if not _due(SELF_UPDATE_CRASH_NOTED, time.time(), 3600):
+            return
+        result = {"attempted": True, "skipped_reason": "crashed",
+                  "error": f"the updater stopped with {type(e).__name__}: {e}"}
 
     if result is None:
         return  # throttled — nothing to report

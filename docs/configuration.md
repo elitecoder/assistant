@@ -86,8 +86,9 @@ Download updates don't support the opt-in single-process daemon
 (`com.mukul.assistant-daemon`), which runs the pulse inside itself and can't be
 restarted by its own update. While it's loaded, every update stops and says so.
 
-To go back one version, run `python3 ~/.assistant/app/current/bin/app_update.py
---rollback`. The rollback holds while main stays on the version you left; once main moves
+To go back one version, run `python3 ~/.assistant/app/previous/bin/app_update.py
+--rollback`, which works even when the current version's updater is broken. To
+undo a rollback, run it again. The rollback holds while main stays on the version you left; once main moves
 to a newer commit, the next update installs that one.
 To update from a fork, add `"repo": "owner/name"`.
 
@@ -98,6 +99,12 @@ While it's on:
   lessons tool refuses them and says to save them from your checkout, where
   they reach the live install once they're merged into main. Lessons in
   `~/.claude/CLAUDE.md` work as before.
+- Edits made through `~/.claude/skills/<name>` or
+  `~/.claude/assistant-operating-guide.md` land in the downloaded copy and are
+  lost at the next update. Edit skills in your checkout and merge them instead.
+- If an update breaks the updater itself, the dashboard shows the error once an
+  hour. Roll back with the command above, or run `bin/app_update.py --force`
+  from your checkout.
 - Semantic memory search uses plain word matching, because the downloaded copy
   has no `.venv-mem0`.
 - The Slack reactor installs its npm packages again the first time it starts
