@@ -112,6 +112,16 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
     stops the page from being built.
 
 ### Added
+- Update Assistant by downloading main from GitHub, with no git. It's off by
+  default; turn it on with `"self_update": {"download": true}` in
+  `~/.assistant/config.json`, then run `bin/app_update.py --force` once.
+  Assistant then runs from `~/.assistant/app/current`, and the pulse never
+  reads or writes your checkout. About once an hour it asks GitHub for main's
+  newest commit, downloads it, refuses it if a file has a conflict marker or
+  Python that won't parse, then switches `current` in one step and keeps the
+  last version for `app_update.py --rollback`. Repeated failures pause it the
+  same way as the git update, and the dashboard's "try now" command names the
+  download updater while it's on.
 - Find out why a row is on your Work queue, and what Assistant has done with
   it. Every Open list row, Start here item, email, row waiting for your
   approval and Ready for you result now has a short **Why?** link next to

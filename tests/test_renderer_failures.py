@@ -288,3 +288,10 @@ def test_any_other_error_means_no_box_and_the_page_still_renders(mod, monkeypatc
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / ".assistant").mkdir(exist_ok=True)
     assert "Triage has failed" not in render_page(tmp_path)
+
+
+def test_with_download_updates_on_the_command_runs_the_download_updater(mod, tmp_path):
+    (tmp_path / ".assistant/config.json").write_text('{"self_update": {"download": true}}')
+    fail(3, "could not read main: offline", step=1, cap=4 * HOUR)
+    command = f"{shlex.quote(sys.executable)} {shlex.quote(str(mod.REPO / 'bin/app_update.py'))} --force"
+    assert f"<code>{html_lib.escape(command)}</code>" in mod.render_failure_alerts(now=NOW)

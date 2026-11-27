@@ -17,6 +17,7 @@ work. Every setting below is a deliberate edit you make yourself.
 | Copilot thinking effort | the shared `llm.droid.reasoning_effort` | `llm.copilot.reasoning_effort` (`off`, `high`, or `max`), or `<FEATURE>_COPILOT_REASONING_EFFORT` | How hard Copilot thinks on background jobs. A model that refuses the setting runs without it. |
 | Agent binaries | found on `PATH` | `CLAUDE_BIN`, `COPILOT_BIN`, `DROID_BIN` | Full path to an agent's CLI when it isn't on `PATH`. For an npm Copilot install, background jobs run its standalone build, so they don't need Node. |
 | Log size limit | Trim a log past 20 MB to its last 5 MB, after a 24-hour notice | `"logs": {"cap_mb": 20, "keep_mb": 5}` in `~/.assistant/config.json`, alongside your existing keys | Every five minutes the Assistant trims the logs in `~/.assistant/logs`, the `.log` files in `~/.assistant`, `~/.assistant/comms/comms-listen.log`, `~/.claude/logs/workspace-watcher.log`, and `~/.claude/cache/todo-server.log` and `.err`. Both values are in megabytes. A log past `cap_mb` keeps its last `keep_mb` from a line boundary and the older lines are deleted; there is no backup copy. Services keep writing without a restart; a line written during a trim can be lost. **Notice period:** with no `logs` entry, the first time a log is over the limit nothing is trimmed and the dashboard shows a card saying what will be cut and when; trimming starts 24 hours later, with no further notice. A `logs` entry skips the wait. `"cap_mb": 0` turns trimming off. **Add the entry to the file, don't replace it**; for example `{"mode": "pro", "logs": {"cap_mb": 0}}`, then check it with `python3 -m json.tool ~/.assistant/config.json`. If the file exists but can't be read, or a `logs` value isn't a number of 0 or more (a number in quotes counts), trimming stays off and the log says why, once a day. Only a missing file or a missing `logs` key uses the defaults. While a setting can't be read, an amber notice at the top of the dashboard (and a card under **Awaiting input**) says what is wrong and that trimming is off; it goes away once the setting is fixed. If the Assistant can't save its start time in `~/.assistant/log-cap-state.json`, the same bar says trimming is waiting and to check that the folder can be written to. The notice is given once, before trimming first starts; a log that later grows back over the limit is trimmed without a second notice. `keep_mb` is never larger than `cap_mb`. It never touches `.json`, `.jsonl`, or lock files. |
+| Update by download | Off: the pulse updates with git in your checkout | `~/.assistant/config.json` → `{"self_update": {"download": true}}` | The pulse downloads main from GitHub to `~/.assistant/app/` instead, and never runs git. See [Update by download, without git](#update-by-download-without-git). |
 | Local record | On, keeps 90 days, up to 200 MB | `~/.assistant/config.json` → `{"telemetry": {"enabled": true, "keep_days": 90, "max_mb": 200}}` | Assistant keeps a record of what it did, on your Mac only. `enabled` must be `true` to record; anything else turns it off and creates nothing, and so does a `config.json` that can't be read, until you fix it (the pulse log says so). `keep_days` is 1 to 3650 and `max_mb` is 1 to 100000. A setting that can't be read never deletes anything, and the pulse log says so. See [Telemetry](telemetry.md). |
 
 ## Observer
@@ -42,6 +43,34 @@ To turn the Observer on, do both of these:
 To turn it off again, set `"enabled"` to `false` or remove the `"observer"`
 key. `./bin/assistant-doctor.py` and the dashboard's **Settings and background
 services** show whether it's on.
+
+## Update by download, without git
+
+By default, the pulse updates Assistant with git inside your checkout, about
+once an hour. You can instead have it download main from GitHub, so it never
+runs git and never touches your checkout. This is off by default.
+
+1. Add `"self_update": {"download": true}` to `~/.assistant/config.json`,
+   alongside your existing keys. Only the JSON value `true` turns it on.
+2. Run `python3 bin/app_update.py --force` from your checkout. It downloads
+   main to `~/.assistant/app/<commit>/`, points `~/.assistant/app/current` at
+   it, and runs `install.sh --apply` from `current`. That points
+   `~/.claude/bin`, the skills, and every LaunchAgent at `current`.
+
+From then on, about once an hour, the pulse:
+
+- asks the GitHub API for main's newest commit, with no sign-in;
+- when it's new, downloads that commit's archive from codeload.github.com;
+- refuses the commit if any file Assistant runs or installs has a conflict
+  marker, or any Python file won't parse, and keeps the version it has;
+- points `current` at the new folder in one step and `previous` at the old
+  one, runs `install.sh --apply`, and deletes every other downloaded folder.
+
+To go back one version, run `python3 ~/.assistant/app/current/bin/app_update.py
+--rollback`. To update from a fork, add `"repo": "owner/name"`.
+
+To return to git updates, set `"download"` to `false`, then run
+`./install.sh --apply` from your checkout so everything points at it again.
 
 ## Background jobs that are off by default
 

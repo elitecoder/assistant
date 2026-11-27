@@ -535,8 +535,12 @@ def self_update_pulse(pulse_idx: int) -> None:
     result is silent — no ledger spam every pulse."""
     try:
         sys.path.insert(0, str(BIN))
-        import self_update  # noqa: PLC0415
-        result = self_update.maybe_update(REPO, log=log)
+        if mode.download_updates() is not None:
+            import app_update  # noqa: PLC0415
+            result = app_update.maybe_update(log=log)
+        else:
+            import self_update  # noqa: PLC0415
+            result = self_update.maybe_update(REPO, log=log)
     except Exception as e:  # noqa: BLE001 — self-update must never break the pulse
         log.exception("self-update raised (ignored): %s", e)
         return
@@ -571,8 +575,12 @@ def self_update_pulse(pulse_idx: int) -> None:
         files = result.get("files_changed", [])
         installed = result.get("installed")
         outcome = "verified"
-        evidence = (f"pulled {result.get('from_sha')}..{result.get('to_sha')} "
-                    f"({len(files)} file(s)); install={'ran' if installed else 'not-needed'}")
+        if result.get("source") == "download":
+            evidence = (f"downloaded {result.get('from_sha') or 'first version'}.."
+                        f"{result.get('to_sha')}; install={'ran' if installed else 'not-needed'}")
+        else:
+            evidence = (f"pulled {result.get('from_sha')}..{result.get('to_sha')} "
+                        f"({len(files)} file(s)); install={'ran' if installed else 'not-needed'}")
         if result.get("stashed"):
             # An aged-out dirty tree was auto-stashed before the pull. Make the
             # recovery path loud so the operator knows their work is parked.
