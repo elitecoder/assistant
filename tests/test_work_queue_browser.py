@@ -2344,7 +2344,7 @@ def test_the_reasons_open_next_to_their_thumb_at_the_top_the_middle_and_the_bott
         tab.goto(site + "#open-list")
         thumbs = tab.locator(ROW_THUMBS)
         thumbs.first.wait_for()
-        for i in (0, 8, 17, 19, 20, 23):
+        for i in (0, 8, 17, 19, 20, 22, 23):
             for where, scroll in OPEN_AT.items():
                 around = [j for j in (i - 1, i + 1) if 0 <= j < 24]
                 for j in around:  # the rows beside it have notes of their own
