@@ -293,5 +293,9 @@ def test_any_other_error_means_no_box_and_the_page_still_renders(mod, monkeypatc
 def test_with_download_updates_on_the_command_runs_the_download_updater(mod, tmp_path):
     (tmp_path / ".assistant/config.json").write_text('{"self_update": {"download": true}}')
     fail(3, "could not read main: offline", step=1, cap=4 * HOUR)
-    command = f"{shlex.quote(sys.executable)} {shlex.quote(str(mod.REPO / 'bin/app_update.py'))} --force"
-    assert f"<code>{html_lib.escape(command)}</code>" in mod.render_failure_alerts(now=NOW)
+    until = failwatch.backed_off("self-update", now=NOW)
+    command = f"{shlex.quote(sys.executable)} {shlex.quote(str(tmp_path / '.assistant/app/current/bin/app_update.py'))} --force"
+    (alert,) = lines(mod.render_failure_alerts(now=NOW))
+    when = datetime.fromtimestamp(until).strftime("%H:%M")
+    assert alert.endswith(f" It tries again by itself at {when}, or as soon as the repo it downloads from changes. "
+                          f"To try now, run {command} in a terminal.")

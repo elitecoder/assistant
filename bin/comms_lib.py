@@ -58,7 +58,7 @@ class Paths:
         env = env if env is not None else dict(os.environ)
         home = Path(env.get("COMMS_HOME", env["HOME"]))
         assistant_dir = Path(env.get("COMMS_ASSISTANT_DIR", str(home / ".assistant")))
-        bin_dir = Path(env.get("COMMS_BIN_DIR", str(home / "dev/assistant/bin")))
+        bin_dir = Path(env.get("COMMS_BIN_DIR", str(Path(__file__).resolve().parent)))
         comms_dir = assistant_dir / "comms"
         return cls(
             home=home,

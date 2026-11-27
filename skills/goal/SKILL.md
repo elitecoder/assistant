@@ -78,7 +78,7 @@ goal_post() { curl -s -X POST "$BASE$1" -H @- "${@:2}" <<<"X-Assistant-Token: $(
 goal_post /goal/pause     # sets _paused:true  → planner no-ops
 goal_post /goal/resume    # sets _paused:false
 # If the server is down, edit the store root directly via the goals module:
-#   python3 -c "import sys;sys.path.insert(0,'$HOME/dev/assistant/src');from assistant import goals;goals.set_paused(True)"
+#   python3 -c "import sys;sys.path.insert(0,'$HOME/.claude/bin/../src');from assistant import goals;goals.set_paused(True)"
 ```
 
 ### Automation vs human on `/goal/update`

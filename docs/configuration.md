@@ -47,30 +47,67 @@ services** show whether it's on.
 ## Update by download, without git
 
 By default, the pulse updates Assistant with git inside your checkout, about
-once an hour. You can instead have it download main from GitHub, so it never
-runs git and never touches your checkout. This is off by default.
+once an hour. You can instead have it download main from GitHub, so it runs no
+git and leaves your checkout alone. This is off by default.
+
+To turn it on:
 
 1. Add `"self_update": {"download": true}` to `~/.assistant/config.json`,
    alongside your existing keys. Only the JSON value `true` turns it on.
-2. Run `python3 bin/app_update.py --force` from your checkout. It downloads
-   main to `~/.assistant/app/<commit>/`, points `~/.assistant/app/current` at
-   it, and runs `install.sh --apply` from `current`. That points
-   `~/.claude/bin`, the skills, and every LaunchAgent at `current`.
+2. From your checkout, run `python3 bin/app_update.py --force` with the Python
+   the services use (3.11 or newer). It downloads main to
+   `~/.assistant/app/<commit>/`, points `~/.assistant/app/current` at it, and
+   runs `install.sh --apply` from `current`. That points `~/.claude/bin`, the
+   skills, and every LaunchAgent at `current`, and reloads any Assistant
+   service that's still loaded from your checkout.
+
+The pulse never makes that first download itself. Until you run step 2, the
+dashboard says so.
 
 From then on, about once an hour, the pulse:
 
 - asks the GitHub API for main's newest commit, with no sign-in;
 - when it's new, downloads that commit's archive from codeload.github.com;
-- refuses the commit if any file Assistant runs or installs has a conflict
-  marker, or any Python file won't parse, and keeps the version it has;
-- points `current` at the new folder in one step and `previous` at the old
-  one, runs `install.sh --apply`, and deletes every other downloaded folder.
+- refuses the commit if the archive holds anything but plain files and
+  folders, if a file Assistant runs or installs has a conflict marker, or if a
+  Python file won't parse, and keeps the version it has;
+- points `previous` at the version it has and `current` at the new folder,
+  runs `install.sh --apply`, which restarts every running service onto the new
+  folder, and then deletes every other downloaded folder.
+
+A failed install or service restart is tried again on the next run, and
+nothing is deleted until it works.
 
 To go back one version, run `python3 ~/.assistant/app/current/bin/app_update.py
---rollback`. To update from a fork, add `"repo": "owner/name"`.
+--rollback`. The rollback holds until main moves past the version you left.
+To update from a fork, add `"repo": "owner/name"`.
 
-To return to git updates, set `"download"` to `false`, then run
-`./install.sh --apply` from your checkout so everything points at it again.
+While it's on:
+
+- Lessons for the Observer, the Strategist, and the Assistant repo can't be
+  saved into the downloaded copy, because the next update replaces it. The
+  lessons tool refuses them and says to save them from your checkout, where
+  they reach the live install once they're merged into main. Lessons in
+  `~/.claude/CLAUDE.md` work as before.
+- Semantic memory search uses plain word matching, because the downloaded copy
+  has no `.venv-mem0`.
+- The Slack reactor installs its npm packages again the first time it starts
+  from each new version.
+- The GitHub API allows 60 requests an hour from one address without sign-in.
+  On a shared network, a rate limit shows as a failed update.
+
+To return to git updates:
+
+1. Set `"download"` to `false`.
+2. In your checkout, run `git pull`, then `./install.sh --apply`, so everything
+   points at the checkout again.
+3. Log out and back in, so services you started by hand reload from the
+   checkout.
+4. Delete `~/.assistant/app` and `~/.assistant/app-update.json` when you no
+   longer need them.
+
+Until step 2 runs, the pulse runs no git updates from the downloaded copy, and
+the dashboard says what to do once a day.
 
 ## Background jobs that are off by default
 

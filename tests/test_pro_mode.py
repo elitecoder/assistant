@@ -875,3 +875,23 @@ def test_a_parked_task_row_has_no_dispatched_pill_and_its_reason_is_the_blocked_
     assert ">dispatched</span>" not in row and ">blocked</span>" in row
     assert 'title="Parked: Assistant started workspace:1000010007 but nothing could be typed into it."' in row
     assert ">dispatched</span>" in other  # an ordinary dispatched task still shows it
+
+
+def test_the_installer_restarts_running_services_when_the_folder_behind_current_changes(tmp_path):
+    home = tmp_path / "home"
+    (home / ".assistant").mkdir(parents=True)
+    app = tmp_path / "app"
+    for name in ("a", "b"):
+        shutil.copytree(REPO, app / name, ignore=shutil.ignore_patterns(".git", ".venv", ".worktrees", "__pycache__"))
+    (app / "current").symlink_to("a")
+    env = {**installer_env(home), "ASSISTANT_SELF_UPDATE": "1"}
+    server = "com.assistant.assistant-todo-server"
+    log = fake_launchctl(env, running={server})
+    run_installer(env, repo=app / "current")
+    log.write_text("")
+    run_installer(env, repo=app / "current")
+    assert "kickstart" not in log.read_text()
+    (app / "current").unlink()
+    (app / "current").symlink_to("b")
+    run_installer(env, repo=app / "current")
+    assert f"kickstart -k gui/{os.getuid()}/{server}" in log.read_text()

@@ -87,6 +87,9 @@ def check_repo_layout() -> Check:
 
 def check_git() -> Check:
     ok = shutil.which("git") is not None
+    if not ok and mode.download_updates() is not None:
+        return Check("git on PATH", PASS, core=True,
+                     detail="not found; not needed, because Assistant updates by download")
     return Check(
         "git on PATH", PASS if ok else FAIL, core=True,
         detail=shutil.which("git") or "not found",

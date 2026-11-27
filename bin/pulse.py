@@ -79,6 +79,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 BIN = REPO / "bin"
 HOME = Path(os.environ.get("HOME", str(Path.home())))
+DOWNLOADED_COPY = (HOME / ".assistant" / "app").resolve()
 
 # Semantic model tiers (Keel M8): callers name a TIER, not a provider id — the
 # resolver picks the id the live backend (Bedrock/Anthropic/Vertex) expects.
@@ -525,6 +526,26 @@ def load_state() -> dict:
 
 # ─── steps ──────────────────────────────────────────────────────────────────
 
+DOWNLOAD_OFF_NOTED = ASSISTANT_DIR / "app-update-off-noted"
+
+
+def _download_off_result(now: float | None = None) -> dict | None:
+    """Once a day, the problem of running from a downloaded copy with download
+    updates off. The git update must not run there."""
+    now = time.time() if now is None else now
+    try:
+        if now - DOWNLOAD_OFF_NOTED.stat().st_mtime < 86400:
+            return None
+    except OSError:
+        pass
+    DOWNLOAD_OFF_NOTED.touch()
+    os.utime(DOWNLOAD_OFF_NOTED, (now, now))
+    return {"attempted": True, "skipped_reason": "download-off", "error": (
+        "Assistant runs from a downloaded copy, but download updates are off or "
+        "config.json can't be read; to go back to git updates, run install.sh --apply "
+        "from your checkout")}
+
+
 def self_update_pulse(pulse_idx: int) -> None:
     """Step 0: pull + re-install the running system from git (throttled).
 
@@ -538,6 +559,8 @@ def self_update_pulse(pulse_idx: int) -> None:
         if mode.download_updates() is not None:
             import app_update  # noqa: PLC0415
             result = app_update.maybe_update(log=log)
+        elif DOWNLOADED_COPY in REPO.parents:
+            result = _download_off_result()
         else:
             import self_update  # noqa: PLC0415
             result = self_update.maybe_update(REPO, log=log)
@@ -567,7 +590,7 @@ def self_update_pulse(pulse_idx: int) -> None:
     changed = result.get("changed")
     # Silent path: attempted, nothing to do, no problem — or a refused commit
     # whose failure was recorded in the last day.
-    if not changed and reason in (None, "syntax-fail-known") and not result.get("error"):
+    if not changed and reason in (None, "syntax-fail-known", "rolled-back") and not result.get("error"):
         return
 
     kind = "self-update"

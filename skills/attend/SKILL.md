@@ -15,7 +15,7 @@ if [ -z "$WS_REF" ]; then
     echo "ERROR: could not identify caller workspace via cmux identify" >&2
     exit 1
 fi
-~/dev/assistant/bin/back-off.py remove "$WS_REF"
+~/.claude/bin/back-off.py remove "$WS_REF"
 ```
 
 Print the script's stdout verbatim. Possible outputs:

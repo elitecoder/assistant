@@ -27,6 +27,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import plistlib
 import re
 import shutil
 import subprocess
@@ -101,25 +102,19 @@ def latest_sha(slug: str, opener=None) -> str:
 
 
 def _checked_members(tar: tarfile.TarFile) -> tuple[str, list[tarfile.TarInfo]]:
-    """The archive's one top folder and its members, after refusing anything
-    that would land outside that folder or isn't a plain file, folder, or link
-    inside it."""
+    """The archive's one top folder and its members. Refuses `..`, more than
+    one top folder, and anything but plain files and folders: the repo holds
+    no links, and a link could point outside the folder."""
     members = tar.getmembers()
     tops = {m.name.split("/", 1)[0] for m in members}
     if len(tops) != 1:
         raise ValueError(f"the archive has {len(tops)} top folders, not one")
-    top = tops.pop()
     for m in members:
-        parts = Path(m.name).parts
-        if m.name.startswith("/") or ".." in parts:
+        if ".." in Path(m.name).parts:
             raise ValueError(f"the archive entry {m.name!r} points outside its folder")
-        if m.issym():
-            target = os.path.normpath(os.path.join(os.path.dirname(m.name), m.linkname))
-            if m.linkname.startswith("/") or not (target == top or target.startswith(top + "/")):
-                raise ValueError(f"the archive link {m.name!r} points outside its folder")
-        elif not (m.isfile() or m.isdir()):
-            raise ValueError(f"the archive entry {m.name!r} isn't a file, folder, or link")
-    return top, members
+        if not (m.isfile() or m.isdir()):
+            raise ValueError(f"the archive entry {m.name!r} isn't a plain file or folder")
+    return tops.pop(), members
 
 
 def download(slug: str, sha: str, root: Path, opener=None) -> Path:
@@ -149,8 +144,6 @@ def check_tree(tree: Path) -> tuple[bool, str]:
         start = tree / prefix
         paths = [start] if start.is_file() else sorted(p for p in start.rglob("*") if p.is_file())
         for path in paths:
-            if path.is_symlink():
-                continue
             name = path.relative_to(tree).as_posix()
             source = path.read_bytes()
             line = self_update._conflict_marker_line(source.decode("utf-8", errors="replace"))
@@ -182,14 +175,21 @@ def switch(root: Path, sha: str) -> str | None:
     """Point `current` at root/<sha> and `previous` at what `current` was.
     Returns the old commit, or None on a first install."""
     old = target(root / "current")
-    _point(root / "current", sha)
     if old and old != sha:
         _point(root / "previous", old)
+    _point(root / "current", sha)
     return old
 
 
+def restart_failed() -> bool:
+    """install.sh leaves this note when it couldn't restart a running service."""
+    return (Path(os.environ["HOME"]) / ".assistant" / "service-restart-failed").exists()
+
+
 def prune(root: Path) -> list[str]:
-    """Delete downloaded folders that `current` and `previous` don't point at."""
+    """Delete downloaded folders that `current` and `previous` don't point at.
+    install.sh restarts every running service onto a new folder, so none of
+    them still runs from a folder this deletes."""
     keep = {target(root / "current"), target(root / "previous")}
     removed = []
     for path in root.iterdir():
@@ -218,6 +218,33 @@ def run_install(root: Path, *, from_pulse: bool) -> tuple[int, str]:
     return p.returncode, ((p.stderr or p.stdout or "")[-500:] if p.returncode else "")
 
 
+def repoint_services(root: Path) -> list[str]:
+    """Reload each Assistant LaunchAgent whose file runs from `current` but
+    whose loaded copy doesn't, such as a service you started by hand before
+    turning this on. install.sh only reloads the services it manages."""
+    current = str(root / "current")
+    domain = f"gui/{os.getuid()}"
+    moved = []
+    for plist in sorted((Path(os.environ["HOME"]) / "Library/LaunchAgents").glob("com.assistant.*.plist")):
+        try:
+            args = plistlib.loads(plist.read_bytes()).get("ProgramArguments", [])
+        except Exception:  # noqa: BLE001 — a file launchd can't read either is left to install.sh
+            continue
+        if not any(current in str(arg) for arg in args):
+            continue
+        label = plist.stem
+        loaded = subprocess.run(["launchctl", "print", f"{domain}/{label}"],
+                                capture_output=True, text=True)
+        if loaded.returncode != 0 or current in loaded.stdout:
+            continue
+        subprocess.run(["launchctl", "bootout", f"{domain}/{label}"], capture_output=True)
+        started = subprocess.run(["launchctl", "bootstrap", domain, str(plist)],
+                                 capture_output=True, text=True)
+        moved.append(label if started.returncode == 0
+                     else f"{label} (couldn't start: {started.stderr.strip()[:200]})")
+    return moved
+
+
 def _same_file(a: Path, b: Path) -> bool:
     try:
         return a.read_bytes() == b.read_bytes()
@@ -244,6 +271,21 @@ def _short(name: str | None) -> str:
     return (name or "")[:12]
 
 
+def _rejected_key(sha: str) -> str:
+    return f"{sha} python{sys.version_info[0]}.{sys.version_info[1]}"
+
+
+def _install(root: Path, result: dict, marker: dict, sha: str, from_pulse: bool) -> None:
+    rc, err = run_install(root, from_pulse=from_pulse)
+    result.update(installed=True, install_rc=rc)
+    if rc:
+        result["error"] = err or f"install.sh --apply exited {rc}"
+        marker.pop("installed", None)
+    else:
+        marker["installed"] = sha
+    _write_marker(marker)
+
+
 def update(block: dict, *, now: float, from_pulse: bool, opener=None) -> dict:
     """One update attempt. Returns what happened in the shape the pulse logs.
     Never raises for a network, archive, or install failure."""
@@ -253,41 +295,56 @@ def update(block: dict, *, now: float, from_pulse: bool, opener=None) -> dict:
     marker = _read_marker()
     old = target(root / "current")
     result["from_sha"] = _short(old)
+    if old is None and from_pulse:
+        result.update(skipped_reason="not-set-up", error=(
+            "download updates are on, but the first download hasn't run; "
+            "run bin/app_update.py --force from your checkout once"))
+        return result
     try:
         slug = repo_slug(block)
         result["remote"], result["branch"] = slug, BRANCH
         sha = latest_sha(slug, opener)
-    except (OSError, ValueError) as exc:
+    except Exception as exc:  # noqa: BLE001 — any network or reply failure is reported, never raised
         result.update(skipped_reason="fetch-failed", error=f"could not read {BRANCH}: {exc}"[:500])
         return result
     result["to_sha"] = _short(sha)
-    if old == sha and (root / sha).is_dir():
+    if marker.get("held") not in (None, sha):
+        marker.pop("held")
+        _write_marker(marker)
+    if old == sha and (root / sha).is_dir() or marker.get("held") == sha:
+        if marker.get("held") == sha:
+            result["skipped_reason"] = "rolled-back"
+        if old and (marker.get("installed") != old or restart_failed()):
+            _install(root, result, marker, old, from_pulse)
+        if old and not from_pulse and not result.get("error"):
+            result["moved_services"] = repoint_services(root)
         return result
-    if marker.get("rejected") == sha and now - marker.get("rejected_ts", 0) < REJECT_REMIND_SEC:
+    if marker.get("rejected") == _rejected_key(sha) \
+            and now - marker.get("rejected_ts", 0) < REJECT_REMIND_SEC:
         result["skipped_reason"] = "syntax-fail-known"
         return result
     try:
         tree = download(slug, sha, root, opener)
-    except (OSError, ValueError, tarfile.TarError) as exc:
+    except Exception as exc:  # noqa: BLE001 — a cut-off or bad archive is reported, never raised
         result.update(skipped_reason="fetch-failed", error=f"could not download {sha[:12]}: {exc}"[:500])
         return result
     ok, detail = check_tree(tree)
     if not ok:
         shutil.rmtree(tree)
-        marker.update(rejected=sha, rejected_ts=now)
+        marker.update(rejected=_rejected_key(sha), rejected_ts=now)
         _write_marker(marker)
         result.update(skipped_reason="syntax-fail", syntax_error=detail)
         return result
     plist_changed = not (old and _same_file(root / old / SELF_PLIST, tree / SELF_PLIST))
     switch(root, sha)
     result["changed"] = True
-    rc, err = run_install(root, from_pulse=from_pulse)
-    result.update(installed=True, install_rc=rc)
-    if rc:
-        result["error"] = err or f"install.sh --apply exited {rc}"
-    elif from_pulse and plist_changed:
+    _install(root, result, marker, sha, from_pulse)
+    if not result.get("error") and from_pulse and plist_changed:
         result["self_plist_reload_deferred"] = True
-    result["pruned"] = prune(root)
+    if not result.get("error") and not from_pulse:
+        result["moved_services"] = repoint_services(root)
+    if not result.get("error") and not restart_failed():
+        result["pruned"] = prune(root)
     return result
 
 
@@ -295,34 +352,36 @@ def maybe_update(*, now: float | None = None, force: bool = False,
                  interval_sec: int = DEFAULT_INTERVAL_SEC, from_pulse: bool = True,
                  opener=None, log=None) -> dict | None:
     """Throttled update with failure counting, like self_update.maybe_update.
-    None when the setting is off, the hour isn't up, or repeated failures have
-    paused it."""
+    None when the setting is off, the hour isn't up, repeated failures have
+    paused it, or another update is running."""
     block = settings()
     if block is None:
         return None
     now = time.time() if now is None else now
-    marker = _read_marker()
-    last = marker.get("last_attempt_ts")
-    if not force and last and now - last < interval_sec:
-        return None
-    marker["last_attempt_ts"] = now
-    _write_marker(marker)
-    watch = self_update._failwatch()
-    context = f"download:{block.get('repo', DEFAULT_REPO)}"
-    if watch and not force:
-        paused_until = watch.backed_off(self_update.WATCH, now=now, context=context)
-        if paused_until:
-            if log:
-                log.info("self-update: paused after repeating the same failure")
-            return None
     lock = _locked()
     if lock is None:
+        if log:
+            log.info("self-update: another update is running")
         return None
     with lock:
+        marker = _read_marker()
+        last = marker.get("last_attempt_ts")
+        if not force and last and now - last < interval_sec:
+            return None
+        marker["last_attempt_ts"] = now
+        _write_marker(marker)
+        watch = self_update._failwatch()
+        context = f"download:{block.get('repo', DEFAULT_REPO)}"
+        if watch and not force:
+            paused_until = watch.backed_off(self_update.WATCH, now=now, context=context)
+            if paused_until:
+                if log:
+                    log.info("self-update: paused after repeating the same failure")
+                return None
         result = update(block, now=now, from_pulse=from_pulse, opener=opener)
     if log:
         log.info("self-update: %s", json.dumps({k: v for k, v in result.items() if k != "pruned"}))
-    if watch and result["skipped_reason"] != "syntax-fail-known":
+    if watch and (result["skipped_reason"] not in ("syntax-fail-known", "rolled-back") or result.get("error")):
         problem = result.get("error") or result.get("syntax_error")
         if problem:
             watch.record_failure(self_update.WATCH, problem, now=now,
@@ -341,15 +400,19 @@ def rollback(*, from_pulse: bool = False) -> dict:
 
 
 def _rollback(from_pulse: bool) -> dict:
+    """Point `current` at `previous`, and hold back the version it left until
+    main moves past it, so the next hourly update doesn't undo the rollback."""
     root = app_root()
     cur, prev = target(root / "current"), target(root / "previous")
     if not prev or not (root / prev).is_dir():
         return {"rolled_back": False, "error": f"there's no previous version in {root}"}
-    _point(root / "current", prev)
     _point(root / "previous", cur)
-    rc, err = run_install(root, from_pulse=from_pulse)
-    return {"rolled_back": True, "from_sha": _short(cur), "to_sha": _short(prev),
-            "install_rc": rc, **({"error": err} if rc else {})}
+    _point(root / "current", prev)
+    marker = _read_marker()
+    marker["held"] = cur
+    result = {"rolled_back": True, "from_sha": _short(cur), "to_sha": _short(prev)}
+    _install(root, result, marker, prev, from_pulse)
+    return {k: v for k, v in result.items() if k != "installed"}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -370,8 +433,12 @@ def main(argv: list[str] | None = None) -> int:
     else:
         out = maybe_update(force=args.force, interval_sec=DEFAULT_INTERVAL_SEC,
                            from_pulse=False, log=logging.getLogger("app_update"))
+    if out is None:
+        print("Nothing ran: it ran less than an hour ago, another update is running, or repeated "
+              "failures paused it. --force tries anyway, unless another update is running.", file=sys.stderr)
+        return 1
     print(json.dumps(out, indent=2))
-    return 1 if out and out.get("error") else 0
+    return 1 if out.get("error") or out.get("syntax_error") else 0
 
 
 if __name__ == "__main__":

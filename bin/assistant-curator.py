@@ -306,8 +306,26 @@ def cmd_audit(args) -> int:
     return 0
 
 
+APP_ROOT = HOME / ".assistant" / "app"
+
+
+def _downloaded_copy_refusal(name: str) -> str | None:
+    """Why a lesson can't go into the `name` store, when that store is inside a
+    copy that download updates replace; None otherwise."""
+    path = TARGETS[name]["path"]
+    if APP_ROOT.resolve() not in path.resolve().parents:
+        return None
+    return (f"ERROR: Assistant runs from a downloaded copy ({path.parent}), which the next update "
+            f"replaces, so a change to the {name!r} lessons there would be lost. Make it from your "
+            f"checkout instead: <checkout>/bin/assistant-curator.py with the same arguments.")
+
+
 def cmd_write(args) -> int:
     tgt = TARGETS[args.target]
+    refusal = _downloaded_copy_refusal(args.target)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 2
     trigger = (args.trigger or "").strip()
     rule = args.rule.strip()
     if not rule:
@@ -471,6 +489,10 @@ def cmd_rm(args) -> int:
         match = next((L for L in iter_lessons(text) if L["slug"] == args.slug), None)
         if match is None:
             continue
+        refusal = _downloaded_copy_refusal(name)
+        if refusal:
+            print(refusal, file=sys.stderr)
+            return 2
         new_text = text[:match["body_offset"]] + text[match["body_end"]:]
         new_text = re.sub(r"\n{3,}", "\n\n", new_text)
         write_store(path, new_text)
