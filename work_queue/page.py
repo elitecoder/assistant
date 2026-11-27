@@ -502,7 +502,7 @@ def render(snap: dict) -> tuple[str, dict]:
 
 SEARCH = ('<div class="tab-search" id="tab-search-bar"><label for="tab-search">Search this tab <kbd aria-hidden="true">/</kbd>'
           '</label><input id="tab-search" type="search" placeholder="Words on this tab" aria-keyshortcuts="/" '
-          'oninput="filterTab(this.value)" onkeydown="tabSearchKey(event)"><span class="meta" id="tab-search-empty" '
+          'oninput="filterTab(this.value,true)" onkeydown="tabSearchKey(event)"><span class="meta" id="tab-search-empty" '
           'role="status" hidden>Nothing on this tab matches. Press Escape in the box to clear the search.</span></div>')
 
 
@@ -998,14 +998,14 @@ function steps(q){const ol=document.createElement('ol'),d=new Date(q.started),kn
 const Q_ITEMS='.start-list > li, .ready-list > li, .ready-cleared > li, .sf-row, .pr-row, .ap-row, .ag-row',Q_HIT=Q_ITEMS.split(', ').map(x=>x+':not(.q-miss)').join(', ');
 function searchText(el){const c=el.cloneNode(true);c.querySelectorAll('button, textarea, input, .compose, .task-progress, .fb, .fb-extra, .why-box').forEach(x=>x.remove());return c.textContent.toLowerCase()}
 const hits=c=>[...c.querySelectorAll(Q_HIT)].some(el=>getComputedStyle(el).display!=='none');  // a snoozed or hidden match doesn't count
-function filterTab(v){const q=v.trim().toLowerCase();
+function filterTab(v,typed){const q=v.trim().toLowerCase();
  document.querySelectorAll(Q_ITEMS).forEach(el=>el.classList.toggle('q-miss',!!q&&!searchText(el).includes(q)));
  const groups=[...document.querySelectorAll('.sf-lane, .sf-group, .ready, details')],hit=new Set(q?groups.filter(hits):[]);
- groups.forEach(c=>{if(!c.matches('details')||c.matches('.ap-group, .mb-sec'))c.classList.toggle('q-miss',!!q&&!hit.has(c))});
+ groups.forEach(c=>c.classList.toggle('q-miss',!!q&&!hit.has(c)));
  document.querySelectorAll('details').forEach(d=>{if(hit.has(d)){if(!('qWas' in d.dataset))d.dataset.qWas=d.open?'1':'';d.open=true}
   else if('qWas' in d.dataset){d.open=d.dataset.qWas==='1';delete d.dataset.qWas}});
- $('tab-search-empty').hidden=!q||[...document.querySelectorAll(Q_HIT)].some(el=>el.offsetParent!==null);agCount(true);apCounts()}
-function clearSearch(){const s=$('tab-search');if(s&&s.value){s.value='';filterTab('')}}
+ $('tab-search-empty').hidden=!q||[...document.querySelectorAll(Q_HIT)].some(el=>el.offsetParent!==null);agCount(typed);apCounts()}
+function clearSearch(){const s=$('tab-search');if(s&&s.value){s.value='';filterTab('',true)}}
 function tabSearchKey(ev){if(ev.key==='Escape'){clearSearch();ev.target.blur()}}
 document.addEventListener('keydown',ev=>{const s=$('tab-search');if(ev.key!=='/'||ev.metaKey||ev.ctrlKey||ev.altKey||!s)return;
  if(ev.target.closest('input, textarea, select, [contenteditable]'))return;ev.preventDefault();s.focus()});

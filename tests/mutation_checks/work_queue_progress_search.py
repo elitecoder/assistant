@@ -184,7 +184,7 @@ CHECKS = (
     (
         "the search recounts Send and Approve all",
         "work_queue/page.py",
-        ".some(el=>el.offsetParent!==null);agCount(true);apCounts()}",
+        ".some(el=>el.offsetParent!==null);agCount(typed);apCounts()}",
         ".some(el=>el.offsetParent!==null)}",
         SEARCH,
     ),
@@ -198,8 +198,8 @@ CHECKS = (
     (
         "the placeholder page survives a new address",
         "work_queue/page.py",
-        "if(s&&s.value){s.value='';filterTab('')}",
-        "if(s.value){s.value='';filterTab('')}",
+        "if(s&&s.value){s.value='';filterTab('',true)}",
+        "if(s.value){s.value='';filterTab('',true)}",
         PLACEHOLDER,
     ),
     (
@@ -212,8 +212,8 @@ CHECKS = (
     (
         "a search keeps the Apply bar's message",
         "work_queue/page.py",
-        ";agCount(true);apCounts()}",
-        ";agCount(true);renderAp()}",
+        ";agCount(typed);apCounts()}",
+        ";agCount(typed);renderAp()}",
         SEARCH,
     ),
     (
@@ -221,6 +221,20 @@ CHECKS = (
         "work_queue/page.py",
         "if(clear)$('ag-all').checked=false}",
         "}",
+        SEARCH,
+    ),
+    (
+        "a repaint keeps Select all ticked",
+        "work_queue/page.py",
+        ";agCount(typed);apCounts()}",
+        ";agCount(true);apCounts()}",
+        SEARCH,
+    ),
+    (
+        "a group the search can't read hides during a search",
+        "work_queue/page.py",
+        "groups.forEach(c=>c.classList.toggle('q-miss',!!q&&!hit.has(c)));",
+        "groups.forEach(c=>c.classList.toggle('q-miss',!!q&&!hit.has(c)&&!c.matches('.ap-unread')));",
         SEARCH,
     ),
 )

@@ -1555,6 +1555,10 @@ def test_slash_searches_the_tab_you_are_on_by_row_text_and_clears_on_escape_or_a
 
         tab.locator('#tabs .tab[data-t="agents"]').click()
         tab.wait_for_selector('#tabs .tab.on[data-t="agents"]')
+        tab.locator("#ag-all").check()
+        tab.evaluate("paint()")
+        assert tab.is_checked("#ag-all"), "a repaint without a new search keeps Select all ticked"
+        tab.locator("#ag-all").uncheck()
         tab.locator(f'.ag-row[data-key="{pr(16)["key"]}"] .ag-pick').check()
         assert text(tab, "#ag-go") == "Send 1 to agents"
         tab.locator("#tab-search").fill("change 15")
@@ -1598,6 +1602,11 @@ def test_slash_searches_the_tab_you_are_on_by_row_text_and_clears_on_escape_or_a
         tab.press("#tab-search", "Escape")
         assert tab.evaluate(f"(d => !d.open && !('qWas' in d.dataset))(document.querySelector('{section}'))"), \
             "Escape puts it back the way it was"
+        tab.locator('#tabs .tab[data-t="slack-saves"]').click()
+        tab.wait_for_selector('#tabs .tab.on[data-t="slack-saves"]')
+        assert tab.locator(".ap-unread").is_visible()
+        tab.locator("#tab-search").fill("qqzzxx")
+        assert tab.locator(".ap-unread").is_hidden(), "a group with no match hides, even one the search can't read"
         tab.set_viewport_size({"width": 390, "height": 900})
         no_sideways_scroll(tab)
         assert errors == []
