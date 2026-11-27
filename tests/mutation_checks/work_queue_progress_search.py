@@ -237,4 +237,18 @@ CHECKS = (
         "groups.forEach(c=>c.classList.toggle('q-miss',!!q&&!hit.has(c)&&!c.matches('.ap-unread')));",
         SEARCH,
     ),
+    (
+        "Escape or a tab switch unticks Select all",
+        "work_queue/page.py",
+        "s.value='';filterTab('',true)}",
+        "s.value='';filterTab('')}",
+        SEARCH,
+    ),
+    (
+        "a save that can't be read is searched by where it is",
+        "work_queue/page.py",
+        ".ap-row, .ap-urow, .ag-row'",
+        ".ap-row, .ag-row'",
+        SEARCH,
+    ),
 )

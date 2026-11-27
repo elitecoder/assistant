@@ -1569,6 +1569,10 @@ def test_slash_searches_the_tab_you_are_on_by_row_text_and_clears_on_escape_or_a
         tab.locator("#tab-search").fill("")
         assert text(tab, "#ag-go") == "Send 1 to agents", "rows the search hid aren't left picked when it clears"
         assert not tab.is_checked("#ag-all"), "a new search unticks Select all"
+        tab.locator("#tab-search").fill("change 15")
+        tab.locator("#ag-all").check()
+        tab.press("#tab-search", "Escape")
+        assert not tab.is_checked("#ag-all"), "Escape clears the search and unticks Select all"
 
         tab.locator('#tabs .tab[data-t="mailbox"]').click()
         tab.wait_for_selector('#tabs .tab.on[data-t="mailbox"]')
@@ -1606,7 +1610,9 @@ def test_slash_searches_the_tab_you_are_on_by_row_text_and_clears_on_escape_or_a
         tab.wait_for_selector('#tabs .tab.on[data-t="slack-saves"]')
         assert tab.locator(".ap-unread").is_visible()
         tab.locator("#tab-search").fill("qqzzxx")
-        assert tab.locator(".ap-unread").is_hidden(), "a group with no match hides, even one the search can't read"
+        assert tab.locator(".ap-unread").is_hidden(), "a group with no match hides"
+        tab.locator("#tab-search").fill("#general")
+        assert tab.locator(".ap-unread .ap-urow").first.is_visible(), "a save that can't be read is found by where it is"
         tab.set_viewport_size({"width": 390, "height": 900})
         no_sideways_scroll(tab)
         assert errors == []
