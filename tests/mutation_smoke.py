@@ -411,14 +411,14 @@ CHECKS = (
         "mac/sign-app.sh",
         'if [[ -n "$hash" ]] && codesign --force --deep --sign "$hash" ${keychain[@]+"${keychain[@]}"} "$app"; then\n',
         'if false; then\n',
-        "tests/test_mac_signing.py::test_builds_signed_with_the_certificate_keep_one_identity",
+        "tests/test_mac_signing.py::test_sign_app_asks_codesign_for_the_certificate",
     ),
     (
         "the local certificate is made for code signing",
         "mac/make-signing-cert.sh",
         "extendedKeyUsage = critical, codeSigning\n",
         "extendedKeyUsage = critical, serverAuth\n",
-        "tests/test_mac_signing.py::test_builds_signed_with_the_certificate_keep_one_identity",
+        "tests/test_mac_signing.py::test_sign_app_asks_codesign_for_the_certificate",
     ),
 )
 

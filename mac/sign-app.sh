@@ -19,7 +19,7 @@ if [[ -n "$hash" ]] && codesign --force --deep --sign "$hash" ${keychain[@]+"${k
 fi
 codesign --force --deep --sign - "$app"
 if [[ -n "$hash" ]]; then
-  echo "Signed ad hoc: \"$name\" couldn't sign. On macOS 26 or earlier, mark it trusted for code signing (see README.md)." >&2
+  echo "Signed ad hoc: codesign couldn't sign with \"$name\"; see its error above." >&2
 else
   echo "Signed ad hoc: macOS asks for microphone access again after each build. Run ./make-signing-cert.sh once to stop that." >&2
 fi
