@@ -932,3 +932,13 @@ def test_a_launch_agent_that_cant_be_read_is_left_alone(au, tmp_path, launchctl)
     (agents / "com.assistant.gone.plist").symlink_to(tmp_path / "nowhere.plist")
     result = au.maybe_update(now=5000, from_pulse=False, opener=GitHub(OLD))
     assert result["moved_services"] == [] and "error" not in result
+
+
+def test_a_git_marker_with_no_dirty_clock_is_left_as_it_is(pulse, tmp_path, monkeypatch):
+    turn_on(tmp_path)
+    marker = tmp_path / ".assistant/self-update.json"
+    marker.write_text('{"last_attempt_ts": 5}')
+    os.utime(marker, (100, 100))
+    monkeypatch.setitem(sys.modules, "app_update", fake("app_update", None, []))
+    pulse.self_update_pulse(7)
+    assert marker.read_text() == '{"last_attempt_ts": 5}' and marker.stat().st_mtime == 100
