@@ -116,8 +116,8 @@ CHECKS = (
     (
         "nothing is deleted while a service restart is owed",
         AU,
-        '    if not result.get("error") and not restart_failed():\n',
-        '    if not result.get("error"):\n',
+        "        if restart_failed():\n            result[\"error\"]",
+        "        if False:\n            result[\"error\"]",
         T + "test_nothing_is_deleted_while_a_service_restart_is_owed",
     ),
     (

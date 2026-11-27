@@ -358,7 +358,7 @@ def update(block: dict, *, now: float, from_pulse: bool, opener=None) -> dict:
         result["self_plist_reload_deferred"] = True
     if not result.get("error") and not from_pulse:
         result["moved_services"] = repoint_services(root)
-    if not result.get("error") and not restart_failed():
+    if not result.get("error"):
         result["pruned"] = prune(root)
     return result
 
