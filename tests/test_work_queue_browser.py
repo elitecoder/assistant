@@ -1613,6 +1613,8 @@ def test_slash_searches_the_tab_you_are_on_by_row_text_and_clears_on_escape_or_a
         assert tab.locator(".ap-unread").is_hidden(), "a group with no match hides"
         tab.locator("#tab-search").fill("#general")
         assert tab.locator(".ap-unread .ap-urow").first.is_visible(), "a save that can't be read is found by where it is"
+        tab.locator("#tab-search").fill("open in slack")
+        assert tab.locator(".ap-unread").is_hidden(), "its Open in Slack link isn't searched"
         tab.set_viewport_size({"width": 390, "height": 900})
         no_sideways_scroll(tab)
         assert errors == []

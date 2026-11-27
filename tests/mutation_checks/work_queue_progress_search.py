@@ -58,7 +58,7 @@ CHECKS = (
     (
         "search leaves out button labels",
         "work_queue/page.py",
-        "c.querySelectorAll('button, textarea, input, .compose, .task-progress, .fb, .fb-extra, .why-box')",
+        "c.querySelectorAll('button, textarea, input, .compose, .task-progress, .fb, .fb-extra, .why-box, .ap-urow > a')",
         "c.querySelectorAll('textarea')",
         SEARCH,
     ),
@@ -142,8 +142,8 @@ CHECKS = (
     (
         "search leaves out what you told Assistant",
         "work_queue/page.py",
-        ".fb, .fb-extra, .why-box')",
-        ".fb, .why-box')",
+        ".fb, .fb-extra, .why-box, .ap-urow > a')",
+        ".fb, .why-box, .ap-urow > a')",
         SEARCH,
     ),
     (
@@ -249,6 +249,13 @@ CHECKS = (
         "work_queue/page.py",
         ".ap-row, .ap-urow, .ag-row'",
         ".ap-row, .ag-row'",
+        SEARCH,
+    ),
+    (
+        "an unreadable save's Open in Slack link isn't searched",
+        "work_queue/page.py",
+        ".why-box, .ap-urow > a')",
+        ".why-box')",
         SEARCH,
     ),
 )

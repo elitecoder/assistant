@@ -996,7 +996,7 @@ function steps(q){const ol=document.createElement('ol'),d=new Date(q.started),kn
   else li.textContent=label;ol.append(li)});
  return ol}
 const Q_ITEMS='.start-list > li, .ready-list > li, .ready-cleared > li, .sf-row, .pr-row, .ap-row, .ap-urow, .ag-row',Q_HIT=Q_ITEMS.split(', ').map(x=>x+':not(.q-miss)').join(', ');
-function searchText(el){const c=el.cloneNode(true);c.querySelectorAll('button, textarea, input, .compose, .task-progress, .fb, .fb-extra, .why-box').forEach(x=>x.remove());return c.textContent.toLowerCase()}
+function searchText(el){const c=el.cloneNode(true);c.querySelectorAll('button, textarea, input, .compose, .task-progress, .fb, .fb-extra, .why-box, .ap-urow > a').forEach(x=>x.remove());return c.textContent.toLowerCase()}
 const hits=c=>[...c.querySelectorAll(Q_HIT)].some(el=>getComputedStyle(el).display!=='none');  // a snoozed or hidden match doesn't count
 function filterTab(v,typed){const q=v.trim().toLowerCase();
  document.querySelectorAll(Q_ITEMS).forEach(el=>el.classList.toggle('q-miss',!!q&&!searchText(el).includes(q)));
