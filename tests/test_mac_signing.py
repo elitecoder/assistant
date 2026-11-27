@@ -45,7 +45,8 @@ def keychain(tmp_path):
 
 
 def add_certificate(keychain: Path) -> str:
-    made = run(str(MAC / "make-signing-cert.sh"), "--keychain", str(keychain))
+    made = run(str(MAC / "make-signing-cert.sh"), "--keychain", str(keychain),
+               env={"PATH": "/usr/bin:/bin", "HOME": str(keychain.parent)})
     run("security", "set-key-partition-list", "-S", "apple-tool:,apple:", "-s", "-k", "", str(keychain))
     return made
 
@@ -104,8 +105,21 @@ def real_signing(tmp_path, keychain):
 def test_sign_app_asks_codesign_for_the_certificate(tmp_path, keychain):
     add_certificate(keychain)
     path, log = stand_in_codesign(tmp_path, signs=True)
-    assert f'Signed with "{NAME}"' in sign(new_app(tmp_path, 1), keychain, path)
-    assert f"--sign {certificate_hash(keychain)} --keychain {keychain}" in log.read_text()
+    app = new_app(tmp_path, 1)
+    assert f'Signed with "{NAME}"' in sign(app, keychain, path)
+    assert f"--force --deep --sign {certificate_hash(keychain)} --keychain {keychain} {app}\n" in log.read_text()
+
+
+def test_without_a_chosen_keychain_sign_app_searches_the_usual_ones(tmp_path):
+    path, log = stand_in_codesign(tmp_path, signs=True)
+    certificate = "0123456789ABCDEF0123456789ABCDEF01234567"
+    security = tmp_path / "tools/security"
+    security.write_text(f'#!/bin/bash\n[[ "$*" == "find-identity -p codesigning" ]] || exit 9\n'
+                        f'echo \'  1) {certificate} "{NAME}" (CSSMERR_TP_NOT_TRUSTED)\'\n')
+    security.chmod(0o755)
+    app = new_app(tmp_path, 1)
+    run(str(MAC / "sign-app.sh"), str(app), env={"PATH": path})
+    assert f"--force --deep --sign {certificate} {app}\n" in log.read_text()
 
 
 def test_a_long_identity_list_still_finds_the_certificate(tmp_path, keychain):
