@@ -157,6 +157,15 @@ def test_an_api_error_stub_is_not_a_reply(tmp_path):
     assert "after 5 hours away" in out["additionalContext"]
 
 
+def test_your_prompt_saved_in_another_form_does_not_hide_the_gap(tmp_path):
+    out = run(tmp_path, [
+        typed(timedelta(hours=3, minutes=1), "start"),
+        reply(timedelta(hours=3)),
+        typed(timedelta(seconds=1), "<command-message>wassup</command-message>"),
+    ], text="/wassup")
+    assert "after 3 hours away" in out["additionalContext"]
+
+
 def test_a_slash_command_counts_as_you_being_there(tmp_path):
     assert run(tmp_path, [
         reply(timedelta(days=1)),
