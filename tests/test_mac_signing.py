@@ -60,8 +60,12 @@ def add_certificate(keychain: Path) -> str:
             ("valid", ["security", "find-identity", "-v", "-p", "codesigning", str(keychain)], None),
             ("verify", ["security", "verify-cert", "-c", str(certificate), "-p", "codeSign", "-k", str(keychain)], None),
             ("name", ["codesign", "-f", "-s", "Assistant Local Signing", "--keychain", str(keychain), str(probe)], None),
-            ("bare-env", ["codesign", "-f", "-s", "Assistant Local Signing", "--keychain", str(keychain), str(probe)],
-             {"PATH": "/usr/bin:/bin"}),
+            ("search-list", ["security", "list-keychains"], None),
+            ("no-keychain-flag", ["codesign", "-f", "-s", "Assistant Local Signing", str(probe)], None),
+            ("realpath", ["codesign", "-f", "-s", "Assistant Local Signing", "--keychain",
+                          str(keychain.resolve()), str(probe)], None),
+            ("default", ["security", "default-keychain", "-d", "user", "-s", str(keychain)], None),
+            ("after-default", ["codesign", "-f", "-s", "Assistant Local Signing", str(probe)], None),
         ):
             done = subprocess.run(command, capture_output=True, text=True, env=env)
             print(f"DIAG {label}: rc={done.returncode} {done.stdout}{done.stderr}")
