@@ -402,6 +402,53 @@ class TranscriptSignalsTests(unittest.TestCase):
         _, status = self.mod.transcript_signals(str(path))
         self.assertEqual(status, "idle")
 
+    def test_age_counts_from_the_last_conversation_turn(self):
+        path = self._tmp / "t.jsonl"
+        turn = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 4000))
+        later = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 10))
+        path.write_text("\n".join([
+            json.dumps({"type": "assistant", "timestamp": turn,
+                        "message": {"content": [{"type": "text", "text": "done"}]}}),
+            json.dumps({"type": "user", "isMeta": True, "timestamp": later,
+                        "message": {"content": "caveat"}}),
+            json.dumps({"type": "attachment", "timestamp": later}),
+            json.dumps({"type": "cost-state", "timestamp": later}),
+            json.dumps({"type": "user", "timestamp": "not a time",
+                        "message": {"content": "x"}}),
+        ]))
+        age, _ = self.mod.transcript_signals(str(path))
+        self.assertGreaterEqual(age, 3990)
+        self.assertLess(age, 4100)
+
+    def test_age_counts_from_a_copilot_turn_and_not_from_a_subagent_or_a_tool_event(self):
+        path = self._tmp / "events.jsonl"
+        turn = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 4000))
+        later = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 10))
+        path.write_text("\n".join([
+            json.dumps({"type": "assistant.message", "timestamp": turn, "data": {"content": "done"}}),
+            json.dumps({"type": "assistant.message", "timestamp": later,
+                        "data": {"parentToolCallId": "t1", "content": "subagent"}}),
+            json.dumps({"type": "tool.execution_complete", "timestamp": later, "data": {"toolCallId": "t1"}}),
+        ]))
+        age, _ = self.mod.transcript_signals(str(path))
+        self.assertGreaterEqual(age, 3990)
+        self.assertLess(age, 4100)
+
+    def test_a_record_with_no_usable_time_leaves_the_file_time(self):
+        path = self._tmp / "t.jsonl"
+        turn = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 4000))
+        path.write_text("\n".join([
+            json.dumps([{"type": "user", "timestamp": turn}]),
+            json.dumps({"type": "user", "timestamp": 1700000000,
+                        "message": {"content": "x"}}),
+            json.dumps({"type": "assistant", "message": {"content": "y"}}),
+        ]))
+        old = time.time() - 600
+        os.utime(path, (old, old))
+        age, _ = self.mod.transcript_signals(str(path))
+        self.assertGreaterEqual(age, 595)
+        self.assertLess(age, 700)
+
     def test_age_reflects_mtime(self):
         path = self._tmp / "t.jsonl"
         path.write_text("{}")

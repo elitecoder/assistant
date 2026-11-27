@@ -341,6 +341,17 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   trailing period out, and only `http`, `https`, and `file` links are made.
 
 ### Fixed
+- With the Observer turned on, stop rechecking sessions that haven't changed.
+  An offline replay of the session checks from 2026-11-12 put about 57% of
+  them (223 of 388) on sessions with no new conversation. The fingerprint
+  that decides when to recheck now:
+  - Ignores the sidebar number at the end of a workspace title, which shifts
+    when other workspaces open or close.
+  - Hashes the plain-text conversation the check reads instead of the file's
+    raw bytes, so attachments, cost notes, and mode changes don't count.
+- Count a session's idle time from its last conversation turn, not the
+  transcript file's modified time. Claude Code writes bookkeeping records after
+  a turn, which kept moving sessions back under the 30-minute idle mark.
 - In Pro mode, a task Assistant made itself (its id looks like `td-auto-1a2b3c4d`) is started
   again. Before, Assistant opened a session for it, refused to type into it, parked the task and
   paused every other task's start, with a card blaming the session's name. It now types the
