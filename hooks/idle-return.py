@@ -88,7 +88,7 @@ def read_lines(path, limit):
 
 def humanize(minutes):
     if minutes < 120:
-        return f"{int(minutes)} minutes"
+        return f"{int(minutes)} minute{'' if int(minutes) == 1 else 's'}"
     hours = minutes / 60
     return f"{hours:.0f} hours" if hours < 48 else f"{hours / 24:.1f} days"
 

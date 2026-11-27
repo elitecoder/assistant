@@ -81,6 +81,11 @@ def test_the_gap_is_configurable(tmp_path):
     assert "after 20 minutes away" in out["additionalContext"]
 
 
+def test_a_one_minute_gap_reads_as_singular(tmp_path):
+    out = run(tmp_path, [reply(timedelta(seconds=70))], env={"ASSISTANT_IDLE_RETURN_MINUTES": "1"})
+    assert "after 1 minute away" in out["additionalContext"]
+
+
 def test_the_prompt_being_answered_is_not_counted_as_activity(tmp_path):
     out = run(tmp_path, [reply(timedelta(hours=5)), prompt(timedelta(0), "yes")], text="yes")
     assert "after 5 hours away" in out["additionalContext"]
