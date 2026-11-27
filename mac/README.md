@@ -273,6 +273,20 @@ cd mac
 ./build-app.sh --install  # also copies it to ~/Applications
 ```
 
+macOS remembers microphone and speech access by the app's signature. To keep
+that signature the same across builds, create a local signing certificate once:
+
+```bash
+./make-signing-cert.sh
+```
+
+It adds "Assistant Local Signing" to your login keychain. From then on,
+`build-app.sh` signs every build with it. The next build shows a keychain
+prompt: enter your Mac password and select **Always Allow**. The next launch
+asks for microphone access one last time. Without the certificate, the build
+signs ad hoc and macOS asks again after every rebuild. If `codesign` can't use
+the certificate, the build also signs ad hoc and prints why.
+
 To start it with your Mac, select **Open at login** in the panel.
 
 ## How it finds sessions

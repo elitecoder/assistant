@@ -399,6 +399,27 @@ CHECKS = (
         '',
         'tests/test_pro_mode.py::test_installer_modes_and_skills',
     ),
+    (
+        "build-app.sh signs through sign-app.sh",
+        "mac/build-app.sh",
+        './sign-app.sh "$app"\n',
+        'codesign --force --deep --sign - "$app"\n',
+        "tests/test_mac_signing.py::test_build_app_signs_with_the_certificate",
+    ),
+    (
+        "sign-app.sh uses the local certificate when it exists",
+        "mac/sign-app.sh",
+        'if [[ -n "$hash" ]] && codesign --force --deep --sign "$hash" ${keychain[@]+"${keychain[@]}"} "$app"; then\n',
+        'if false; then\n',
+        "tests/test_mac_signing.py::test_sign_app_asks_codesign_for_the_certificate",
+    ),
+    (
+        "the local certificate is made for code signing",
+        "mac/make-signing-cert.sh",
+        "extendedKeyUsage = critical, codeSigning\n",
+        "extendedKeyUsage = critical, serverAuth\n",
+        "tests/test_mac_signing.py::test_sign_app_asks_codesign_for_the_certificate",
+    ),
 )
 
 
