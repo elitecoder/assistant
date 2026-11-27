@@ -6,14 +6,15 @@ set -euo pipefail
 app="$1"
 name="Assistant Local Signing"
 find=(security find-identity -p codesigning)
-sign=(codesign --force --deep --sign "$name")
+keychain=()
 if [[ -n "${ASSISTANT_SIGN_KEYCHAIN:-}" ]]; then
   find+=("$ASSISTANT_SIGN_KEYCHAIN")
-  sign+=(--keychain "$ASSISTANT_SIGN_KEYCHAIN")
+  keychain=(--keychain "$ASSISTANT_SIGN_KEYCHAIN")
 fi
 identities="$("${find[@]}")"
-if grep -q "\"$name\"" <<<"$identities"; then
-  "${sign[@]}" "$app"
+hash="$(sed -nE "s/^ *[0-9]+\) ([0-9A-F]{40}) \"$name\".*/\1/p" <<<"$identities" | head -n 1)"
+if [[ -n "$hash" ]]; then
+  codesign --force --deep --sign "$hash" ${keychain[@]+"${keychain[@]}"} "$app"
   echo "Signed with \"$name\""
 else
   codesign --force --deep --sign - "$app"

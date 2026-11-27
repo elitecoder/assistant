@@ -6,7 +6,11 @@
 set -euo pipefail
 name="Assistant Local Signing"
 keychain="$HOME/Library/Keychains/login.keychain-db"
-if [[ "${1:-}" == "--keychain" ]]; then keychain="$2"; fi
+case "$#:${1:-}" in
+  0:) ;;
+  2:--keychain) keychain="$2" ;;
+  *) echo "Usage: $0 [--keychain PATH]" >&2; exit 2 ;;
+esac
 
 identities="$(security find-identity -p codesigning "$keychain")"
 if grep -q "\"$name\"" <<<"$identities"; then

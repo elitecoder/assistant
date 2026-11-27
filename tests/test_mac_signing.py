@@ -6,6 +6,7 @@ release build runs.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -36,7 +37,12 @@ def keychain(tmp_path):
     path = tmp_path / "test.keychain-db"
     run("security", "create-keychain", "-p", "", str(path))
     run("security", "unlock-keychain", "-p", "", str(path))
+    searched = run("security", "list-keychains", "-d", "user").split()
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        run("security", "list-keychains", "-d", "user", "-s", str(path), *[k.strip('"') for k in searched])
     yield path
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        run("security", "list-keychains", "-d", "user", "-s", *[k.strip('"') for k in searched])
     subprocess.run(["security", "delete-keychain", str(path)], capture_output=True)
 
 
@@ -89,6 +95,15 @@ def test_making_the_certificate_twice_keeps_the_first(tmp_path, keychain):
     first = signed_app(tmp_path, 1, keychain)
     assert "already" in add_certificate(keychain)
     assert signed_app(tmp_path, 2, keychain) == first
+
+
+def test_the_setup_refuses_arguments_it_does_not_understand(tmp_path, keychain):
+    for args in (["--keychain=" + str(keychain)], ["--keychian", str(keychain)], ["--keychain"]):
+        done = subprocess.run([str(MAC / "make-signing-cert.sh"), *args], capture_output=True, text=True,
+                              env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path)})
+        assert done.returncode == 2, args
+        assert "Usage" in done.stderr
+    assert "Assistant Local Signing" not in run("security", "find-identity", "-p", "codesigning", str(keychain))
 
 
 def test_build_app_signs_with_the_certificate(tmp_path, keychain):
