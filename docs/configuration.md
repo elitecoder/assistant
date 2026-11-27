@@ -17,6 +17,7 @@ work. Every setting below is a deliberate edit you make yourself.
 | Copilot thinking effort | the shared `llm.droid.reasoning_effort` | `llm.copilot.reasoning_effort` (`off`, `high`, or `max`), or `<FEATURE>_COPILOT_REASONING_EFFORT` | How hard Copilot thinks on background jobs. A model that refuses the setting runs without it. |
 | Agent binaries | found on `PATH` | `CLAUDE_BIN`, `COPILOT_BIN`, `DROID_BIN` | Full path to an agent's CLI when it isn't on `PATH`. For an npm Copilot install, background jobs run its standalone build, so they don't need Node. |
 | Log size limit | Trim a log past 20 MB to its last 5 MB, after a 24-hour notice | `"logs": {"cap_mb": 20, "keep_mb": 5}` in `~/.assistant/config.json`, alongside your existing keys | Every five minutes the Assistant trims the logs in `~/.assistant/logs`, the `.log` files in `~/.assistant`, `~/.assistant/comms/comms-listen.log`, `~/.claude/logs/workspace-watcher.log`, and `~/.claude/cache/todo-server.log` and `.err`. Both values are in megabytes. A log past `cap_mb` keeps its last `keep_mb` from a line boundary and the older lines are deleted; there is no backup copy. Services keep writing without a restart; a line written during a trim can be lost. **Notice period:** with no `logs` entry, the first time a log is over the limit nothing is trimmed and the dashboard shows a card saying what will be cut and when; trimming starts 24 hours later, with no further notice. A `logs` entry skips the wait. `"cap_mb": 0` turns trimming off. **Add the entry to the file, don't replace it**; for example `{"mode": "pro", "logs": {"cap_mb": 0}}`, then check it with `python3 -m json.tool ~/.assistant/config.json`. If the file exists but can't be read, or a `logs` value isn't a number of 0 or more (a number in quotes counts), trimming stays off and the log says why, once a day. Only a missing file or a missing `logs` key uses the defaults. While a setting can't be read, an amber notice at the top of the dashboard (and a card under **Awaiting input**) says what is wrong and that trimming is off; it goes away once the setting is fixed. If the Assistant can't save its start time in `~/.assistant/log-cap-state.json`, the same bar says trimming is waiting and to check that the folder can be written to. The notice is given once, before trimming first starts; a log that later grows back over the limit is trimmed without a second notice. `keep_mb` is never larger than `cap_mb`. It never touches `.json`, `.jsonl`, or lock files. |
+| Update by download | Off: the pulse updates with git in your checkout | `~/.assistant/config.json` → `{"self_update": {"download": true}}` | The pulse downloads main from GitHub to `~/.assistant/app/` instead, and never runs git. See [Update by download, without git](#update-by-download-without-git). |
 | Local record | On, keeps 90 days, up to 200 MB | `~/.assistant/config.json` → `{"telemetry": {"enabled": true, "keep_days": 90, "max_mb": 200}}` | Assistant keeps a record of what it did, on your Mac only. `enabled` must be `true` to record; anything else turns it off and creates nothing, and so does a `config.json` that can't be read, until you fix it (the pulse log says so). `keep_days` is 1 to 3650 and `max_mb` is 1 to 100000. A setting that can't be read never deletes anything, and the pulse log says so. See [Telemetry](telemetry.md). |
 
 ## Observer
@@ -42,6 +43,94 @@ To turn the Observer on, do both of these:
 To turn it off again, set `"enabled"` to `false` or remove the `"observer"`
 key. `./bin/assistant-doctor.py` and the dashboard's **Settings and background
 services** show whether it's on.
+
+## Update by download, without git
+
+By default, the pulse updates Assistant with git inside your checkout, about
+once an hour. You can instead have it download main from GitHub, so it runs no
+git and leaves your checkout alone. This is off by default.
+
+To turn it on:
+
+1. Add `"self_update": {"download": true}` to `~/.assistant/config.json`,
+   alongside your existing keys. Only the JSON value `true` turns it on.
+2. From your checkout, run `python3 bin/app_update.py --force` with the Python
+   the services use (3.11 or newer). It downloads main to
+   `~/.assistant/app/<commit>/`, points `~/.assistant/app/current` at it, and
+   runs `install.sh --apply` from `current`. That points `~/.claude/bin`, the
+   skills, and every LaunchAgent at `current`, and reloads any Assistant
+   service that's still loaded from your checkout.
+
+The pulse never updates while it still runs from your checkout, so it never
+makes that first download itself. Until you run step 2, the dashboard says so.
+The Slack session moves to the new folder before it answers its next message.
+
+From then on, about once an hour, the pulse:
+
+- asks the GitHub API for main's newest commit, with no sign-in;
+- when it's new, downloads that commit's archive from codeload.github.com;
+- refuses the commit, and keeps the version it has, if the archive holds
+  anything but plain files and folders, if `install.sh`, `bin/pulse.py`, or
+  `bin/app_update.py` is missing, if a file Assistant runs or installs has a
+  conflict marker, if a Python file won't parse, or if the new copy's updater
+  won't start;
+- points `previous` at the version it has and `current` at the new folder,
+  runs `install.sh --apply`, which restarts every running Assistant service
+  onto the new folder, and then deletes every other downloaded folder. The
+  Slack session moves before it answers its next message.
+
+A failed install or service restart is tried again on the next run, and
+nothing is deleted until it works.
+
+Download updates don't support the opt-in single-process daemon
+(`com.mukul.assistant-daemon`), which runs the pulse inside itself and can't be
+restarted by its own update. While it's running, every update stops and says
+so. Its LaunchAgent file is installed in `~/Library/LaunchAgents`, so if macOS
+starts it at login, stop it for good with `launchctl disable
+gui/$UID/com.mukul.assistant-daemon` and `launchctl bootout
+gui/$UID/com.mukul.assistant-daemon`.
+
+To go back one version, run `python3 ~/.assistant/app/previous/bin/app_update.py
+--rollback`, which works even when the current version's updater is broken.
+The rollback holds while main stays on the version you left; once main moves to
+a newer commit, the next update installs that one. To undo a rollback, run it
+again, or run `bin/app_update.py --force`, which ends the hold and goes to main
+(its output says `ended_hold`).
+To update from a fork, add `"repo": "owner/name"`.
+
+While it's on:
+
+- Lessons for the Observer, the Strategist, and the Assistant repo can't be
+  saved into the downloaded copy, because the next update replaces it. The
+  lessons tool refuses them and says to save them from your checkout, where
+  they reach the live install once they're merged into main. Lessons in
+  `~/.claude/CLAUDE.md` work as before.
+- Edits made through `~/.claude/skills/<name>` or
+  `~/.claude/assistant-operating-guide.md` land in the downloaded copy and are
+  lost at the next update. Edit skills in your checkout and merge them instead.
+- If an update breaks the updater, the dashboard shows the error once an hour.
+  If it breaks the pulse before the update step, nothing shows on the
+  dashboard and updates stop. Either way, roll back with the command above, or
+  run `bin/app_update.py --force` from your checkout.
+- Semantic memory search uses plain word matching, because the downloaded copy
+  has no `.venv-mem0`.
+- The Slack reactor installs its npm packages again the first time it starts
+  from each new version.
+- The GitHub API allows 60 requests an hour from one address without sign-in.
+  On a shared network, a rate limit shows as a failed update.
+
+To return to git updates:
+
+1. Set `"download"` to `false`.
+2. In your checkout, run `git pull`, then `./install.sh --apply`, so everything
+   points at the checkout again.
+3. Log out and back in, so services you started by hand reload from the
+   checkout.
+4. Delete `~/.assistant/app` and `~/.assistant/app-update.json` when you no
+   longer need them.
+
+Until step 2 runs, the pulse runs no git updates from the downloaded copy, and
+the dashboard says what to do once a day.
 
 ## Background jobs that are off by default
 

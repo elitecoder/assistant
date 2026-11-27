@@ -995,14 +995,21 @@ fi
 # leaves a note that the dashboard shows and the hourly update retries.
 CODE_STAMP="$HOME_DIR/.assistant/service-code.sha256"
 RESTART_NOTE="$HOME_DIR/.assistant/service-restart-failed"
-CODE_SHA="$(cd "$REPO_ROOT" && find bin src/assistant slack-reactor/src work_queue -type f \( -name '*.py' -o -name '*.sh' -o -name '*.js' \) \
-    | LC_ALL=C sort | xargs shasum -a 256 | shasum -a 256 | cut -d' ' -f1)"
+# The real folder counts too: with download updates, every update is a new
+# folder, and a service left running from an old one would lose it to pruning.
+CODE_SHA="$(cd "$REPO_ROOT" && { pwd -P; find bin src/assistant slack-reactor/src work_queue -type f \( -name '*.py' -o -name '*.sh' -o -name '*.js' \) \
+    | LC_ALL=C sort | xargs shasum -a 256; } | shasum -a 256 | cut -d' ' -f1)"
 if [[ "$(cat "$CODE_STAMP" 2>/dev/null || true)" != "$CODE_SHA" ]]; then
     failed_labels=()
     for label in com.assistant.assistant-todo-server com.assistant.work-queue com.assistant.connector-{github,gmail,gcal,slack,outlook} \
-            com.assistant.{assistant-comms,workspace-watcher,slack-reactor,session-context-watcher,cmux-ws-numberer}; do
+            com.assistant.{assistant-comms,workspace-watcher,slack-reactor,session-context-watcher,cmux-ws-numberer} \
+            com.mukul.assistant-{cmux-watcher,daemon}; do
         [[ " ${CHANGED_LABELS[*]:-} " == *" $label "* ]] && continue
         launchctl print "gui/$UID/$label" 2>/dev/null | grep -q "state = running" || continue
+        if [[ "${ASSISTANT_SELF_UPDATE:-0}" == "1" && "$label" == "com.mukul.assistant-daemon" ]]; then
+            note "skip restart of $label (this update runs inside it; restart it by hand)"
+            continue
+        fi
         if [[ $APPLY -eq 0 ]]; then
             note "would restart $label (its code changed)"
         elif launchctl kickstart -k "gui/$UID/$label" >/dev/null 2>&1; then

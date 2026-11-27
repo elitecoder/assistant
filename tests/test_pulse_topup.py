@@ -305,11 +305,14 @@ def test_self_update_error_no_reason_failed(mod, home):
 def test_self_update_maybe_update_raises_is_caught(mod, home):
     _inject_self_update(mod, None, raises=RuntimeError("boom"))
     try:
-        # Must NOT raise; must NOT write a ledger entry.
+        # Must NOT raise; writes one failed ledger row, at most once an hour.
         mod.self_update_pulse(3)
+        mod.self_update_pulse(4)
     finally:
         sys.modules.pop("self_update", None)
-    assert _read_ledger(home) == []
+    (row,) = _read_ledger(home)
+    assert row["outcome"] == "failed"
+    assert row["evidence"] == "self-update crashed: the updater stopped with RuntimeError: boom"
 
 
 # ─── drain_inbox unlink-failure edge ──────────────────────────────────────────

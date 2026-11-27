@@ -127,6 +127,17 @@ def observer_enabled() -> bool:
     return isinstance(observer, dict) and observer.get("enabled") is True
 
 
+
+def download_updates() -> dict | None:
+    """The self_update block when config.json has {"self_update": {"download":
+    true}}: Assistant then updates by downloading main, not with git. None for
+    a missing or unreadable file, a missing key, or any other value."""
+    try:
+        block = _read_config().get("self_update")
+    except (OSError, ValueError):
+        return None
+    return block if isinstance(block, dict) and block.get("download") is True else None
+
 # The background jobs that are off until someone turns them on in config.json.
 # `decisions` is the job that turns GitHub and session events into the decision
 # list. The setting is the file only: the dashboard is drawn by a different

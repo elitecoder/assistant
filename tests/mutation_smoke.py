@@ -4332,8 +4332,8 @@ CHECKS = (
     (
         'the self-update command names the Python the services use',
         'bin/render-assistant-page.py',
-        '{shlex.quote(sys.executable)} {shlex.quote(str(REPO',
-        "{shlex.quote('python3')} {shlex.quote(str(REPO",
+        '{shlex.quote(sys.executable)} {shlex.quote(str(script',
+        "{shlex.quote('python3')} {shlex.quote(str(script",
         'tests/test_renderer_failures.py::test_a_paused_self_update_gives_a_command_that_works_when_pasted',
     ),
     (
@@ -4346,8 +4346,8 @@ CHECKS = (
     (
         'the self-update command quotes the script path',
         'bin/render-assistant-page.py',
-        "{shlex.quote(str(REPO / 'bin/self_update.py'))} --force",
-        "{REPO / 'bin/self_update.py'} --force",
+        "{shlex.quote(str(script))} --force",
+        "{script} --force",
         'tests/test_renderer_failures.py::test_the_command_quotes_an_install_folder_with_a_space',
     ),
     (

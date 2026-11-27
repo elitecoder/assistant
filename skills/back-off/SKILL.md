@@ -18,7 +18,7 @@ if [ -z "$WS_REF" ] || [ -z "$WS_ID" ]; then
     exit 1
 fi
 REASON="${*:-User pressed /back-off}"
-~/dev/assistant/bin/back-off.py add "$WS_REF" "$REASON" --workspace-id "$WS_ID"
+~/.claude/bin/back-off.py add "$WS_REF" "$REASON" --workspace-id "$WS_ID"
 ```
 
 Pass through any argument the user supplied — that becomes the reason logged on the back-off entry. If they passed nothing, default to a generic message.
@@ -37,7 +37,7 @@ The overview uses the UUID to confirm **Parked** belongs to this workspace.
 Legacy or mismatched records need confirmation. The existing automation filter
 still uses workspace references; this change protects the dashboard's interpretation.
 
-To undo, run `/attend` from inside this same workspace, or `~/dev/assistant/bin/back-off.py remove <ws_ref>` from anywhere.
+To undo, run `/attend` from inside this same workspace, or `~/.claude/bin/back-off.py remove <ws_ref>` from anywhere.
 
 ## What this is NOT
 

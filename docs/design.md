@@ -153,6 +153,10 @@ draw corrections get downgraded to `muted` by `bin/tools/pattern-feedback.py`.
 
 ## Gotchas
 
+- **Self-update can skip git.** With `{"self_update": {"download": true}}`,
+  `bin/app_update.py` downloads main to `~/.assistant/app/<commit>/` and
+  switches `current` in one step. See
+  [Update by download](configuration.md#update-by-download-without-git).
 - **Self-update refuses a dirty or ahead tree.** `bin/self_update.py` only
   fast-forwards. A dirty tree is reported, never overwritten.
 - **Self-update clears a stale git lock.** A `.git/index.lock` older than 10

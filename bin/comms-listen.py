@@ -255,7 +255,7 @@ _spawn_failed_at = 0.0
 
 
 def _warm_session(paths: comms_lib.Paths, *, respawn_on_stale: bool = False,
-                  replace_ws: str | None = None) -> tuple[dict | None, str]:
+                  replace_ws: str | None = None, respawn_moved: bool = False) -> tuple[dict | None, str]:
     """The live warm-session record and how it was obtained, spawning one if
     none is alive.
 
@@ -300,6 +300,8 @@ def _warm_session(paths: comms_lib.Paths, *, respawn_on_stale: bool = False,
                 elif respawn_on_stale and not comms_session.warm_session_alias_is_current(sess):
                     why = (f"claude alias changed ({sess.get('alias') or 'claude'} → "
                            f"{comms_session.agent_session.claude_alias()})")
+                elif respawn_moved and not comms_session.warm_session_folder_is_current(sess):
+                    why = f"code folder changed ({sess.get('cwd')} → {comms_session.DISPATCH_CWD})"
                 else:
                     return sess, SESSION_ALIVE
             else:
@@ -320,10 +322,13 @@ def _warm_session(paths: comms_lib.Paths, *, respawn_on_stale: bool = False,
         return None, SESSION_NONE
 
 
-def ensure_warm_session(paths: comms_lib.Paths, *, respawn_on_stale: bool = False) -> dict | None:
+def ensure_warm_session(paths: comms_lib.Paths, *, respawn_on_stale: bool = False,
+                        respawn_moved: bool = False) -> dict | None:
     """The live warm-session record, spawning one if none is alive (see
-    _warm_session)."""
-    return _warm_session(paths, respawn_on_stale=respawn_on_stale)[0]
+    _warm_session). respawn_moved restarts a session whose code folder moved;
+    only the path that is about to feed it a message passes it, so a restart
+    of this listener never cuts off a reply in progress."""
+    return _warm_session(paths, respawn_on_stale=respawn_on_stale, respawn_moved=respawn_moved)[0]
 
 
 USER_ID = re.compile(r"[UW][A-Z0-9]{2,}")  # a member id; W... is an Enterprise Grid one
@@ -660,7 +665,7 @@ def _deliver_pending(paths: comms_lib.Paths, channel: str, env: dict | None) -> 
     if not fresh:
         _restart_notice_path(paths, channel).unlink(missing_ok=True)
         return True
-    sess, how = _warm_session(paths, respawn_on_stale=True)
+    sess, how = _warm_session(paths, respawn_on_stale=True, respawn_moved=True)
     delivered = False
     if sess and how != SESSION_UNREACHABLE:
         try:

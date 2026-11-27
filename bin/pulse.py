@@ -79,6 +79,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 BIN = REPO / "bin"
 HOME = Path(os.environ.get("HOME", str(Path.home())))
+DOWNLOADED_COPY = (HOME / ".assistant" / "app").resolve()
 
 # Semantic model tiers (Keel M8): callers name a TIER, not a provider id — the
 # resolver picks the id the live backend (Bedrock/Anthropic/Vertex) expects.
@@ -525,6 +526,54 @@ def load_state() -> dict:
 
 # ─── steps ──────────────────────────────────────────────────────────────────
 
+DOWNLOAD_OFF_NOTED = ASSISTANT_DIR / "app-update-off-noted"
+SELF_UPDATE_CRASH_NOTED = ASSISTANT_DIR / "self-update-crash-noted"
+GIT_UPDATE_MARKER = ASSISTANT_DIR / "self-update.json"
+
+
+def _due(stamp: Path, now: float, every: float) -> bool:
+    """True, and restamps, when `stamp` is older than `every` seconds or missing."""
+    try:
+        if now - stamp.stat().st_mtime < every:
+            return False
+    except OSError:
+        pass
+    stamp.touch()
+    os.utime(stamp, (now, now))
+    return True
+
+
+def _download_off_result(now: float | None = None) -> dict | None:
+    """Once a day, the problem of running from a downloaded copy with download
+    updates off. The git update must not run there."""
+    if not _due(DOWNLOAD_OFF_NOTED, time.time() if now is None else now, 86400):
+        return None
+    broken = mode.config_error()
+    if broken:
+        why = (f"download updates are paused because config.json can't be read ({broken}); "
+               "fix the file and they resume")
+    else:
+        why = ("Assistant runs from a downloaded copy, but download updates are off; to go back "
+               "to git updates, run install.sh --apply from your checkout")
+    return {"attempted": True, "skipped_reason": "download-off", "error": why}
+
+
+def _forget_git_dirty_clock() -> None:
+    """Drop the git updater's dirty-checkout clock, so turning download updates
+    off later never counts the time they were on toward an auto-stash."""
+    try:
+        marker = json.loads(GIT_UPDATE_MARKER.read_text())
+    except (OSError, ValueError):
+        return
+    if isinstance(marker, dict) and marker.pop("dirty_since_ts", None) is not None:
+        tmp = GIT_UPDATE_MARKER.with_suffix(".tmp")
+        try:
+            tmp.write_text(json.dumps(marker, indent=2))
+            tmp.replace(GIT_UPDATE_MARKER)
+        except OSError as e:
+            log.warning("couldn't clear the git updater's dirty clock: %s", e)
+
+
 def self_update_pulse(pulse_idx: int) -> None:
     """Step 0: pull + re-install the running system from git (throttled).
 
@@ -535,11 +584,21 @@ def self_update_pulse(pulse_idx: int) -> None:
     result is silent — no ledger spam every pulse."""
     try:
         sys.path.insert(0, str(BIN))
-        import self_update  # noqa: PLC0415
-        result = self_update.maybe_update(REPO, log=log)
+        if mode.download_updates() is not None:
+            _forget_git_dirty_clock()
+            import app_update  # noqa: PLC0415
+            result = app_update.maybe_update(log=log)
+        elif DOWNLOADED_COPY in REPO.parents:
+            result = _download_off_result()
+        else:
+            import self_update  # noqa: PLC0415
+            result = self_update.maybe_update(REPO, log=log)
     except Exception as e:  # noqa: BLE001 — self-update must never break the pulse
         log.exception("self-update raised (ignored): %s", e)
-        return
+        if not _due(SELF_UPDATE_CRASH_NOTED, time.time(), 3600):
+            return
+        result = {"attempted": True, "skipped_reason": "crashed",
+                  "error": f"the updater stopped with {type(e).__name__}: {e}"}
 
     if result is None:
         return  # throttled — nothing to report
@@ -563,7 +622,7 @@ def self_update_pulse(pulse_idx: int) -> None:
     changed = result.get("changed")
     # Silent path: attempted, nothing to do, no problem — or a refused commit
     # whose failure was recorded in the last day.
-    if not changed and reason in (None, "syntax-fail-known") and not result.get("error"):
+    if not changed and reason in (None, "syntax-fail-known", "rolled-back") and not result.get("error"):
         return
 
     kind = "self-update"
@@ -571,8 +630,12 @@ def self_update_pulse(pulse_idx: int) -> None:
         files = result.get("files_changed", [])
         installed = result.get("installed")
         outcome = "verified"
-        evidence = (f"pulled {result.get('from_sha')}..{result.get('to_sha')} "
-                    f"({len(files)} file(s)); install={'ran' if installed else 'not-needed'}")
+        if result.get("source") == "download":
+            evidence = (f"downloaded {result.get('from_sha') or 'first version'}.."
+                        f"{result.get('to_sha')}; install={'ran' if installed else 'not-needed'}")
+        else:
+            evidence = (f"pulled {result.get('from_sha')}..{result.get('to_sha')} "
+                        f"({len(files)} file(s)); install={'ran' if installed else 'not-needed'}")
         if result.get("stashed"):
             # An aged-out dirty tree was auto-stashed before the pull. Make the
             # recovery path loud so the operator knows their work is parked.
@@ -580,6 +643,9 @@ def self_update_pulse(pulse_idx: int) -> None:
         if result.get("install_rc") not in (None, 0):
             outcome = "failed"
             evidence += f" install_rc={result.get('install_rc')}"
+        elif result.get("error"):
+            outcome = "failed"
+            evidence += f"; {result['error']}"[:300]
         if result.get("self_plist_reload_deferred"):
             evidence += "; pulse-plist reload deferred"
         key = f"self-update-{result.get('to_sha', pulse_idx)}"

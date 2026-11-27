@@ -1906,8 +1906,8 @@ def test_status_shows_the_slack_sessions_agent_without_job_settings(home, capsys
 
 def _live_warm_session(monkeypatch, listen, agent):
     rec = {"closed": [], "spawned": []}
-    sess = {"ws_ref": "workspace:18", "surface_ref": "surface:18", "cwd": "/c",
-            "agent": agent, "model": None}
+    sess = {"ws_ref": "workspace:18", "surface_ref": "surface:18",
+            "cwd": str(listen.comms_session.DISPATCH_CWD), "agent": agent, "model": None}
     monkeypatch.setattr(listen.comms_session, "read_session", lambda p: sess)
     monkeypatch.setattr(listen.comms_session, "workspace_state",
                         lambda p, ref: listen.comms_session.ALIVE)
@@ -3187,6 +3187,24 @@ def test_a_live_claude_slack_session_restarts_when_the_alias_changes(
     sess["alias"] = recorded
     listen.ensure_warm_session(cl.Paths.from_env({"HOME": str(home)}), respawn_on_stale=True)
     assert rec["closed"] == (["workspace:18"] if respawned else [])
+
+
+@pytest.mark.parametrize("folder,respawned", [("other", True), ("same", False), (None, False)])
+def test_a_live_slack_session_restarts_when_assistant_moves_to_a_new_folder(
+        home, monkeypatch, tmp_path, folder, respawned):
+    listen = _load(BIN / "comms-listen.py", f"seam_listen_folder_{folder}")
+    _pick(home, "claude")
+    rec = _live_warm_session(monkeypatch, listen, "claude")
+    sess = listen.comms_session.read_session(None)
+    sess["cwd"] = {"other": str(tmp_path / "app/old-commit"), "same": str(listen.comms_session.DISPATCH_CWD),
+                   None: None}[folder]
+    logged = []
+    monkeypatch.setattr(listen, "log", logged.append)
+    listen.ensure_warm_session(cl.Paths.from_env({"HOME": str(home)}), respawn_on_stale=True)
+    assert rec["closed"] == [], "the listener's start never cuts off a reply"
+    listen.ensure_warm_session(cl.Paths.from_env({"HOME": str(home)}), respawn_on_stale=True, respawn_moved=True)
+    assert rec["closed"] == (["workspace:18"] if respawned else [])
+    assert any("code folder changed" in line for line in logged) == respawned
 
 
 def test_a_copilot_slack_session_ignores_the_claude_alias(home):

@@ -566,9 +566,15 @@ def _failure_line(row: dict, now: float) -> tuple[int, str]:
     if until and component == "self-update":
         # sys.executable is the interpreter the services run under: it is the
         # one rendering this page.
-        command = f"{shlex.quote(sys.executable)} {shlex.quote(str(REPO / 'bin/self_update.py'))} --force"
-        html += (e(f" It tries again by itself at {_failure_time(until, now)}, or as soon as the branch "
-                   "or remote it updates from changes. To try now, run ")
+        if mode.download_updates():
+            current = HOME / ".assistant/app/current/bin/app_update.py"
+            script = current if current.exists() else REPO / "bin/app_update.py"
+            moves = "or as soon as the repo it downloads from changes"
+        else:
+            script = REPO / "bin/self_update.py"
+            moves = "or as soon as the branch or remote it updates from changes"
+        command = f"{shlex.quote(sys.executable)} {shlex.quote(str(script))} --force"
+        html += (e(f" It tries again by itself at {_failure_time(until, now)}, {moves}. To try now, run ")
                  + f"<code>{e(command)}</code>" + e(" in a terminal."))
     elif until:
         html += e(f" It tries again at {_failure_time(until, now)}. "

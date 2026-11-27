@@ -194,7 +194,7 @@ def test_a_just_spawned_session_is_not_replaced_right_away(env, monkeypatch):
     listen.add_pending(paths, _msg("hi"))
     seen = _stub_session(monkeypatch, [listen.SESSION_SPAWNED], [False])
     assert listen._deliver_pending(paths, "C0", None) is False
-    assert seen["warm"] == [{"respawn_on_stale": True}]
+    assert seen["warm"] == [{"respawn_on_stale": True, "respawn_moved": True}]
 
 
 def test_notice_marker_cleared_when_everything_expired(env, monkeypatch):

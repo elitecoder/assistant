@@ -150,6 +150,13 @@ def _no_real_self_update(monkeypatch):
 
     guard.maybe_update = maybe_update
     monkeypatch.setitem(sys.modules, "self_update", guard)
+    download_guard = types.ModuleType("app_update")
+
+    def download_update(**_):
+        pytest.fail("test reached the real download self-update")
+
+    download_guard.maybe_update = download_update
+    monkeypatch.setitem(sys.modules, "app_update", download_guard)
 
 
 # Failure counts go to ~/.assistant/failures.json. Point them at a scratch file

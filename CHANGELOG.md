@@ -112,6 +112,28 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
     stops the page from being built.
 
 ### Added
+- Update Assistant by downloading main from GitHub, with no git. It's off by
+  default; turn it on with `"self_update": {"download": true}` in
+  `~/.assistant/config.json`, then run `bin/app_update.py --force` once from
+  your checkout. Assistant then runs from `~/.assistant/app/current`. About
+  once an hour the pulse asks GitHub for main's newest commit and downloads it.
+  It refuses a commit whose archive holds links, or whose files Assistant runs
+  have a conflict marker or Python that won't parse. Otherwise it switches
+  `current`, restarts every running service onto the new folder, and keeps the
+  last version for `app_update.py --rollback`, which holds while main stays on
+  the version you left; `--force` ends the hold and says `ended_hold`. A
+  failed install or restart is tried again on the next run, and a restart that
+  keeps failing shows as a failed update. The Slack session moves to the new
+  folder before it answers its next message. While it's on, the
+  lessons tool refuses Observer, Strategist, and Assistant repo lessons, which
+  the next update would lose, and the setup check stops requiring git. See
+  [Update by download, without git](docs/configuration.md#update-by-download-without-git)
+  for what changes while it's on and how to turn it off.
+- When the self-update step itself crashes, in either update mode, the pulse
+  writes a failed row to the ledger once an hour instead of only logging it.
+- The `/back-off`, `/attend`, and `/goal` skills and the Slack session run
+  Assistant's scripts from `~/.claude/bin` or their own folder, not
+  `~/dev/assistant`.
 - Find out why a row is on your Work queue, and what Assistant has done with
   it. Every Open list row, Start here item, email, row waiting for your
   approval and Ready for you result now has a short **Why?** link next to
