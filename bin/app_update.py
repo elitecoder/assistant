@@ -19,7 +19,7 @@ runs. Once an hour, the pulse:
   5. Deletes every other downloaded folder.
 
 Run it by hand:
-  app_update.py --force     update now, ignoring the hourly limit
+  app_update.py --force     update now, ignoring the hourly limit; ends a rollback hold
   app_update.py --rollback  point `current` back at `previous`
 """
 from __future__ import annotations
@@ -481,7 +481,7 @@ def main(argv: list[str] | None = None) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--force", action="store_true", help="Update now, ignoring the hourly limit.")
+    ap.add_argument("--force", action="store_true", help="Update now, ignoring the hourly limit; ends a rollback hold.")
     ap.add_argument("--rollback", action="store_true", help="Point current back at previous.")
     args = ap.parse_args(argv)
     if settings() is None:

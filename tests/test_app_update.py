@@ -402,7 +402,7 @@ def test_a_rollback_holds_until_main_moves(au, tmp_path):
     assert result["skipped_reason"] == "rolled-back" and not result["changed"]
     assert os.readlink(app / "current") == OLD and len(runs(tmp_path)) == installs
     newer = au.maybe_update(now=13000, opener=GitHub(NEWER, {NEWER: archive(NEWER)}))
-    assert newer["changed"] and os.readlink(app / "current") == NEWER
+    assert newer["changed"] and os.readlink(app / "current") == NEWER and "ended_hold" not in newer
     assert "held" not in json.loads((tmp_path / ".assistant/app-update.json").read_text())
 
 

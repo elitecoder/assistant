@@ -477,4 +477,11 @@ CHECKS = (
         ' or (marker.get("held") and not from_pulse):\n',
         T + "test_only_a_forced_manual_run_ends_a_rollback_hold_and_says_so",
     ),
+    (
+        "a hold that main moved past isn't reported as ended by you",
+        AU,
+        '        if marker.get("held") == sha:\n            result["ended_hold"]',
+        '        if True:\n            result["ended_hold"]',
+        T + "test_a_rollback_holds_until_main_moves",
+    ),
 )

@@ -91,10 +91,11 @@ gui/$UID/com.mukul.assistant-daemon` and `launchctl bootout
 gui/$UID/com.mukul.assistant-daemon`.
 
 To go back one version, run `python3 ~/.assistant/app/previous/bin/app_update.py
---rollback`, which works even when the current version's updater is broken. To
-undo a rollback, run it again, or run `bin/app_update.py --force`, which ends
-the hold and goes to main (its output says `ended_hold`). The rollback holds while main stays on the version you left; once main moves
-to a newer commit, the next update installs that one.
+--rollback`, which works even when the current version's updater is broken.
+The rollback holds while main stays on the version you left; once main moves to
+a newer commit, the next update installs that one. To undo a rollback, run it
+again, or run `bin/app_update.py --force`, which ends the hold and goes to main
+(its output says `ended_hold`).
 To update from a fork, add `"repo": "owner/name"`.
 
 While it's on:

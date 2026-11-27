@@ -121,7 +121,7 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   have a conflict marker or Python that won't parse. Otherwise it switches
   `current`, restarts every running service onto the new folder, and keeps the
   last version for `app_update.py --rollback`, which holds while main stays on
-  the version you left. A
+  the version you left; `--force` ends the hold and says `ended_hold`. A
   failed install or restart is tried again on the next run, and a restart that
   keeps failing shows as a failed update. The Slack session moves to the new
   folder before it answers its next message. While it's on, the
