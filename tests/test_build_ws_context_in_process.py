@@ -420,6 +420,20 @@ class TranscriptSignalsTests(unittest.TestCase):
         self.assertGreaterEqual(age, 3990)
         self.assertLess(age, 4100)
 
+    def test_age_counts_from_a_copilot_turn_and_not_from_a_subagent_or_a_tool_event(self):
+        path = self._tmp / "events.jsonl"
+        turn = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 4000))
+        later = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 10))
+        path.write_text("\n".join([
+            json.dumps({"type": "assistant.message", "timestamp": turn, "data": {"content": "done"}}),
+            json.dumps({"type": "assistant.message", "timestamp": later,
+                        "data": {"parentToolCallId": "t1", "content": "subagent"}}),
+            json.dumps({"type": "tool.execution_complete", "timestamp": later, "data": {"toolCallId": "t1"}}),
+        ]))
+        age, _ = self.mod.transcript_signals(str(path))
+        self.assertGreaterEqual(age, 3990)
+        self.assertLess(age, 4100)
+
     def test_a_record_with_no_usable_time_leaves_the_file_time(self):
         path = self._tmp / "t.jsonl"
         turn = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() - 4000))

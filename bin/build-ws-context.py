@@ -627,7 +627,7 @@ def transcript_signals(path: str | None) -> tuple[int | None, str]:
         if not isinstance(d, dict):
             continue
         kind = d.get("type")
-        if kind in ("user", "assistant", "message") and not d.get("isMeta"):
+        if agent_session.record_role(d) and not d.get("isMeta"):
             last_turn = _record_time(d.get("timestamp")) or last_turn
         if kind in ("abort", "session.shutdown"):
             pending_tool_ids.clear()
