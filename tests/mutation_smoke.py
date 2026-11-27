@@ -409,7 +409,7 @@ CHECKS = (
     (
         "sign-app.sh uses the local certificate when it exists",
         "mac/sign-app.sh",
-        'if "${find[@]}" | grep -q "\\"$name\\""; then\n',
+        'if grep -q "\\"$name\\"" <<<"$identities"; then\n',
         'if false; then\n',
         "tests/test_mac_signing.py::test_builds_signed_with_the_certificate_keep_one_identity",
     ),

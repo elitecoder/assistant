@@ -52,12 +52,12 @@ def executable(path: Path, version: int, *flags: str):
     run("cc", *flags, "-o", str(path), str(source))
 
 
-def signed_app(tmp_path: Path, version: int, keychain: Path) -> str:
+def signed_app(tmp_path: Path, version: int, keychain: Path, path: str = "/usr/bin:/bin") -> str:
     app = tmp_path / f"v{version}" / "Assistant.app"
     (app / "Contents/MacOS").mkdir(parents=True)
     executable(app / "Contents/MacOS/AssistantBar", version)
     shutil.copy(MAC / "Info.plist", app / "Contents/Info.plist")
-    run(str(MAC / "sign-app.sh"), str(app), env={"PATH": "/usr/bin:/bin", "ASSISTANT_SIGN_KEYCHAIN": str(keychain)})
+    run(str(MAC / "sign-app.sh"), str(app), env={"PATH": path, "ASSISTANT_SIGN_KEYCHAIN": str(keychain)})
     return requirement(app)
 
 
@@ -66,6 +66,16 @@ def test_builds_signed_with_the_certificate_keep_one_identity(tmp_path, keychain
     first = signed_app(tmp_path, 1, keychain)
     assert 'identifier "com.assistant.sessions" and certificate leaf = H"' in first
     assert signed_app(tmp_path, 2, keychain) == first
+
+
+def test_a_long_identity_list_still_finds_the_certificate(tmp_path, keychain):
+    add_certificate(keychain)
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    security = tools / "security"
+    security.write_text('#!/bin/bash\n/usr/bin/security "$@"\nyes "  padding" | head -n 200000\n')
+    security.chmod(0o755)
+    assert "certificate leaf" in signed_app(tmp_path, 1, keychain, path=f"{tools}:/usr/bin:/bin")
 
 
 def test_without_the_certificate_each_build_gets_a_new_identity(tmp_path, keychain):

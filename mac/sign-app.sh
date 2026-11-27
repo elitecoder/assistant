@@ -11,7 +11,8 @@ if [[ -n "${ASSISTANT_SIGN_KEYCHAIN:-}" ]]; then
   find+=("$ASSISTANT_SIGN_KEYCHAIN")
   sign+=(--keychain "$ASSISTANT_SIGN_KEYCHAIN")
 fi
-if "${find[@]}" | grep -q "\"$name\""; then
+identities="$("${find[@]}")"
+if grep -q "\"$name\"" <<<"$identities"; then
   "${sign[@]}" "$app"
   echo "Signed with \"$name\""
 else

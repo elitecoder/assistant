@@ -8,7 +8,8 @@ name="Assistant Local Signing"
 keychain="$HOME/Library/Keychains/login.keychain-db"
 if [[ "${1:-}" == "--keychain" ]]; then keychain="$2"; fi
 
-if security find-identity -p codesigning "$keychain" | grep -q "\"$name\""; then
+identities="$(security find-identity -p codesigning "$keychain")"
+if grep -q "\"$name\"" <<<"$identities"; then
   echo "\"$name\" is already in $keychain"
   exit 0
 fi
