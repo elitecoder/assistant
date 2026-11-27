@@ -12,7 +12,7 @@ cp "$bin"/lib*.dylib "$app/Contents/Frameworks/"
 for bundle in "$bin"/*.bundle; do cp -R "$bundle" "$app/Contents/Resources/"; done
 install_name_tool -add_rpath "@executable_path/../Frameworks" "$app/Contents/MacOS/AssistantBar"
 cp Info.plist "$app/Contents/"
-codesign --force --deep --sign - "$app"
+./sign-app.sh "$app"
 if [[ "${1:-}" == "--install" ]]; then
   mkdir -p ~/Applications
   rm -rf ~/Applications/Assistant.app
