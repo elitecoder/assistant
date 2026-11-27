@@ -300,6 +300,8 @@ def _warm_session(paths: comms_lib.Paths, *, respawn_on_stale: bool = False,
                 elif respawn_on_stale and not comms_session.warm_session_alias_is_current(sess):
                     why = (f"claude alias changed ({sess.get('alias') or 'claude'} → "
                            f"{comms_session.agent_session.claude_alias()})")
+                elif respawn_on_stale and not comms_session.warm_session_folder_is_current(sess):
+                    why = f"code folder changed ({sess.get('cwd')} → {comms_session.DISPATCH_CWD})"
                 else:
                     return sess, SESSION_ALIVE
             else:

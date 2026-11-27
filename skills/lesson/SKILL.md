@@ -23,7 +23,7 @@ Do NOT silently absorb the correction and move on. The user has named a rule; fu
 A lesson goes into ONE of two stores, chosen with `--target`:
 
 - **`claude`** (default) → `## Lessons` in `~/.claude/CLAUDE.md`. Auto-loaded into **every** Claude Code session. Use ONLY for rules that genuinely apply to any session, any repo, any context.
-- **`assistant`** → `## Lessons` in `~/dev/assistant/prompts/observer-batch-prompt.md`. Read **only by the Assistant's Observer** each pulse. Use for rules about how the Assistant orchestrates workspaces — verdict policy, when to merge/cleanup/nudge. These are binding overrides on the Observer's ruleset and must NOT pollute CLAUDE.md.
+- **`assistant`** → `## Lessons` in `~/dev/assistant/prompts/observer-batch-prompt.md`. Read **only by the Assistant's Observer** each pulse. Use for rules about how the Assistant orchestrates workspaces — verdict policy, when to merge/cleanup/nudge. These are binding overrides on the Observer's ruleset and must NOT pollute CLAUDE.md. With download updates on, Assistant runs from `~/.assistant/app/current`, and the lessons tool refuses this target there; save it from your checkout instead, and it reaches the live install once merged into main.
 
 **Litmus test:** would a random coding session in an unrelated repo need this rule? Yes → `claude`. No, it's about how the Assistant judges/acts on workspaces → `assistant`.
 

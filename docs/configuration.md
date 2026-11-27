@@ -61,8 +61,9 @@ To turn it on:
    skills, and every LaunchAgent at `current`, and reloads any Assistant
    service that's still loaded from your checkout.
 
-The pulse never makes that first download itself. Until you run step 2, the
-dashboard says so.
+The pulse never updates while it still runs from your checkout, so it never
+makes that first download itself. Until you run step 2, the dashboard says so.
+The Slack session moves to the new folder before it answers its next message.
 
 From then on, about once an hour, the pulse:
 
@@ -72,14 +73,16 @@ From then on, about once an hour, the pulse:
   folders, if a file Assistant runs or installs has a conflict marker, or if a
   Python file won't parse, and keeps the version it has;
 - points `previous` at the version it has and `current` at the new folder,
-  runs `install.sh --apply`, which restarts every running service onto the new
-  folder, and then deletes every other downloaded folder.
+  runs `install.sh --apply`, which restarts every running Assistant service
+  onto the new folder, and then deletes every other downloaded folder. The
+  Slack session moves before it answers its next message.
 
 A failed install or service restart is tried again on the next run, and
 nothing is deleted until it works.
 
 To go back one version, run `python3 ~/.assistant/app/current/bin/app_update.py
---rollback`. The rollback holds until main moves past the version you left.
+--rollback`. The rollback holds while main stays on the version you left; once main moves
+to a newer commit, the next update installs that one.
 To update from a fork, add `"repo": "owner/name"`.
 
 While it's on:

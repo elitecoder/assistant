@@ -504,6 +504,10 @@ def cmd_rm(args) -> int:
 
 def cmd_trim(args) -> int:
     """Open the chosen store in $EDITOR. The user is the trim mechanism."""
+    refusal = _downloaded_copy_refusal(args.target)
+    if refusal:
+        print(refusal, file=sys.stderr)
+        return 2
     path = TARGETS[args.target]["path"]
     editor = os.environ.get("EDITOR", "vi")
     print(f"opening {path} in {editor}...")

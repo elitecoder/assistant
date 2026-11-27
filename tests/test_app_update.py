@@ -23,6 +23,7 @@ OLD, NEW, NEWER = "a" * 40, "b" * 40, "c" * 40
 INSTALL = """#!/usr/bin/env bash
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 printf '%s %s %s\\n' "$here" "${ASSISTANT_SELF_UPDATE:-0}" "$*" >> "$HOME/install-runs"
+mkdir -p "$HOME/.claude" && ln -sfn "$here/bin" "$HOME/.claude/bin"
 sleep "${FAKE_INSTALL_SLEEP:-0}"
 exit "${FAKE_INSTALL_RC:-0}"
 """
@@ -40,7 +41,9 @@ def load(name: str, path: Path):
 def au(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setitem(sys.modules, "self_update", load("self_update", REPO / "bin/self_update.py"))
-    return load("app_update_mod", REPO / "bin/app_update.py")
+    mod = load("app_update_mod", REPO / "bin/app_update.py")
+    monkeypatch.setattr(mod, "HERE", (tmp_path / ".assistant/app/running/bin/app_update.py").resolve())
+    return mod
 
 
 def turn_on(home: Path, **extra) -> None:
@@ -50,7 +53,7 @@ def turn_on(home: Path, **extra) -> None:
 
 def archive(sha: str, files: dict[str, str] | None = None, entries=()) -> bytes:
     """A codeload-style tar.gz: one top folder holding `files`, plus raw `entries`."""
-    files = {"install.sh": INSTALL, "bin/ok.py": "x = 1\n",
+    files = {"install.sh": INSTALL, "bin/ok.py": "x = 1\n", "bin/pulse.py": "", "bin/app_update.py": "",
              "launchagents/com.assistant.assistant-pulse.plist": f"<plist>{sha[:4]}</plist>\n",
              **(files or {})}
     files = {name: text for name, text in files.items() if text is not None}
@@ -111,12 +114,45 @@ def test_the_first_download_by_hand_unpacks_main_points_current_at_it_and_instal
     assert os.access(app / NEW / "install.sh", os.X_OK)
 
 
-def test_the_pulse_never_makes_the_first_download(au, tmp_path):
+def test_the_pulse_never_makes_the_first_download(au, tmp_path, monkeypatch):
     turn_on(tmp_path)
+    monkeypatch.setattr(au, "HERE", REPO / "bin/app_update.py")
     gh = GitHub(NEW, {NEW: archive(NEW)})
     result = au.maybe_update(now=1000, opener=gh)
     assert result["skipped_reason"] == "not-set-up" and "--force" in result["error"]
     assert gh.urls == [] and not (tmp_path / ".assistant/app/current").exists()
+
+
+def test_a_pulse_still_running_from_the_checkout_never_updates(au, tmp_path, monkeypatch):
+    set_up(au, tmp_path)
+    monkeypatch.setattr(au, "HERE", REPO / "bin/app_update.py")
+    gh = GitHub(NEW, {NEW: archive(NEW)})
+    assert au.maybe_update(now=5000, opener=gh)["skipped_reason"] == "not-set-up"
+    assert gh.urls == [] and len(runs(tmp_path)) == 1
+
+
+def test_a_manual_run_reinstalls_when_the_links_point_elsewhere(au, tmp_path):
+    set_up(au, tmp_path)
+    link = tmp_path / ".claude/bin"
+    link.unlink()
+    link.symlink_to(REPO / "bin")
+    result = au.maybe_update(now=5000, from_pulse=False, opener=GitHub(OLD))
+    assert result["installed"] and len(runs(tmp_path)) == 2
+    assert link.resolve() == (tmp_path / ".assistant/app/current/bin").resolve()
+
+
+def test_a_service_restart_that_keeps_failing_is_reported(au, tmp_path):
+    set_up(au, tmp_path)
+    (tmp_path / ".assistant/service-restart-failed").write_text("com.assistant.x\n")
+    result = au.maybe_update(now=5000, opener=GitHub(OLD))
+    assert "couldn't restart" in result["error"]
+
+
+@pytest.mark.parametrize("missing", ["install.sh", "bin/pulse.py", "bin/app_update.py"])
+def test_a_commit_missing_a_core_file_is_refused(au, tmp_path, missing):
+    set_up(au, tmp_path)
+    result = au.maybe_update(now=5000, opener=GitHub(NEW, {NEW: archive(NEW, {missing: None})}))
+    assert result["skipped_reason"] == "syntax-fail" and result["syntax_error"] == f"{missing} is missing"
 
 
 def test_the_pulse_updates_and_installs_with_the_pulse_flag(au, tmp_path):
@@ -226,6 +262,7 @@ def entry(name: str, kind=tarfile.REGTYPE, linkname: str = "") -> tarfile.TarInf
 @pytest.mark.parametrize("bad,why", [
     (entry(f"assistant-{NEW}/../escape"), "outside its folder"),
     (entry("/abs"), "top folders"),
+    (entry(f"/assistant-{NEW}/x"), "top folders"),
     (entry("other/x"), "top folders"),
     (entry(f"assistant-{NEW}/bin/out", tarfile.SYMTYPE, "../../../outside"), "isn't a plain file or folder"),
     (entry(f"assistant-{NEW}/bin/alias.py", tarfile.SYMTYPE, "ok.py"), "isn't a plain file or folder"),
@@ -402,10 +439,12 @@ def test_the_command_fails_on_a_refused_commit(au, tmp_path, monkeypatch, capsys
 @pytest.fixture
 def curator_in_copy(au, tmp_path, monkeypatch):
     """The checkout's lessons tool, with its Assistant stores moved into a
-    downloaded copy under this test's home."""
+    downloaded copy under this test's home. No audit or sync runs."""
     set_up(au, tmp_path)
     copy = (tmp_path / ".assistant/app" / OLD).resolve()
     curator = load("curator_mod", REPO / "bin/assistant-curator.py")
+    monkeypatch.setattr(curator, "_run_lesson_audit_async", lambda: None)
+    monkeypatch.setattr(curator, "_sync_to_memory_repo", lambda: None)
     monkeypatch.setattr(curator, "APP_ROOT", tmp_path / ".assistant/app")
     for name, rel in (("assistant", "prompts/observer-batch-prompt.md"),
                       ("strategist", "prompts/strategist-draft-prompt.md"),
@@ -435,6 +474,13 @@ def test_the_lessons_tool_refuses_to_remove_a_lesson_from_a_downloaded_copy(cura
     slug = next(curator.iter_lessons(before))["slug"]
     monkeypatch.setattr(sys, "argv", ["assistant-curator.py", "rm", slug, "--target", "assistant-repo"])
     assert curator.main() == 2 and rules.read_text() == before
+
+
+def test_the_lessons_tool_refuses_to_open_a_downloaded_copy_store_for_trimming(curator_in_copy, monkeypatch):
+    curator, _ = curator_in_copy
+    monkeypatch.setattr(curator.os, "execvp", lambda *a: pytest.fail("opened an editor"))
+    monkeypatch.setattr(sys, "argv", ["assistant-curator.py", "trim", "--target", "assistant"])
+    assert curator.main() == 2
 
 
 def test_the_lessons_tool_in_a_checkout_writes_as_before(au, tmp_path):
@@ -675,3 +721,24 @@ def test_the_git_update_is_still_described_as_a_pull(pulse, tmp_path, monkeypatc
     pulse.self_update_pulse(7)
     (row,) = [r for r in ledger(tmp_path) if r["kind"] == "self-update"]
     assert row["evidence"] == f"pulled {OLD[:12]}..{NEW[:12]} (2 file(s)); install=not-needed"
+
+
+def test_an_archive_of_only_absolute_paths_is_refused(au, tmp_path):
+    set_up(au, tmp_path)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name in ("/pwned.txt", "/x/y.txt"):
+            info = tarfile.TarInfo(name)
+            info.size = 1
+            tar.addfile(info, io.BytesIO(b"x"))
+    result = au.maybe_update(now=5000, opener=GitHub(NEW, {NEW: buf.getvalue()}))
+    assert result["skipped_reason"] == "fetch-failed" and "not one named folder" in result["error"]
+    assert not list(tmp_path.rglob("pwned.txt"))
+
+
+def test_the_services_with_the_older_names_are_moved_too(au, tmp_path, launchctl):
+    set_up(au, tmp_path)
+    agent(tmp_path, "com.mukul.assistant-cmux-watcher", f"{tmp_path}/.assistant/app/current/bin/cmux-watcher.py",
+          "/Users/me/dev/assistant/bin/cmux-watcher.py")
+    result = au.maybe_update(now=5000, from_pulse=False, opener=GitHub(OLD))
+    assert result["moved_services"] == ["com.mukul.assistant-cmux-watcher"]

@@ -156,6 +156,14 @@ def warm_session_alias_is_current(sess: dict) -> bool:
     return (sess.get("alias") or agent_session.CLAUDE) == agent_session.claude_alias()
 
 
+def warm_session_folder_is_current(sess: dict) -> bool:
+    """True unless the session started in another code folder than this one,
+    as after a download update moves Assistant to a new folder. A record with
+    no folder counts as current."""
+    cwd = sess.get("cwd")
+    return not cwd or Path(cwd).resolve() == DISPATCH_CWD
+
+
 def picked_warm_agent() -> str:
     """The agent the Slack session should run (agent_session.warm_session_agent)."""
     return agent_session.warm_session_agent()

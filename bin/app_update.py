@@ -53,6 +53,8 @@ NET_TIMEOUT_SEC = 60
 SHA = re.compile(r"[0-9a-f]{40}")
 SLUG = re.compile(r"[\w.-]+/[\w.-]+")
 SELF_PLIST = f"launchagents/{self_update.SELF_PLIST_LABEL}.plist"
+REQUIRED_FILES = ("install.sh", "bin/pulse.py", "bin/app_update.py")
+HERE = Path(__file__).resolve()
 
 
 def app_root() -> Path:
@@ -107,10 +109,10 @@ def _checked_members(tar: tarfile.TarFile) -> tuple[str, list[tarfile.TarInfo]]:
     no links, and a link could point outside the folder."""
     members = tar.getmembers()
     tops = {m.name.split("/", 1)[0] for m in members}
-    if len(tops) != 1:
-        raise ValueError(f"the archive has {len(tops)} top folders, not one")
+    if len(tops) != 1 or not next(iter(tops)):
+        raise ValueError(f"the archive has {len(tops)} top folders, not one named folder")
     for m in members:
-        if ".." in Path(m.name).parts:
+        if m.name.startswith("/") or ".." in Path(m.name).parts:
             raise ValueError(f"the archive entry {m.name!r} points outside its folder")
         if not (m.isfile() or m.isdir()):
             raise ValueError(f"the archive entry {m.name!r} isn't a plain file or folder")
@@ -138,8 +140,12 @@ def download(slug: str, sha: str, root: Path, opener=None) -> Path:
 
 
 def check_tree(tree: Path) -> tuple[bool, str]:
-    """(True, "ok"), or (False, the first problem): a conflict marker in a file
-    Assistant runs or installs, or a Python file that won't parse."""
+    """(True, "ok"), or (False, the first problem): a missing core file, a
+    conflict marker in a file Assistant runs or installs, or a Python file that
+    won't parse."""
+    for name in REQUIRED_FILES:
+        if not (tree / name).is_file():
+            return False, f"{name} is missing"
     for prefix in self_update.SYNTAX_GATE_PATHS:
         start = tree / prefix
         paths = [start] if start.is_file() else sorted(p for p in start.rglob("*") if p.is_file())
@@ -225,7 +231,8 @@ def repoint_services(root: Path) -> list[str]:
     current = str(root / "current")
     domain = f"gui/{os.getuid()}"
     moved = []
-    for plist in sorted((Path(os.environ["HOME"]) / "Library/LaunchAgents").glob("com.assistant.*.plist")):
+    agents = Path(os.environ["HOME"]) / "Library/LaunchAgents"
+    for plist in sorted([*agents.glob("com.assistant.*.plist"), *agents.glob("com.mukul.assistant-*.plist")]):
         try:
             args = plistlib.loads(plist.read_bytes()).get("ProgramArguments", [])
         except Exception:  # noqa: BLE001 — a file launchd can't read either is left to install.sh
@@ -271,6 +278,12 @@ def _short(name: str | None) -> str:
     return (name or "")[:12]
 
 
+def _linked(root: Path) -> bool:
+    """True when ~/.claude/bin leads into `current`, as install.sh leaves it."""
+    link = Path(os.environ["HOME"]) / ".claude/bin"
+    return link.resolve() == (root / "current" / "bin").resolve()
+
+
 def _rejected_key(sha: str) -> str:
     return f"{sha} python{sys.version_info[0]}.{sys.version_info[1]}"
 
@@ -283,6 +296,8 @@ def _install(root: Path, result: dict, marker: dict, sha: str, from_pulse: bool)
         marker.pop("installed", None)
     else:
         marker["installed"] = sha
+        if restart_failed():
+            result["error"] = "install.sh couldn't restart a running service; the next run tries again"
     _write_marker(marker)
 
 
@@ -295,9 +310,9 @@ def update(block: dict, *, now: float, from_pulse: bool, opener=None) -> dict:
     marker = _read_marker()
     old = target(root / "current")
     result["from_sha"] = _short(old)
-    if old is None and from_pulse:
+    if from_pulse and root.resolve() not in HERE.parents:
         result.update(skipped_reason="not-set-up", error=(
-            "download updates are on, but the first download hasn't run; "
+            "download updates are on, but the pulse still runs from your checkout; "
             "run bin/app_update.py --force from your checkout once"))
         return result
     try:
@@ -314,7 +329,7 @@ def update(block: dict, *, now: float, from_pulse: bool, opener=None) -> dict:
     if old == sha and (root / sha).is_dir() or marker.get("held") == sha:
         if marker.get("held") == sha:
             result["skipped_reason"] = "rolled-back"
-        if old and (marker.get("installed") != old or restart_failed()):
+        if old and (marker.get("installed") != old or restart_failed() or not _linked(root)):
             _install(root, result, marker, old, from_pulse)
         if old and not from_pulse and not result.get("error"):
             result["moved_services"] = repoint_services(root)

@@ -895,3 +895,16 @@ def test_the_installer_restarts_running_services_when_the_folder_behind_current_
     (app / "current").symlink_to("b")
     run_installer(env, repo=app / "current")
     assert f"kickstart -k gui/{os.getuid()}/{server}" in log.read_text()
+
+
+def test_the_installer_restarts_the_older_named_assistant_services_when_code_changes(tmp_path):
+    home = tmp_path / "home"
+    (home / ".assistant").mkdir(parents=True)
+    env = {**installer_env(home), "ASSISTANT_SELF_UPDATE": "1"}
+    watcher, daemon = "com.mukul.assistant-cmux-watcher", "com.mukul.assistant-daemon"
+    log = fake_launchctl(env, running={watcher, daemon})
+    (home / ".assistant/service-code.sha256").write_text("old\n")
+    run_installer(env)
+    kicks = log.read_text()
+    assert f"kickstart -k gui/{os.getuid()}/{watcher}" in kicks
+    assert f"kickstart -k gui/{os.getuid()}/{daemon}" in kicks

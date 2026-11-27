@@ -1002,7 +1002,8 @@ CODE_SHA="$(cd "$REPO_ROOT" && { pwd -P; find bin src/assistant slack-reactor/sr
 if [[ "$(cat "$CODE_STAMP" 2>/dev/null || true)" != "$CODE_SHA" ]]; then
     failed_labels=()
     for label in com.assistant.assistant-todo-server com.assistant.work-queue com.assistant.connector-{github,gmail,gcal,slack,outlook} \
-            com.assistant.{assistant-comms,workspace-watcher,slack-reactor,session-context-watcher,cmux-ws-numberer}; do
+            com.assistant.{assistant-comms,workspace-watcher,slack-reactor,session-context-watcher,cmux-ws-numberer} \
+            com.mukul.assistant-{cmux-watcher,daemon}; do
         [[ " ${CHANGED_LABELS[*]:-} " == *" $label "* ]] && continue
         launchctl print "gui/$UID/$label" 2>/dev/null | grep -q "state = running" || continue
         if [[ $APPLY -eq 0 ]]; then

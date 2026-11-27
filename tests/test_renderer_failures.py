@@ -290,11 +290,18 @@ def test_any_other_error_means_no_box_and_the_page_still_renders(mod, monkeypatc
     assert "Triage has failed" not in render_page(tmp_path)
 
 
-def test_with_download_updates_on_the_command_runs_the_download_updater(mod, tmp_path):
+@pytest.mark.parametrize("set_up", [True, False])
+def test_with_download_updates_on_the_command_runs_the_download_updater(mod, tmp_path, set_up):
     (tmp_path / ".assistant/config.json").write_text('{"self_update": {"download": true}}')
+    script = tmp_path / ".assistant/app/current/bin/app_update.py"
+    if set_up:
+        script.parent.mkdir(parents=True)
+        script.write_text("")
+    else:
+        script = mod.REPO / "bin/app_update.py"
     fail(3, "could not read main: offline", step=1, cap=4 * HOUR)
     until = failwatch.backed_off("self-update", now=NOW)
-    command = f"{shlex.quote(sys.executable)} {shlex.quote(str(tmp_path / '.assistant/app/current/bin/app_update.py'))} --force"
+    command = f"{shlex.quote(sys.executable)} {shlex.quote(str(script))} --force"
     (alert,) = lines(mod.render_failure_alerts(now=NOW))
     when = datetime.fromtimestamp(until).strftime("%H:%M")
     assert alert.endswith(f" It tries again by itself at {when}, or as soon as the repo it downloads from changes. "

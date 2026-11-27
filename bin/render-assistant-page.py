@@ -567,7 +567,8 @@ def _failure_line(row: dict, now: float) -> tuple[int, str]:
         # sys.executable is the interpreter the services run under: it is the
         # one rendering this page.
         if mode.download_updates():
-            script = HOME / ".assistant/app/current/bin/app_update.py"
+            current = HOME / ".assistant/app/current/bin/app_update.py"
+            script = current if current.exists() else REPO / "bin/app_update.py"
             moves = "or as soon as the repo it downloads from changes"
         else:
             script = REPO / "bin/self_update.py"

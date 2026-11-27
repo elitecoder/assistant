@@ -120,8 +120,11 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   It refuses a commit whose archive holds links, or whose files Assistant runs
   have a conflict marker or Python that won't parse. Otherwise it switches
   `current`, restarts every running service onto the new folder, and keeps the
-  last version for `app_update.py --rollback`, which holds until main moves. A
-  failed install or restart is tried again on the next run. While it's on, the
+  last version for `app_update.py --rollback`, which holds while main stays on
+  the version you left. A
+  failed install or restart is tried again on the next run, and a restart that
+  keeps failing shows as a failed update. The Slack session moves to the new
+  folder before it answers its next message. While it's on, the
   lessons tool refuses Observer, Strategist, and Assistant repo lessons, which
   the next update would lose, and the setup check stops requiring git. See
   [Update by download, without git](docs/configuration.md#update-by-download-without-git)
