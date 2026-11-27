@@ -1,0 +1,133 @@
+"""Checks for the Work queue page's With agents box and its search on every tab (work_queue/page.py, server.py)."""
+
+WITH_AGENTS = "tests/test_work_queue_browser.py::test_with_agents_shows_each_sent_task_still_going_with_the_steps_assistant_recorded"
+SEARCH = "tests/test_work_queue_browser.py::test_slash_searches_the_tab_you_are_on_by_row_text_and_clears_on_escape_or_a_tab_switch"
+
+CHECKS = (
+    (
+        "the state gives each sent task's pull request",
+        "work_queue/server.py",
+        '"pr": text(item.get("prUrl"))}',
+        '"pr": ""}',
+        "tests/test_work_queue_actions.py::test_state_lists_each_sent_rows_todo_with_its_result_reason_finish_time_workspace_start_and_pr",
+    ),
+    (
+        "the state gives when Assistant started each sent task",
+        "work_queue/server.py",
+        '"started": text(item.get("dispatchedAt")),',
+        '"started": "",',
+        "tests/test_work_queue_actions.py::test_state_lists_each_sent_rows_todo_with_its_result_reason_finish_time_workspace_start_and_pr",
+    ),
+    (
+        "With agents leaves out finished work",
+        "work_queue/page.py",
+        "filter(q=>q.status!=='done'&&q.status!=='blocked')",
+        "filter(q=>q.status!=='blocked')",
+        WITH_AGENTS,
+    ),
+    (
+        "a pull request puts a task on PR open",
+        "work_queue/page.py",
+        "const reached=pr?2:",
+        "const reached=pr?1:",
+        WITH_AGENTS,
+    ),
+    (
+        "a workspace alone counts as started",
+        "work_queue/page.py",
+        "q.started||q.workspace?1:0",
+        "q.started?1:0",
+        WITH_AGENTS,
+    ),
+    (
+        "only a web address becomes the PR link",
+        "work_queue/page.py",
+        "pr=/^https?:\\/\\//.test(q.pr||'')",
+        "pr=!!q.pr",
+        WITH_AGENTS,
+    ),
+    (
+        "With agents shows on the page",
+        "work_queue/page.py",
+        " renderReady();renderWorking();fbPaint();",
+        " renderReady();fbPaint();",
+        WITH_AGENTS,
+    ),
+    (
+        "search leaves out button labels",
+        "work_queue/page.py",
+        "c.querySelectorAll('button, textarea, input, .compose, .task-progress, .fb, .why-box')",
+        "c.querySelectorAll('textarea')",
+        SEARCH,
+    ),
+    (
+        "search hides a lane with no match",
+        "work_queue/page.py",
+        "'.sf-lane, .sf-group, .ready, .ap-group, .mb-sec'",
+        "'.sf-group, .ready, .ap-group, .mb-sec'",
+        SEARCH,
+    ),
+    (
+        "search opens a closed section with a match",
+        "work_queue/page.py",
+        "d.dataset.qWas=d.open?'1':'';d.open=true}",
+        "d.dataset.qWas=d.open?'1':''}",
+        SEARCH,
+    ),
+    (
+        "Escape puts a section back the way it was",
+        "work_queue/page.py",
+        "{d.open=d.dataset.qWas==='1';delete d.dataset.qWas}",
+        "{delete d.dataset.qWas}",
+        SEARCH,
+    ),
+    (
+        "search says when nothing matches",
+        "work_queue/page.py",
+        "$('tab-search-empty').hidden=!q||",
+        "$('tab-search-empty').hidden=true||",
+        SEARCH,
+    ),
+    (
+        "a refresh keeps the search",
+        "work_queue/page.py",
+        "schedulePoll();const q=$('tab-search');if(q)filterTab(q.value)}",
+        "schedulePoll()}",
+        SEARCH,
+    ),
+    (
+        "switching tabs clears the search",
+        "work_queue/page.py",
+        "whyCloseAll();clearSearch();",
+        "whyCloseAll();",
+        SEARCH,
+    ),
+    (
+        "Escape clears the search",
+        "work_queue/page.py",
+        "if(ev.key==='Escape'){clearSearch();ev.target.blur()}",
+        "if(ev.key==='Esc'){clearSearch();ev.target.blur()}",
+        SEARCH,
+    ),
+    (
+        "a slash with a modifier key isn't a search",
+        "work_queue/page.py",
+        "if(ev.key!=='/'||ev.metaKey||ev.ctrlKey||ev.altKey||!s)return;",
+        "if(ev.key!=='/'||!s)return;",
+        SEARCH,
+    ),
+    (
+        "a slash typed in a box stays in it",
+        "work_queue/page.py",
+        " if(ev.target.closest('input, textarea, select, [contenteditable]'))return;ev.preventDefault();s.focus()});",
+        " ev.preventDefault();s.focus()});",
+        SEARCH,
+    ),
+    (
+        "a slash focuses the search",
+        "work_queue/page.py",
+        "ev.preventDefault();s.focus()});",
+        "ev.preventDefault()});",
+        SEARCH,
+    ),
+)

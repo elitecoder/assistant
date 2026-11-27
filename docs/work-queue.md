@@ -318,6 +318,23 @@ the full width. On a phone (390 wide) the link adds no line to an Open list row,
 an agent row, a row with a draft, an email, a row waiting for approval, a Start
 here item or a Ready for you result. At 320 wide a row can gain a line.
 
+### With agents
+
+**With agents** sits under Ready for you and lists each TODO you sent from the
+page that isn't done or blocked yet, newest first. Each one shows its steps:
+**Queued → Started → PR open → Done**. The steps show only what the TODO store
+records. **Started** means Assistant launched a session for it, not that the
+session is still working. **PR open** links to the pull request when the TODO
+records one. **Open workspace** works as it does in Ready for you. When the TODO
+finishes, it moves to Ready for you.
+
+### Search this tab
+
+Press `/` to search the tab you're on, or type in **Search this tab**. The
+search matches the words on each row, not its button labels. It hides groups
+with no match and opens collapsed sections that have one. Press Escape, or
+switch tabs, to clear it. A refresh keeps it.
+
 ### Ready for you
 
 **Ready for you** lists each TODO you sent from the page that's done or

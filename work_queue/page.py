@@ -36,7 +36,10 @@ READY = ('<div class="ready" id="ready" hidden><div class="cut-top"><b>Ready for
          'work to from this page finished these or are blocked. Read the result, do what it leaves for you, then select '
          'Done. Work whose pull requests merged, or that you already followed up on, clears on its own.</span>'
          '<button class="chip ready-show" onclick="toggleCleared()" hidden>Show cleared</button></div>'
-         '<ol class="ready-list"></ol><ul class="ready-cleared"></ul></div>')
+         '<ol class="ready-list"></ol><ul class="ready-cleared"></ul></div>'
+         '<div class="ready working" id="working" hidden><div class="cut-top"><b>With agents</b><span class="meta">Work you sent '
+         'that isn\'t finished yet. The steps show only what Assistant recorded: Started means it launched a session, not '
+         'that the session is still working.</span></div><ol class="ready-list working-list"></ol></div>')
 LANES = [
     ("do_first", "Do first", "Someone is waiting on your reply or decision."),
     ("promise", "Promise", "You said you would. Deliver it, hand it off, or say you're dropping it."),
@@ -492,9 +495,15 @@ def render(snap: dict) -> tuple[str, dict]:
            + ("Rules sort every row, and a model explains each open row and picks where to start. Nothing is sent "
               "without you.</p>" if tri else "Rules sort every row; nothing is sent without you.</p>") +
            '<button class="btn" id="refresh" onclick="refreshNow()">Refresh</button><span class="meta" id="refresh-msg"></span><p class="meta" id="held-msg"></p>' + (PAGE_FB if pro else "") + '</div>'
-           f'<ul class="sources">{status}</ul>{tabs_html}{"".join(sections)}{bar}'
+           f'<ul class="sources">{status}</ul>{tabs_html}{SEARCH}{"".join(sections)}{bar}'
            f'</div><script>const MAILDATA={maildata};</script><script>{JS}</script></body></html>')
     return doc, cands
+
+
+SEARCH = ('<div class="tab-search" id="tab-search-bar"><label for="tab-search">Search this tab <kbd aria-hidden="true">/</kbd>'
+          '</label><input id="tab-search" type="search" placeholder="Words on this tab" aria-keyshortcuts="/" '
+          'oninput="filterTab(this.value)" onkeydown="tabSearchKey(event)"><span class="meta" id="tab-search-empty" '
+          'role="status" hidden>Nothing on this tab matches. Press Escape to clear the search.</span></div>')
 
 
 PAGE_FB = ('<span class="fb" data-fk="page" data-fp="page" data-fkey=""></span><span class="meta fb-promise">Assistant keeps what '
@@ -632,7 +641,14 @@ background:var(--panel);border:1px solid var(--line-strong);border-radius:8px;bo
 .compose textarea{width:100%;min-height:58px;max-height:240px;resize:none;overflow-y:auto;font:13px/1.5 var(--sans);padding:8px;
 border-radius:6px;border:1px solid var(--line-strong);background:var(--hover);color:var(--text)}
 .compose-btns{display:flex;gap:6px}
+.task-progress{display:flex;flex-wrap:wrap;gap:4px 14px;list-style:none;margin:6px 0 0;padding:0;font-size:12px;color:var(--text-2)}
+.task-step::before{content:"○ " / ""}.task-step.reached::before{content:"● " / "";color:var(--green)}
+.task-step.current{color:var(--blue);font-weight:600}.task-step.current::before{content:"◉ " / ""}.task-step a{color:inherit}
+.tab-search{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin:0 0 14px;color:var(--text-2);font-size:12px}
+.tab-search input{width:260px;max-width:100%;background:var(--panel);color:var(--text);border:1px solid var(--line-strong);border-radius:8px;padding:8px 12px;font:inherit}
+.tab-search kbd{border:1px solid var(--line-strong);border-radius:4px;padding:0 5px}.q-miss{display:none!important}
 .ready{border:1px solid var(--line);border-left:3px solid var(--green);border-radius:8px;padding:10px 14px;margin:0 0 14px;overflow-wrap:anywhere}
+.working{border-left-color:var(--blue)}
 .ready-list{margin:6px 0 0;padding-left:22px;display:flex;flex-direction:column;gap:10px}
 .ready-list li>div{display:flex;flex-wrap:wrap;gap:9px;align-items:center}
 .ready-result{display:block;margin-top:9px;color:var(--text-2);font-size:12px;white-space:pre-line}
@@ -677,7 +693,7 @@ function paint(){const now=Date.now(),sent=new Set(ST.sent||[]);let hidden=0;
   const el=document.querySelector(s);if(el)el.textContent=n}
  document.querySelectorAll('.sf-lane').forEach(l=>{l.querySelector('h3 .count').textContent=l.querySelectorAll('.sf-row:not(.is-done):not(.is-hidden)').length});
  const b=$('showhidden');if(b)b.textContent=(document.body.classList.contains('show-hidden')?'Hide':'Show')+' snoozed and dropped ('+hidden+')'
- renderReady();fbPaint();schedulePoll()}
+ renderReady();renderWorking();fbPaint();schedulePoll();const q=$('tab-search');if(q)filterTab(q.value)}
 function hides(v,now){return !!v&&(v.state!=='snoozed'||v.until>now)}
 function mailWhy(r,now){const ks=[r.dataset.mk,r.dataset.link],q=ks.map(k=>ST.queued[k]).find(Boolean);
  if(q)return 'Sent to an agent as '+q.id;
@@ -961,11 +977,41 @@ function fbSendTell(s){const u=FBUI[s.dataset.fp],words=(u.words||'').trim();if(
  return fbSend(s,{key:s.dataset.fkey,kind:s.dataset.fk,signal:'tell',words},()=>({tell:false,words:''}))}
 async function fbDraft(b){const s=b.closest('.sf-row').querySelector('.draft-fb .fb');
  try{await fbPost({key:s.dataset.fkey,kind:'draft',signal:'used_draft'})}catch(e){toast('Copied. Assistant couldn’t record that you used the draft.')}}
+function renderWorking(){const box=$('working');if(!box)return;const ol=box.querySelector('.working-list');ol.textContent='';
+ Object.values(ST.queued).filter(q=>q.status!=='done'&&q.status!=='blocked').sort((a,b)=>b.id.localeCompare(a.id,undefined,{numeric:true}))
+  .forEach(q=>{const li=document.createElement('li'),top=document.createElement('div'),t=document.createElement('span');
+   t.className='sf-title';t.textContent=q.title+' ('+q.id+')';top.append(t);
+   if(q.workspace)top.append(button('Open workspace','btn',b=>openWs(b,q.id)));
+   li.dataset.id=q.id;li.append(top,steps(q));ol.append(li)});
+ box.hidden=!ol.children.length}
+function steps(q){const ol=document.createElement('ol'),d=new Date(q.started),known=!!q.started&&!isNaN(d),pr=/^https?:\/\//.test(q.pr||'');
+ const reached=pr?2:q.started||q.workspace?1:0,day=known?' '+d.toLocaleDateString([],{month:'short',day:'numeric'}):'';
+ ol.className='task-progress';ol.setAttribute('aria-label','Progress');
+ [['Queued','Assistant starts it at its next check.'],
+  ['Started'+day,reached?'Assistant started it'+(known?' '+localTime(q.started):'')+(q.workspace?' in '+q.workspace:'')+'. That doesn’t show the session is still working.':''],
+  ['PR open',pr?q.pr:''],['Done','The agent marks it done when it records its result.']].forEach(([label,title],i)=>{
+  const li=document.createElement('li');li.className='task-step'+(i===reached?' current':i<reached?' reached':'');
+  if(i===reached)li.setAttribute('aria-current','step');if(title)li.title=title;
+  if(i===2&&pr){const a=document.createElement('a');a.href=q.pr;a.target='_blank';a.rel='noopener noreferrer';a.textContent=label;li.append(a)}
+  else li.textContent=label;ol.append(li)});
+ return ol}
+const Q_ITEMS='.start-list > li, .ready-list > li, .ready-cleared > li, .sf-row, .pr-row, .ap-row, .ag-row',Q_HIT=Q_ITEMS.split(', ').map(x=>x+':not(.q-miss)').join(', ');
+function searchText(el){const c=el.cloneNode(true);c.querySelectorAll('button, textarea, input, .compose, .task-progress, .fb, .why-box').forEach(x=>x.remove());return c.textContent.toLowerCase()}
+function filterTab(v){const q=v.trim().toLowerCase();
+ document.querySelectorAll(Q_ITEMS).forEach(el=>el.classList.toggle('q-miss',!!q&&!searchText(el).includes(q)));
+ document.querySelectorAll('.sf-lane, .sf-group, .ready, .ap-group, .mb-sec').forEach(c=>c.classList.toggle('q-miss',!!q&&!c.querySelector(Q_HIT)));
+ document.querySelectorAll('details').forEach(d=>{if(q&&d.querySelector(Q_HIT)){if(!('qWas' in d.dataset))d.dataset.qWas=d.open?'1':'';d.open=true}
+  else if('qWas' in d.dataset){d.open=d.dataset.qWas==='1';delete d.dataset.qWas}});
+ $('tab-search-empty').hidden=!q||[...document.querySelectorAll(Q_HIT)].some(el=>el.offsetParent!==null)}
+function clearSearch(){const s=$('tab-search');if(s.value){s.value='';filterTab('')}}
+function tabSearchKey(ev){if(ev.key==='Escape'){clearSearch();ev.target.blur()}}
+document.addEventListener('keydown',ev=>{const s=$('tab-search');if(ev.key!=='/'||ev.metaKey||ev.ctrlKey||ev.altKey||!s)return;
+ if(ev.target.closest('input, textarea, select, [contenteditable]'))return;ev.preventDefault();s.focus()});
 const TAB_IDS=[...document.querySelectorAll('#tabs .tab')].map(a=>a.dataset.t).filter(t=>t!=='all');
 function tabOf(id){if(TAB_IDS.includes(id)||id==='all')return id;const el=id?$(id):null,sec=el&&TAB_IDS.find(s=>$(s).contains(el));
  if(!sec)return TAB_IDS[0];for(let d=el;d;d=d.parentElement)if(d.tagName==='DETAILS')d.open=true;
  setTimeout(()=>el.scrollIntoView({block:'start'}));return sec}
-function showTab(id){const t=tabOf(id);whyCloseAll();TAB_IDS.forEach(s=>$(s).classList.toggle('tab-hidden',t!=='all'&&s!==t));
+function showTab(id){const t=tabOf(id);whyCloseAll();clearSearch();TAB_IDS.forEach(s=>$(s).classList.toggle('tab-hidden',t!=='all'&&s!==t));
  document.querySelectorAll('#tabs .tab').forEach(a=>a.classList.toggle('on',a.dataset.t===t));try{localStorage.setItem('wq-tab',t)}catch(_){}}
 window.addEventListener('hashchange',()=>showTab(decodeURIComponent(location.hash.slice(1))));
 if(TAB_IDS.length){let saved=null;try{saved=localStorage.getItem('wq-tab')}catch(_){}showTab(decodeURIComponent(location.hash.slice(1))||saved||TAB_IDS[0])}

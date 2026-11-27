@@ -776,6 +776,8 @@ def test_the_placeholder_page_runs_the_same_script(site, wq):
         tab.goto(site)
         wait_text(tab, "#refresh", "Refresh")
         assert "Nothing to show yet" in tab.content() and errors == []
+        tab.keyboard.press("/")
+        assert tab.locator("#tab-search").count() == 0 and errors == [], "no search box, and / does nothing"
         cov.snap()
         browser.close()
 
@@ -1419,6 +1421,147 @@ def test_ready_for_you_sits_on_the_open_list_when_there_is_no_start_here(site, w
         tab.wait_for_selector("#open-list #ready", state="visible")
         assert tab.locator("#start").count() == 0 and text(tab, "#ready .ready-result") == "Opened a draft PR"
         no_sideways_scroll(tab)
+        cov.snap()
+        browser.close()
+
+
+def working_steps(tab) -> list[list]:
+    """Each With agents row: its title, its current step, how many steps it passed, its PR link, and each step's tooltip."""
+    return tab.eval_on_selector_all("#working .working-list > li", """ls => ls.map(l => [
+        l.querySelector('.sf-title').textContent, l.querySelector('[aria-current=step]').textContent,
+        l.querySelectorAll('[aria-current=step]').length, l.querySelectorAll('.task-step.reached').length,
+        l.querySelector('.task-step a') ? [l.querySelector('.task-step a').href, l.querySelector('.task-step a').target] : null,
+        [...l.querySelectorAll('.task-step')].map(s => s.getAttribute('title'))])""")
+
+
+def test_with_agents_shows_each_sent_task_still_going_with_the_steps_assistant_recorded(site, wq, monkeypatch):
+    write_page({"built": "now", "github": [pr(n) for n in range(1, 9)], "status": []})
+    items = [
+        {"id": "td-301", "title": "Not started", "status": "open"},
+        {"id": "td-302", "title": "Started here", "status": "in-progress", "dispatchedAt": "2026-11-20T12:00:00Z",
+         "dispatchedWs": "workspace:7"},
+        {"id": "td-303", "title": "Has a PR", "status": "in-progress", "dispatchedAt": "2026-11-20T12:00:00Z",
+         "prUrl": "https://github.com/o/r/pull/30"},
+        {"id": "td-304", "title": "Workspace only", "status": "open", "dispatchedWs": "workspace:9",
+         "prUrl": "javascript:alert(1)"},
+        {"id": "td-305", "title": "Unreadable start", "status": "in-progress", "dispatchedAt": "soon"},
+        {"id": "td-306", "title": "Finished", "status": "done", "resultAt": "2026-11-20T10:00:00+00:00",
+         "detail": "x\n\nRESULT: Done it"},
+        {"id": "td-307", "title": "Stuck", "status": "blocked", "statusReason": "Need access"}]
+    wq.todo.write_text(json.dumps({"items": items}))
+    config.write_json(wq.data / "queued.json", {pr(n)["key"]: {"id": f"td-30{n}", "at": "t"} for n in range(1, 8)})
+    asked = []
+    monkeypatch.setitem(server.ROUTES, "/api/focus", lambda body: asked.append(body) or (200, {"workspace": "workspace:7"}))
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 1280, "height": 900})
+        cov = Coverage(tab)
+        errors = []
+        tab.on("pageerror", lambda exc: errors.append(str(exc)))
+        tab.goto(site)
+        tab.wait_for_selector("#working", state="visible")
+        going = "That doesn’t show the session is still working."
+        queued, done = "Assistant starts it at its next check.", "The agent marks it done when it records its result."
+        rows = working_steps(tab)
+        assert [r[:4] for r in rows] == [
+            ["Unreadable start (td-305)", "Started", 1, 1], ["Workspace only (td-304)", "Started", 1, 1],
+            ["Has a PR (td-303)", "PR open", 1, 2], ["Started here (td-302)", "Started Nov 20", 1, 1],
+            ["Not started (td-301)", "Queued", 1, 0]], "newest first; done and blocked work stays out"
+        assert [r[4] for r in rows] == [None, None, ["https://github.com/o/r/pull/30", "_blank"], None, None], \
+            "only a web address becomes a link"
+        tips = [r[5] for r in rows]
+        assert tips[0] == [queued, f"Assistant started it. {going}", None, done]
+        assert tips[1] == [queued, f"Assistant started it in workspace:9. {going}", None, done]
+        assert tips[2][1].startswith("Assistant started it Nov 20") and tips[2][1].endswith(f"M. {going}")
+        assert tips[2][2] == "https://github.com/o/r/pull/30"
+        assert tips[3][1].startswith("Assistant started it Nov 20") and tips[3][1].endswith(f" in workspace:7. {going}")
+        assert tips[4] == [queued, None, None, done]
+        assert tab.locator("#ready .ready-list > li").count() == 2 and tab.locator('#working li[data-id="td-306"]').count() == 0
+        assert [tab.locator(f'#working li[data-id="td-30{n}"]').get_by_role("button", name="Open workspace").count()
+                for n in (1, 2, 3, 4, 5)] == [0, 1, 0, 1, 0]
+        tab.locator('#working li[data-id="td-302"]').get_by_role("button", name="Open workspace").click()
+        wait_text(tab, ".toast", "Brought the workspace for td-302 to the front.")
+        assert asked == [{"id": "td-302"}]
+
+        doc = json.loads(wq.todo.read_text())
+        doc["items"][0].update(status="done", resultAt="2026-11-20T13:00:00+00:00", detail="x\n\nRESULT: Finished it")
+        wq.todo.write_text(json.dumps(doc))
+        tab.evaluate("refresh()")
+        tab.wait_for_selector('#ready li[data-id="td-301"]')
+        assert tab.locator('#working li[data-id="td-301"]').count() == 0, "finished work moves to Ready for you"
+        for item in doc["items"]:
+            item["status"] = "done"
+        wq.todo.write_text(json.dumps(doc))
+        tab.evaluate("refresh()")
+        tab.wait_for_selector("#working", state="hidden")
+        tab.set_viewport_size({"width": 390, "height": 900})
+        no_sideways_scroll(tab)
+        assert errors == []
+        cov.snap()
+        browser.close()
+
+
+def shown(tab, selector: str) -> list[str]:
+    return tab.eval_on_selector_all(selector, "els => els.filter(e => e.offsetParent).map(e => e.querySelector('.sf-title').textContent)")
+
+
+def press_slash(tab, **mods) -> None:
+    tab.evaluate("m => document.body.dispatchEvent(new KeyboardEvent('keydown', {key: '/', bubbles: true, ...m}))", mods)
+
+
+def test_slash_searches_the_tab_you_are_on_by_row_text_and_clears_on_escape_or_a_tab_switch(site, wq):
+    seed(wq)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        tab = browser.new_page(viewport={"width": 1280, "height": 900})
+        cov = Coverage(tab)
+        errors = []
+        tab.on("pageerror", lambda exc: errors.append(str(exc)))
+        tab.goto(site + "#open-list")
+        tab.wait_for_selector("#tab-search", state="visible")
+        focused = "document.activeElement.id"
+        for mod in ("metaKey", "ctrlKey", "altKey"):
+            press_slash(tab, **{mod: True})
+            assert tab.evaluate(focused) != "tab-search", mod
+        tab.keyboard.press("/")
+        assert tab.evaluate(focused) == "tab-search"
+        rows = "#open-list .sf-row"
+        everything = shown(tab, rows)
+        tab.keyboard.type("change 15")
+        assert shown(tab, rows) == ["o/r#15: Change 15"]
+        assert tab.locator("#open-list .sf-lane:visible").count() == 1, "a lane with no match hides"
+        assert tab.locator("#open-list #ready").is_hidden() and tab.locator("#tab-search-empty").is_hidden()
+        tab.fill("#tab-search", "td-101")
+        assert shown(tab, "#ready .ready-list > li") == [" (td-101)"]
+        tab.evaluate("refresh()")
+        tab.wait_for_timeout(300)
+        assert shown(tab, "#ready .ready-list > li") == [" (td-101)"], "a refresh redraws Ready for you and keeps the search"
+
+        tab.fill("#tab-search", "send to agent")
+        assert shown(tab, rows) == [] and tab.locator("#tab-search-empty").is_visible(), "button labels don't match"
+        assert text(tab, "#tab-search-empty") == "Nothing on this tab matches. Press Escape to clear the search."
+        tab.press("#tab-search", "Escape")
+        assert tab.input_value("#tab-search") == "" and tab.evaluate(focused) != "tab-search"
+        assert shown(tab, rows) == everything and tab.locator("#tab-search-empty").is_hidden()
+        tab.focus("#tab-search")
+        tab.keyboard.type("a/b")
+        assert tab.input_value("#tab-search") == "a/b", "a slash typed in the box is a slash"
+
+        tab.locator('#tabs .tab[data-t="mailbox"]').click()
+        tab.wait_for_selector('#tabs .tab.on[data-t="mailbox"]')
+        assert tab.input_value("#tab-search") == "", "switching tabs clears the search"
+        section = '#mailbox details[data-group="gmail-shop"]'
+        assert not tab.evaluate(f"document.querySelector('{section}').open"), "the seed's shopping group starts closed"
+        tab.locator("#tab-search").press_sequentially("g-shop")
+        assert tab.evaluate(f"(d => d.open && d.dataset.qWas === '')(document.querySelector('{section}'))"), \
+            "a closed section with a match opens"
+        assert shown(tab, "#mailbox .ap-row") == ["Mail g-shop"]
+        tab.press("#tab-search", "Escape")
+        assert tab.evaluate(f"(d => !d.open && !('qWas' in d.dataset))(document.querySelector('{section}'))"), \
+            "Escape puts it back the way it was"
+        tab.set_viewport_size({"width": 390, "height": 900})
+        no_sideways_scroll(tab)
+        assert errors == []
         cov.snap()
         browser.close()
 
