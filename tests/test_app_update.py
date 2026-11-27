@@ -915,3 +915,20 @@ def test_a_dirty_clock_that_cant_be_cleared_never_stops_the_update(pulse, tmp_pa
     finally:
         (tmp_path / ".assistant").chmod(0o700)
     assert calls == [("app_update", ())]
+
+
+def test_a_commit_whose_updater_hangs_on_start_is_refused(au, tmp_path, monkeypatch):
+    set_up(au, tmp_path)
+    monkeypatch.setattr(au, "START_TIMEOUT_SEC", 1)
+    hung = archive(NEW, {"bin/app_update.py": "import time\ntime.sleep(30)\n"})
+    result = au.maybe_update(now=5000, opener=GitHub(NEW, {NEW: hung}))
+    assert result["skipped_reason"] == "syntax-fail" and result["syntax_error"] == "bin/app_update.py --help didn't finish in 1s"
+
+
+def test_a_launch_agent_that_cant_be_read_is_left_alone(au, tmp_path, launchctl):
+    set_up(au, tmp_path)
+    agents = tmp_path / "Library/LaunchAgents"
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / "com.assistant.gone.plist").symlink_to(tmp_path / "nowhere.plist")
+    result = au.maybe_update(now=5000, from_pulse=False, opener=GitHub(OLD))
+    assert result["moved_services"] == [] and "error" not in result

@@ -49,6 +49,7 @@ DEFAULT_INTERVAL_SEC = 3600
 REJECT_REMIND_SEC = 86400
 INSTALL_TIMEOUT_SEC = 300
 NET_TIMEOUT_SEC = 60
+START_TIMEOUT_SEC = 60
 SHA = re.compile(r"[0-9a-f]{40}")
 SLUG = re.compile(r"[\w.-]+/[\w.-]+")
 SELF_PLIST = f"launchagents/{self_update.SELF_PLIST_LABEL}.plist"
@@ -168,9 +169,9 @@ def starts(tree: Path) -> tuple[bool, str]:
     so the next update can run; else (False, why)."""
     try:
         p = subprocess.run([sys.executable, "-I", str(tree / "bin/app_update.py"), "--help"],
-                           capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+                           capture_output=True, text=True, timeout=START_TIMEOUT_SEC, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
-        return False, "bin/app_update.py --help didn't finish in 60s"
+        return False, f"bin/app_update.py --help didn't finish in {START_TIMEOUT_SEC}s"
     if p.returncode:
         return False, f"bin/app_update.py won't start: {(p.stderr or p.stdout).strip()[-300:]}"
     return True, "ok"
