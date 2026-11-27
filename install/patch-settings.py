@@ -6,6 +6,9 @@ Ensures:
     It forwards SessionStart to cmux for agents started without cmux's Claude
     wrapper, so cmux still records them. Added when no SessionStart hook runs
     it; an existing registration is left as it is.
+  - In Claude settings (a settings file inside a .claude folder),
+    UserPromptSubmit runs hooks/idle-return.py. The hook does nothing until
+    ASSISTANT_IDLE_RETURN=1 is set.
   - No event runs cmux-session-ledger.py. cmux records sessions itself, so
     the ledger is retired; its registrations are removed, along with any
     matcher block or event that leaves empty.
@@ -28,6 +31,9 @@ AUTO_RESUME_SCRIPT = "cmux-auto-resume.py"
 AUTO_RESUME_CMD = f"python3 $HOME/.claude/hooks/{AUTO_RESUME_SCRIPT}"
 AUTO_RESUME_TIMEOUT = 10
 RETIRED_HOOK_SCRIPTS = ("cmux-session-ledger.py",)
+IDLE_RETURN_SCRIPT = "idle-return.py"
+IDLE_RETURN_CMD = f"python3 $HOME/.claude/hooks/{IDLE_RETURN_SCRIPT}"
+IDLE_RETURN_TIMEOUT = 5
 
 
 def runs(entry, scripts):
@@ -77,6 +83,20 @@ def ensure_auto_resume(hooks):
     return True
 
 
+def ensure_idle_return(hooks):
+    """Register the idle-return hook on UserPromptSubmit unless it already runs there."""
+    submit = hooks.get("UserPromptSubmit")
+    if not isinstance(submit, list):
+        if submit is not None:
+            return False
+        submit = hooks["UserPromptSubmit"] = []
+    if any(runs(entry, (IDLE_RETURN_SCRIPT,)) for entry in entries(submit)):
+        return False
+    submit.append({"matcher": "", "hooks": [
+        {"type": "command", "command": IDLE_RETURN_CMD, "timeout": IDLE_RETURN_TIMEOUT}]})
+    return True
+
+
 def patch_path(path):
     path = Path(path).expanduser()
     # Atomic replace on a SYMLINK would sever it (swap the link for a regular
@@ -110,7 +130,10 @@ def patch_path(path):
         print(f"  + SessionStart: {AUTO_RESUME_CMD}")
     else:
         print(f"  = SessionStart already runs {AUTO_RESUME_SCRIPT}")
-    if not (removed or added):
+    idle_added = path.parent.name == ".claude" and ensure_idle_return(hooks)
+    if idle_added:
+        print(f"  + UserPromptSubmit: {IDLE_RETURN_CMD}")
+    if not (removed or added or idle_added):
         print("  no changes needed")
         return False
 

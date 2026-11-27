@@ -9,6 +9,17 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
 
 ## [Unreleased]
 
+### Added
+- Add a catch-up for when you return to a Claude session after an idle gap.
+  With `ASSISTANT_IDLE_RETURN=1`, your first prompt after an hour or more away
+  makes Claude check live state, then answer a status question with a short
+  catch-up, restate what a one-word "yes" approves, or open other replies with
+  one line on where the work stands. The gap ignores resume bookkeeping, hook
+  output, messages from other sessions, and API error notices. It's off by
+  default; `ASSISTANT_IDLE_RETURN_MINUTES` sets the gap (default 60).
+  `install.sh --apply` registers `hooks/idle-return.py` on `UserPromptSubmit`
+  in Claude settings only.
+
 ### Security
 - Stop a Slack reaction from anyone else starting an agent on your Mac. Until
   now, when `SLACK_USER_ID` wasn't set, a reaction with your task emoji from

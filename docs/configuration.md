@@ -83,6 +83,31 @@ The lesson extractor's pass over repeated successful actions is also off. Set
 `ASSISTANT_LESSON_LEDGER_PASS=1` to turn it on. The pass that finds corrections
 in your sessions still runs when `ASSISTANT_LESSON_EXTRACTOR=1`.
 
+## Catch-up when you return to a session
+
+When you send a prompt to a Claude session after an hour or more away, this
+hook tells Claude to check live state first (git, pull requests, running jobs),
+then answer:
+
+- A status question, such as "status?" or "where are we", gets a catch-up of
+  six lines or fewer: the goal, what's done, what's left, and the one thing it
+  needs from you.
+- A one-word decision, such as "yes" or "go", gets one line that says what it
+  approves before Claude acts on it.
+- Any other prompt gets one line on where the work stands and what changed
+  while you were away.
+
+It's off by default. To turn it on, set `ASSISTANT_IDLE_RETURN=1` in
+`~/.zprofile` or in the `env` block of `~/.claude/settings.json`, then start
+or resume a session. `ASSISTANT_IDLE_RETURN_MINUTES` sets the gap; the default
+is `60`.
+
+The gap starts at your last prompt or Claude's last reply. Resuming a session,
+hook output, messages from other sessions, and API error notices don't reset
+it. `install.sh --apply` registers the hook, `hooks/idle-return.py`, on
+`UserPromptSubmit` in `~/.claude/settings.json`. It makes no model calls and
+runs in a few hundredths of a second.
+
 ## Strategist
 
 The Strategist is the model that drafts context for staged goal steps. Set it

@@ -22,12 +22,14 @@ INSTALL = REPO / "install.sh"
 LINKS = {
     ".claude/hooks/cmux-auto-resume.py": REPO / "hooks/cmux-auto-resume.py",
     ".claude/hooks/cmux-session-ledger.py": REPO / "hooks/cmux-session-ledger.py",
+    ".claude/hooks/idle-return.py": REPO / "hooks/idle-return.py",
     ".local/bin/cmux-restore-sessions": REPO / "bin/cmux-restore-sessions.py",
 }
 AUTO_RESUME = "python3 $HOME/.claude/hooks/cmux-auto-resume.py"
 LEDGER_START = "python3 $HOME/.claude/hooks/cmux-session-ledger.py start"
 LEDGER_END = "python3 $HOME/.claude/hooks/cmux-session-ledger.py end"
 REGISTRY = "$HOME/.claude/hooks/cmux-registry.py"
+IDLE_RETURN = "python3 $HOME/.claude/hooks/idle-return.py"
 
 
 @pytest.fixture
@@ -62,8 +64,9 @@ def test_fresh_apply_links_and_registers_the_session_hooks(tmp_path, install):
     assert "[4/5] Wiring cmux session hooks (hooks + CLI + settings)" in result.stdout
     for relative, target in LINKS.items():
         assert os.readlink(tmp_path / relative) == str(target), relative
-    for settings in (".claude/settings.json", ".factory/hooks.json"):
-        assert hooks(tmp_path / settings) == {"SessionStart": [AUTO_RESUME]}, settings
+    assert hooks(tmp_path / ".claude/settings.json") == {
+        "SessionStart": [AUTO_RESUME], "UserPromptSubmit": [IDLE_RETURN]}
+    assert hooks(tmp_path / ".factory/hooks.json") == {"SessionStart": [AUTO_RESUME]}
 
 
 def test_apply_on_the_live_layout_drops_only_the_ledger(tmp_path, install):
@@ -79,7 +82,8 @@ def test_apply_on_the_live_layout_drops_only_the_ledger(tmp_path, install):
 
     install("--apply")
 
-    assert hooks(settings) == {"SessionStart": [REGISTRY, AUTO_RESUME]}
+    assert hooks(settings) == {"SessionStart": [REGISTRY, AUTO_RESUME],
+                               "UserPromptSubmit": [IDLE_RETURN]}
     assert os.readlink(foreign) == str(tmp_path / "dev/mukul-memory/hooks/cmux-registry.py")
     patched = settings.read_text()
     backups = sorted(settings.parent.glob("settings.json.bak-*"))
