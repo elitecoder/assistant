@@ -24,7 +24,7 @@ MACHINE_SOURCES = ("system", "sdk")
 HUMAN_SOURCES = ("typed", "queued")
 MACHINE = ("<task-notification", "Another Claude session", "<agent-message", "<cross-session-message",
            "Manager", "Assistant picked your session", "Relayed by Mukul's session manager",
-           "Correction from Mukul's session manager")
+           "Correction from Mukul's session manager", "This comes from the readiness judge")
 STAGED_PROMPTS = "/.assistant/spawn-prompts/"
 TRANSPARENT = ("This session is being continued", "Caveat:", "<system-reminder", "<user-memory",
                "<command-name>", "<local-command-stdout>")

@@ -185,6 +185,7 @@ def test_a_local_slash_command_does_not_hide_the_gap(tmp_path):
     "Assistant picked your session as one of five that can land fast.",
     "Manager note: read the review and fix it.",
     "hands-off. Read /Users/me/.assistant/spawn-prompts/brief.md and follow it.",
+    "This comes from the readiness judge that Mukul Sharma runs on his sessions.",
 ])
 def test_a_message_automation_typed_while_you_were_away_does_not_hide_the_gap(tmp_path, text):
     out = run(tmp_path, [
