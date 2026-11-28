@@ -404,6 +404,17 @@ def test_a_hook_that_cannot_load_agent_session_stays_silent(tmp_path):
     assert (result.returncode, result.stdout, result.stderr) == (0, "", "")
 
 
+def test_the_hook_does_nothing_when_agent_session_cannot_load(monkeypatch):
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setitem(sys.modules, "agent_session", None)
+    monkeypatch.setenv("ASSISTANT_IDLE_RETURN", "1")
+    spec = importlib.util.spec_from_file_location("idle_return_without_seam", HOOK)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.agent_session is None
+    assert module.main() is None
+
+
 def test_the_hook_can_be_imported_without_running(tmp_path):
     spec = importlib.util.spec_from_file_location("idle_return", HOOK)
     module = importlib.util.module_from_spec(spec)
