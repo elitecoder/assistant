@@ -3,8 +3,9 @@ event on stdin, reading a transcript written into the test's tmp dir.
 
 It stays silent unless ASSISTANT_IDLE_RETURN is on and your last prompt, or
 Claude's last reply in a turn you started, is older than the gap. Resume
-bookkeeping, hook output, API error stubs, and turns started by another session
-or a task notification while you were away don't reset the gap.
+bookkeeping, hook output, local slash commands, API error stubs, and turns started
+by another session, a task notification, or a message automation typed while you
+were away don't reset the gap.
 """
 from __future__ import annotations
 
@@ -49,10 +50,14 @@ def attachment(ago):
             "attachment": {"type": "hook_success", "hookName": "SessionStart:resume"}}
 
 
+def clean_env():
+    return {k: v for k, v in os.environ.items() if not k.startswith("ASSISTANT_IDLE")}
+
+
 def run(tmp_path, records, text="status?", env=None):
     transcript = tmp_path / "session.jsonl"
     transcript.write_text("".join(json.dumps(r) + "\n" for r in records))
-    environment = {k: v for k, v in os.environ.items() if not k.startswith("ASSISTANT_IDLE")}
+    environment = clean_env()
     environment.update({"ASSISTANT_IDLE_RETURN": "1", **(env or {})})
     result = subprocess.run(
         [sys.executable, "-I", str(HOOK)],
@@ -72,7 +77,7 @@ def test_a_return_after_three_hours_asks_for_a_catch_up(tmp_path):
 def test_it_is_off_unless_the_setting_is_on(tmp_path):
     records = [reply(timedelta(days=2))]
     assert run(tmp_path, records, env={"ASSISTANT_IDLE_RETURN": "0"}) is None
-    environment = {k: v for k, v in os.environ.items() if not k.startswith("ASSISTANT_IDLE")}
+    environment = clean_env()
     transcript = tmp_path / "session.jsonl"
     result = subprocess.run(
         [sys.executable, "-I", str(HOOK)],
@@ -166,11 +171,77 @@ def test_your_prompt_saved_in_another_form_does_not_hide_the_gap(tmp_path):
     assert "after 3 hours away" in out["additionalContext"]
 
 
-def test_a_slash_command_counts_as_you_being_there(tmp_path):
-    assert run(tmp_path, [
+def test_a_local_slash_command_does_not_hide_the_gap(tmp_path):
+    out = run(tmp_path, [
+        typed(timedelta(days=1, minutes=1), "start"),
         reply(timedelta(days=1)),
         prompt(timedelta(minutes=5), "<command-name>/model</command-name>"),
+        prompt(timedelta(minutes=5), "<local-command-stdout>Set model</local-command-stdout>"),
+    ], text="where are we?")
+    assert "after 24 hours away" in out["additionalContext"]
+
+
+@pytest.mark.parametrize("text", [
+    "Assistant picked your session as one of five that can land fast.",
+    "Manager note: read the review and fix it.",
+    "hands-off. Read /Users/me/.assistant/spawn-prompts/brief.md and follow it.",
+])
+def test_a_message_automation_typed_while_you_were_away_does_not_hide_the_gap(tmp_path, text):
+    out = run(tmp_path, [
+        typed(timedelta(hours=5, minutes=1), "start"),
+        reply(timedelta(hours=5)),
+        typed(timedelta(minutes=20), text),
+        reply(timedelta(minutes=19), "On it."),
+    ], text="where are we?")
+    assert "after 5 hours away" in out["additionalContext"]
+
+
+@pytest.mark.parametrize("text", [
+    "<cross-session-message from=dev-f6>go</cross-session-message>",
+    "<agent-message>done</agent-message>",
+    "Read ~/.assistant/spawn-prompts/prompt-1.md in full and execute every instruction in it.",
+])
+def test_an_automation_prompt_arriving_after_the_gap_is_not_a_return(tmp_path, text):
+    assert run(tmp_path, [typed(timedelta(hours=3), "start"), reply(timedelta(hours=3))],
+               text=text) is None
+
+
+def test_a_claude_p_slash_command_saved_in_another_form_is_not_a_return(tmp_path):
+    assert run(tmp_path, [
+        typed(timedelta(hours=3, minutes=1), "start"),
+        reply(timedelta(hours=3)),
+        prompt(timedelta(seconds=1), "<command-message>review</command-message>",
+               origin={"kind": "human"}, promptSource="sdk"),
+    ], text="/review") is None
+
+
+def test_a_system_prompt_is_not_you_being_there(tmp_path):
+    out = run(tmp_path, [
+        typed(timedelta(hours=3, minutes=1), "start"),
+        reply(timedelta(hours=3)),
+        prompt(timedelta(minutes=5), "Scheduled check: CI is green.", promptSource="system"),
+        reply(timedelta(minutes=4), "Noted."),
+    ])
+    assert "after 3 hours away" in out["additionalContext"]
+
+
+def test_a_prompt_you_sent_seconds_ago_that_claude_answered_counts(tmp_path):
+    assert run(tmp_path, [
+        typed(timedelta(hours=3, minutes=1), "start"),
+        reply(timedelta(hours=3)),
+        agent_report(timedelta(hours=1)),
+        typed(timedelta(seconds=20), "also check CI"),
+        reply(timedelta(seconds=10), "CI is green."),
     ]) is None
+
+
+def test_a_session_you_never_typed_into_counts_from_claudes_last_reply(tmp_path):
+    out = run(tmp_path, [
+        typed(timedelta(hours=2, minutes=1),
+              "Read ~/.assistant/spawn-prompts/prompt-1.md in full and execute every instruction in it."),
+        reply(timedelta(hours=2), "Opened PR #12."),
+    ])
+    assert "after 2 hours away" in out["additionalContext"]
 
 
 def test_a_background_agent_report_and_its_reply_do_not_hide_the_gap(tmp_path):
@@ -252,6 +323,16 @@ def test_a_queued_agent_report_is_not_you_being_there(tmp_path):
     assert "after 5 hours away" in out["additionalContext"]
 
 
+def test_a_queued_message_automation_typed_is_not_you_being_there(tmp_path):
+    out = run(tmp_path, [
+        typed(timedelta(hours=5), "start"),
+        reply(timedelta(hours=5)),
+        queued(timedelta(minutes=28), "Manager note: read the review.", {"kind": "human"}),
+        reply(timedelta(minutes=27), "Read it."),
+    ])
+    assert "after 5 hours away" in out["additionalContext"]
+
+
 def test_a_half_written_last_line_does_not_break_prompts(tmp_path):
     transcript = tmp_path / "session.jsonl"
     run(tmp_path, [reply(timedelta(hours=2))])
@@ -260,7 +341,7 @@ def test_a_half_written_last_line_does_not_break_prompts(tmp_path):
     result = subprocess.run(
         [sys.executable, "-I", str(HOOK)],
         input=json.dumps({"transcript_path": str(transcript), "prompt": "status?"}),
-        capture_output=True, text=True, env={**os.environ, "ASSISTANT_IDLE_RETURN": "1"},
+        capture_output=True, text=True, env={**clean_env(), "ASSISTANT_IDLE_RETURN": "1"},
         timeout=30, check=True)
     assert "after 2 hours away" in result.stdout
 
@@ -276,7 +357,7 @@ def test_a_record_longer_than_one_read_is_kept_whole(tmp_path):
 
 @pytest.mark.parametrize("event", [{}, {"transcript_path": "/nonexistent/session.jsonl"}])
 def test_no_transcript_means_no_output(event):
-    environment = {**os.environ, "ASSISTANT_IDLE_RETURN": "1"}
+    environment = {**clean_env(), "ASSISTANT_IDLE_RETURN": "1"}
     result = subprocess.run([sys.executable, "-I", str(HOOK)], input=json.dumps(event),
                             capture_output=True, text=True, env=environment, timeout=30)
     assert result.returncode == 0

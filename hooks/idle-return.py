@@ -5,9 +5,11 @@ tell Claude to rebuild your context from live state before acting.
 Off unless ASSISTANT_IDLE_RETURN is 1, true, yes, or on.
 ASSISTANT_IDLE_RETURN_MINUTES sets the gap, default 60.
 The gap runs from your last prompt, or Claude's last reply in a turn you started.
-Resume bookkeeping, hook output, API error stubs, and turns started by another
-session, a background task, or a `claude -p` call don't count as activity, and
-a prompt from another session or a background task never counts as your return.
+Resume bookkeeping, hook output, local slash commands, API error stubs, and turns
+started by another session, a background task, a `claude -p` call, or a message
+automation typed into the terminal don't count as activity, and none of those
+prompts counts as your return. A session you never typed into counts from
+Claude's last reply.
 """
 import json
 import math
@@ -20,8 +22,12 @@ JUST_SENT_SECONDS = 30
 MACHINE_ORIGINS = ("task-notification", "peer")
 MACHINE_SOURCES = ("system", "sdk")
 HUMAN_SOURCES = ("typed", "queued")
-MACHINE = ("<task-notification", "Another Claude session", "<agent-message", "<cross-session-message")
-TRANSPARENT = ("This session is being continued", "Caveat:", "<system-reminder", "<user-memory")
+MACHINE = ("<task-notification", "Another Claude session", "<agent-message", "<cross-session-message",
+           "Manager", "Assistant picked your session", "Relayed by Mukul's session manager",
+           "Correction from Mukul's session manager")
+STAGED_PROMPTS = "/.assistant/spawn-prompts/"
+TRANSPARENT = ("This session is being continued", "Caveat:", "<system-reminder", "<user-memory",
+               "<command-name>", "<local-command-stdout>")
 
 INSTRUCTION = """The operator is returning to this session after {idle} away. They don't remember where it stood.
 Before acting on their message, check live state (git status, PR state via gh, running jobs), not your memory of it.
@@ -44,13 +50,18 @@ def gap_minutes():
     return minutes if math.isfinite(minutes) and minutes >= 0 else 60.0
 
 
+def typed_by_automation(text):
+    return text.startswith(MACHINE) or STAGED_PROMPTS in text
+
+
 def prompt_kind(record):
     """Who started the turn this user record opens: "human", "machine", "transparent", or None."""
     queued = record.get("attachment") if record.get("type") == "attachment" else None
     if isinstance(queued, dict) and queued.get("type") == "queued_command":
-        if (queued.get("origin") or {}).get("kind") == "human":
-            return "human", str(queued.get("prompt", "")).strip()
-        return "machine", None
+        text = str(queued.get("prompt", "")).strip()
+        if (queued.get("origin") or {}).get("kind") == "human" and not typed_by_automation(text):
+            return "human", text
+        return "machine", text
     if record.get("type") != "user" or record.get("isSidechain"):
         return None, None
     content = record.get("message", {}).get("content")
@@ -66,10 +77,10 @@ def prompt_kind(record):
         return "machine", text
     if record.get("isMeta") or not text:
         return None, None
+    if typed_by_automation(text):
+        return "machine", text
     if origin == "human" or source in HUMAN_SOURCES:
         return "human", text
-    if text.startswith(MACHINE):
-        return "machine", text
     if text.startswith(TRANSPARENT):
         return "transparent", text
     return "human", text
@@ -84,8 +95,9 @@ def stamp(record):
     return datetime.fromisoformat(record["timestamp"].replace("Z", "+00:00"))
 
 
-def last_activity(lines, now, incoming):
+def last_activity(lines, now):
     latest_reply = None
+    newest_reply = None
     newest_prompt = True
     for line in lines:
         try:
@@ -94,11 +106,11 @@ def last_activity(lines, now, incoming):
             continue
         if not record.get("timestamp"):
             continue
-        kind, text = prompt_kind(record)
+        kind, _ = prompt_kind(record)
         just_sent = (now - stamp(record)).total_seconds() < JUST_SENT_SECONDS
         if kind in ("human", "machine") and newest_prompt:
             newest_prompt = False
-            if kind == "machine" and just_sent and text == incoming:
+            if kind == "machine" and just_sent:
                 return None
         if kind == "human":
             if latest_reply is None and just_sent:
@@ -106,9 +118,10 @@ def last_activity(lines, now, incoming):
             return latest_reply or stamp(record)
         if kind == "machine":
             latest_reply = None
-        elif model_reply(record) and latest_reply is None:
-            latest_reply = stamp(record)
-    return latest_reply
+        elif model_reply(record):
+            latest_reply = latest_reply or stamp(record)
+            newest_reply = newest_reply or stamp(record)
+    return newest_reply
 
 
 def lines_from_end(path):
@@ -139,11 +152,10 @@ def main():
     path = event.get("transcript_path")
     if not path or not os.path.exists(path):
         return
-    incoming = str(event.get("prompt", "")).strip()
-    if incoming.startswith(MACHINE):
+    if typed_by_automation(str(event.get("prompt", "")).strip()):
         return
     now = datetime.now(timezone.utc)
-    then = last_activity(lines_from_end(path), now, incoming)
+    then = last_activity(lines_from_end(path), now)
     if then is None:
         return
     minutes = (now - then).total_seconds() / 60
