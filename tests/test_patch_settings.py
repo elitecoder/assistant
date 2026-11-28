@@ -313,3 +313,13 @@ def test_factory_hooks_do_not_get_the_idle_return_hook(tmp_path):
 
     assert module.patch_path(path) is False
     assert "UserPromptSubmit" not in json.loads(path.read_text())["hooks"]
+
+
+def test_a_non_list_user_prompt_submit_is_left_alone(tmp_path):
+    module = load_module()
+    settings = tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    settings.write_text(json.dumps({"hooks": {"SessionStart": [AUTO_RESUME_BLOCK],
+                                              "UserPromptSubmit": {"odd": True}}}))
+    assert module.patch_path(settings) is False
+    assert json.loads(settings.read_text())["hooks"]["UserPromptSubmit"] == {"odd": True}

@@ -9,6 +9,7 @@ were away don't reset the gap.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -362,6 +363,34 @@ def test_an_odd_record_is_skipped(tmp_path, odd):
         capture_output=True, text=True, env={**clean_env(), "ASSISTANT_IDLE_RETURN": "1"},
         timeout=30, check=True)
     assert "after 2 hours away" in result.stdout
+
+
+def test_a_prompt_saved_as_text_blocks_counts_as_you_being_there(tmp_path):
+    assert run(tmp_path, [
+        typed(timedelta(hours=3), "start"),
+        reply(timedelta(hours=3)),
+        prompt(timedelta(minutes=5), [{"type": "text", "text": "also check CI"},
+                                      {"type": "image", "source": {}}]),
+    ]) is None
+
+
+def test_tool_results_and_empty_or_meta_records_are_not_you_being_there(tmp_path):
+    out = run(tmp_path, [
+        typed(timedelta(hours=3, minutes=1), "start"),
+        reply(timedelta(hours=3)),
+        prompt(timedelta(minutes=5), [{"type": "tool_result", "content": "ok"}]),
+        prompt(timedelta(minutes=5), "   "),
+        prompt(timedelta(minutes=5), "Loaded the skill.", isMeta=True),
+    ])
+    assert "after 3 hours away" in out["additionalContext"]
+
+
+def test_the_hook_can_be_imported_without_running(tmp_path):
+    spec = importlib.util.spec_from_file_location("idle_return", HOOK)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.prompt_kind({"type": "user", "timestamp": stamp(timedelta(0)),
+                               "message": {"content": "where are we?"}}) == ("human", "where are we?")
 
 
 def test_a_half_written_last_line_does_not_break_prompts(tmp_path):
