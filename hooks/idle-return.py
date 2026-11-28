@@ -102,18 +102,17 @@ def last_activity(lines, now):
     for line in lines:
         try:
             record = json.loads(line.decode("utf-8", "replace"))
-        except json.JSONDecodeError:
+            kind, _ = prompt_kind(record)
+            just_sent = (now - stamp(record)).total_seconds() < JUST_SENT_SECONDS
+        except (AttributeError, KeyError, TypeError, ValueError):
             continue
-        if not record.get("timestamp"):
-            continue
-        kind, _ = prompt_kind(record)
-        just_sent = (now - stamp(record)).total_seconds() < JUST_SENT_SECONDS
-        if kind in ("human", "machine") and newest_prompt:
+        is_newest = newest_prompt and kind in ("human", "machine")
+        if is_newest:
             newest_prompt = False
             if kind == "machine" and just_sent:
                 return None
         if kind == "human":
-            if latest_reply is None and just_sent:
+            if is_newest and latest_reply is None and just_sent:
                 continue
             return latest_reply or stamp(record)
         if kind == "machine":

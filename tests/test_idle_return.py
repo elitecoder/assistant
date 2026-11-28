@@ -334,6 +334,36 @@ def test_a_queued_message_automation_typed_is_not_you_being_there(tmp_path):
     assert "after 5 hours away" in out["additionalContext"]
 
 
+def test_retyping_a_prompt_seconds_after_the_last_one_is_not_a_return(tmp_path):
+    assert run(tmp_path, [
+        typed(timedelta(hours=3, minutes=1), "start"),
+        reply(timedelta(hours=3)),
+        typed(timedelta(seconds=15), "continue"),
+        typed(timedelta(seconds=1), "continue"),
+    ], text="continue") is None
+
+
+@pytest.mark.parametrize("odd", [
+    "[1, 2]",
+    '{"type": "user", "timestamp": "yesterday", "message": {"content": "hi"}}',
+    '{"type": "user", "timestamp": "2026-11-27T10:00:00", "message": {"content": "hi"}}',
+    '{"type": "user", "timestamp": "2026-11-27T10:00:00Z", "message": null}',
+    '{"type": "user", "timestamp": "2026-11-27T10:00:00Z", "origin": "human", "message": {"content": "hi"}}',
+    '{"type": "attachment", "timestamp": "2026-11-27T10:00:00Z", "attachment": {"type": "queued_command", "origin": "human"}}',
+])
+def test_an_odd_record_is_skipped(tmp_path, odd):
+    transcript = tmp_path / "session.jsonl"
+    run(tmp_path, [typed(timedelta(hours=2, minutes=1), "start"), reply(timedelta(hours=2))])
+    with open(transcript, "a") as f:
+        f.write(odd + "\n")
+    result = subprocess.run(
+        [sys.executable, "-I", str(HOOK)],
+        input=json.dumps({"transcript_path": str(transcript), "prompt": "status?"}),
+        capture_output=True, text=True, env={**clean_env(), "ASSISTANT_IDLE_RETURN": "1"},
+        timeout=30, check=True)
+    assert "after 2 hours away" in result.stdout
+
+
 def test_a_half_written_last_line_does_not_break_prompts(tmp_path):
     transcript = tmp_path / "session.jsonl"
     run(tmp_path, [reply(timedelta(hours=2))])
