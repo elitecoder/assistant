@@ -16,6 +16,10 @@ import math
 import os
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bin"))
+import agent_session  # noqa: E402
 
 CHUNK_BYTES = 1_000_000
 JUST_SENT_SECONDS = 30
@@ -62,7 +66,7 @@ def prompt_kind(record):
         if (queued.get("origin") or {}).get("kind") == "human" and not typed_by_automation(text):
             return "human", text
         return "machine", text
-    if record.get("type") != "user" or record.get("isSidechain"):
+    if agent_session.record_role(record) != "user" or record.get("isSidechain"):
         return None, None
     content = record.get("message", {}).get("content")
     if isinstance(content, list):
@@ -87,7 +91,7 @@ def prompt_kind(record):
 
 
 def model_reply(record):
-    return (record.get("type") == "assistant" and not record.get("isSidechain")
+    return (agent_session.record_role(record) == "assistant" and not record.get("isSidechain")
             and record.get("message", {}).get("model") != "<synthetic>")
 
 
