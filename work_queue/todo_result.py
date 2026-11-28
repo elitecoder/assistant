@@ -3,6 +3,7 @@
 
     todo_result.py td-NNN "what you did, with links"
     todo_result.py td-NNN --blocked "what you need"
+    todo_result.py td-NNN --pr https://github.com/o/r/pull/N
 
 It also holds the Work queue's one reader and writer of the TODO store.
 """
@@ -10,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from assistant import records, todostore  # noqa: E402
 
 RESULT_TAG = "RESULT:"
+LINK = re.compile(r"https?://\S+")
 
 
 def todo_path() -> Path:
@@ -47,6 +50,21 @@ def write_store(doc: dict) -> None:
     tmp.replace(path)
 
 
+def record_pr(td_id: str, url: str) -> None:
+    """Record the pull request an agent opened for this TODO. The TODO stays as it is."""
+    if not LINK.fullmatch(url):
+        raise SystemExit(f"not a link: {url}")
+    with todostore.todo_lock():
+        doc = read_store()
+        item = next((i for i in doc.get("items", []) if i.get("id") == td_id), None)
+        if item is None:
+            raise SystemExit(f"{td_id} not found")
+        item["prUrl"] = url
+        doc["_lastUpdated"] = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        write_store(doc)
+    print(f"{td_id}: pull request recorded")
+
+
 def main(td_id: str, text: str, blocked: bool = False) -> None:
     text = " ".join(text.split())
     if not text:
@@ -70,10 +88,12 @@ def main(td_id: str, text: str, blocked: bool = False) -> None:
 
 
 def cli(argv: list[str]) -> None:
+    if len(argv) == 3 and argv[1] == "--pr":
+        return record_pr(argv[0], argv[2])
     blocked = "--blocked" in argv
     args = [a for a in argv if a != "--blocked"]
-    if len(args) != 2:
-        raise SystemExit('usage: todo_result.py td-NNN [--blocked] "text"')
+    if len(args) != 2 or "--pr" in args:
+        raise SystemExit('usage: todo_result.py td-NNN [--blocked] "text"  |  todo_result.py td-NNN --pr <link>')
     main(args[0], args[1], blocked)
 
 

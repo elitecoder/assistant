@@ -3,6 +3,7 @@
 WITH_AGENTS = "tests/test_work_queue_browser.py::test_with_agents_shows_each_sent_task_still_going_with_the_steps_assistant_recorded"
 ESCAPE_WHY = "tests/test_work_queue_browser.py::test_escape_in_the_search_clears_it_and_leaves_an_open_why_block_open"
 PLACEHOLDER = "tests/test_work_queue_browser.py::test_the_placeholder_page_runs_the_same_script"
+PR_LINK = "tests/test_work_queue_server.py::test_the_agent_records_its_pull_request_and_the_page_state_shows_it_without_closing_the_todo"
 SEARCH = "tests/test_work_queue_browser.py::test_slash_searches_the_tab_you_are_on_by_row_text_and_clears_on_escape_or_a_tab_switch"
 
 CHECKS = (
@@ -257,5 +258,40 @@ CHECKS = (
         ".why-box, .ap-urow > a')",
         ".why-box')",
         SEARCH,
+    ),
+    (
+        "the agent's pull request is saved on its TODO",
+        "work_queue/todo_result.py",
+        '        item["prUrl"] = url\n',
+        "",
+        PR_LINK,
+    ),
+    (
+        "the result command takes --pr and a link",
+        "work_queue/todo_result.py",
+        '    if len(argv) == 3 and argv[1] == "--pr":\n        return record_pr(argv[0], argv[2])\n',
+        "",
+        PR_LINK,
+    ),
+    (
+        "the result command records only a link as a pull request",
+        "work_queue/todo_result.py",
+        "    if not LINK.fullmatch(url):",
+        "    if not url:",
+        PR_LINK,
+    ),
+    (
+        "a bare --pr is a usage error, not a result",
+        "work_queue/todo_result.py",
+        ' or "--pr" in args:',
+        ":",
+        PR_LINK,
+    ),
+    (
+        "a sent agent is told to record its pull request",
+        "work_queue/server.py",
+        '(f"As soon as you open a pull request, run: {RESULT_CMD} <td-id> --pr <its link> . "\n          f"When',
+        '(f"When',
+        "tests/test_work_queue_server.py::test_a_send_is_a_first_pass_unless_it_says_hands_off",
     ),
 )

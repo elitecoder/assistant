@@ -56,6 +56,8 @@ def test_a_hands_off_send_creates_an_auto_dispatch_todo_with_the_next_id_and_fin
     assert "Never send email, merge a PR, force-push, or delete data." in detail
     assert f"python3 {REPO / 'work_queue/todo_result.py'} td-051 \"<what you did, with links>\"" in detail
     assert f"{REPO / 'work_queue/todo_result.py'} td-051 --blocked" in detail
+    pr_cmd = f"As soon as you open a pull request, run: python3 {REPO / 'work_queue/todo_result.py'} td-051 --pr <its link> ."
+    assert pr_cmd in detail and detail.index(pr_cmd) < detail.index("When your part is done")
     assert "<td-id>" not in detail
     assert "first pass" not in detail and "leave those as drafts" not in detail
     queued = json.loads((wq.data / "queued.json").read_text())[ROW]
@@ -82,6 +84,8 @@ def test_a_send_is_a_first_pass_unless_it_says_hands_off(wq, body):
     assert "Automated Message" not in detail and "do not wait for review" not in detail and "hands-off" not in detail
     assert f"python3 {REPO / 'work_queue/todo_result.py'} td-051 \"<what you did, with links>\"" in detail
     assert f"{REPO / 'work_queue/todo_result.py'} td-051 --blocked" in detail
+    pr_cmd = f"As soon as you open a pull request, run: python3 {REPO / 'work_queue/todo_result.py'} td-051 --pr <its link> ."
+    assert pr_cmd in detail and detail.index(pr_cmd) < detail.index("When your part is done")
     code = fence_code(detail)
     assert detail.endswith(f"\n\n----- BEGIN UNTRUSTED ROW {code} -----\nTitle: Check the merge history\nDetail: Why it "
                            f"matters\nSource: https://x.slack.com/a\n----- END UNTRUSTED ROW {code} -----")
@@ -246,6 +250,31 @@ def test_todo_result_cli_closes_the_todo_and_rejects_bad_input(wq):
         todo_result.cli(["td-051", "  "])
     with pytest.raises(SystemExit, match="td-999 not found"):
         todo_result.cli(["td-999", "--blocked", "why"])
+
+
+def test_the_agent_records_its_pull_request_and_the_page_state_shows_it_without_closing_the_todo(wq):
+    server.queue_todo({"key": ROW, "title": "A"})
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    script = str(REPO / "work_queue/todo_result.py")
+    link = "https://github.com/o/r/pull/12"
+    assert server.state()["queued"][ROW]["pr"] == ""
+    ok = subprocess.run([sys.executable, script, "td-051", "--pr", link], capture_output=True, text=True, env=env)
+    assert ok.returncode == 0 and ok.stdout == "td-051: pull request recorded\n"
+    item = wq.items()[-1]
+    assert (item["prUrl"], item["status"], "\n\nRESULT:" in item["detail"]) == (link, "open", False)
+    assert server.state()["queued"][ROW] | {"finished": ""} == {
+        "id": "td-051", "title": "A", "status": "open", "result": "", "reason": "", "finished": "", "workspace": "",
+        "started": "", "pr": link}
+    for bad in (["td-051", "--pr", "github.com/o/r/pull/12"], ["td-051", "--pr", "https://x y"]):
+        with pytest.raises(SystemExit, match="not a link"):
+            todo_result.cli(bad)
+    with pytest.raises(SystemExit, match="td-999 not found"):
+        todo_result.cli(["td-999", "--pr", link])
+    with pytest.raises(SystemExit, match="usage: todo_result.py"):
+        todo_result.cli(["td-051", "--pr"])
+    assert wq.items()[-1]["prUrl"] == link and wq.items()[-1]["status"] == "open"
+    todo_result.main("td-051", f"Opened {link}")
+    assert wq.items()[-1]["prUrl"] == link, "finishing keeps the recorded pull request"
 
 
 # ─── marks ───────────────────────────────────────────────────────────────────

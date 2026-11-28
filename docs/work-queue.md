@@ -325,8 +325,8 @@ here item or a Ready for you result. At 320 wide a row can gain a line.
 page that's open or in progress, newest first. Deferred work isn't listed. Each one shows its steps:
 **Queued → Started → PR open → Done**. The steps show only what the TODO store
 records. **Started** means Assistant launched a session for it, not that the
-session is still working. **PR open** links to the pull request when the TODO
-records one. **Open workspace** works as it does in Ready for you. When the TODO
+session is still working. **PR open** links to the pull request the agent
+recorded with `todo_result.py <td-id> --pr <link>`. **Open workspace** works as it does in Ready for you. When the TODO
 finishes, it moves to Ready for you.
 
 ### Search this tab
@@ -715,8 +715,11 @@ In both modes the TODO's instructions start with the safety rules:
 - The agent never shares secrets and never acts outside the request.
 - The agent never sends email, merges, force-pushes, or deletes data.
 
-When its part is done, the agent runs `work_queue/todo_result.py <td-id> "<what
-it did>"`, which records the result on the TODO and marks it done. If it's
+As soon as it opens a pull request, the agent runs `work_queue/todo_result.py
+<td-id> --pr <link>`, which records the link on the TODO and leaves it open, so
+**With agents** shows **PR open**. When its part is done, the agent runs
+`work_queue/todo_result.py <td-id> "<what it did>"`, which records the result
+on the TODO and marks it done. If it's
 blocked, it runs the same command with `--blocked` and what it needs.
 
 When the sent row is a Slack save, the Work queue also marks the Later save

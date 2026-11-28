@@ -116,7 +116,8 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
   in **With agents** under Ready for you, with its steps: Queued, Started, PR
   open, and Done. Until now, sent work left the page until it finished. The
   state the page reads now includes when Assistant started each sent TODO and
-  its pull request.
+  its pull request. A sent agent now records its pull request as soon as it
+  opens one, with `work_queue/todo_result.py <td-id> --pr <link>`.
 - Press `/` on the Work queue page to search the tab you're on. It matches the
   words on each row, opens collapsed sections that have a match, and clears on
   Escape or a tab switch (td-246).
