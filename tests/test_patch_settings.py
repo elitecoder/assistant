@@ -24,6 +24,7 @@ AUTO_RESUME = "python3 $HOME/.claude/hooks/cmux-auto-resume.py"
 LEDGER_START = "python3 $HOME/.claude/hooks/cmux-session-ledger.py start"
 LEDGER_END = "python3 $HOME/.claude/hooks/cmux-session-ledger.py end"
 REGISTRY = "$HOME/.claude/hooks/cmux-registry.py"
+IDLE_RETURN = "python3 $HOME/.claude/hooks/idle-return.py"
 AUTO_RESUME_BLOCK = {"matcher": "", "hooks": [
     {"type": "command", "command": AUTO_RESUME, "timeout": 10}]}
 
@@ -244,7 +245,8 @@ def test_symlinked_target_is_written_through_not_severed(tmp_path):
     assert link.is_symlink()
     assert Path(link).resolve() == real.resolve()
     assert json.loads(real.read_text()) == {"existing": "keep", "hooks": {
-        "SessionStart": [block("keep-me"), AUTO_RESUME_BLOCK]}}
+        "SessionStart": [block("keep-me"), AUTO_RESUME_BLOCK],
+        "UserPromptSubmit": [{"matcher": "", "hooks": [hook(IDLE_RETURN)]}]}}
     assert len(list(real.parent.glob("settings.json.bak-*"))) == 1
 
 
@@ -286,3 +288,38 @@ def test_cli_requires_a_path():
     result = _run()
     assert result.returncode == 2
     assert "usage: patch-settings.py PATH" in result.stderr
+
+
+def test_claude_settings_gain_the_idle_return_hook_once(tmp_path):
+    module = load_module()
+    settings = tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    settings.write_text(json.dumps({"hooks": {
+        "SessionStart": [AUTO_RESUME_BLOCK],
+        "UserPromptSubmit": [block("sh state-hook.sh prompt-submit")],
+    }}))
+
+    assert module.patch_path(settings) is True
+    assert commands(json.loads(settings.read_text()), "UserPromptSubmit") == [
+        "sh state-hook.sh prompt-submit", IDLE_RETURN]
+    assert module.patch_path(settings) is False
+
+
+def test_factory_hooks_do_not_get_the_idle_return_hook(tmp_path):
+    module = load_module()
+    path = tmp_path / ".factory" / "hooks.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"hooks": {"SessionStart": [AUTO_RESUME_BLOCK]}}))
+
+    assert module.patch_path(path) is False
+    assert "UserPromptSubmit" not in json.loads(path.read_text())["hooks"]
+
+
+def test_a_non_list_user_prompt_submit_is_left_alone(tmp_path):
+    module = load_module()
+    settings = tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    settings.write_text(json.dumps({"hooks": {"SessionStart": [AUTO_RESUME_BLOCK],
+                                              "UserPromptSubmit": {"odd": True}}}))
+    assert module.patch_path(settings) is False
+    assert json.loads(settings.read_text())["hooks"]["UserPromptSubmit"] == {"odd": True}

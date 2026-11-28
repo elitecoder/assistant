@@ -935,7 +935,10 @@ log ""
 #                               registration that outlives the pull still exits 0
 #   bin/cmux-restore-sessions.py → ~/.local/bin/cmux-restore-sessions, for
 #                               panels with no resume binding
-#   settings  install/patch-settings.py registers cmux-auto-resume.py and drops
+#   hooks/idle-return.py        on a prompt after an idle gap, asks Claude for a
+#                               catch-up first; off unless ASSISTANT_IDLE_RETURN=1
+#   settings  install/patch-settings.py registers cmux-auto-resume.py and
+#             idle-return.py (Claude settings only), and drops
 #             the ledger registrations in Claude settings and Factory hooks
 # ~/.claude/hooks is a MIXED dir: symlink the files individually, never the
 # directory. A single `install.sh --apply` rebuilds all of this from git;
@@ -943,6 +946,7 @@ log ""
 log "[4/5] Wiring cmux session hooks (hooks + CLI + settings)"
 ensure_symlink "$HOME_DIR/.claude/hooks/cmux-auto-resume.py"    "$REPO_ROOT/hooks/cmux-auto-resume.py"
 ensure_symlink "$HOME_DIR/.claude/hooks/cmux-session-ledger.py" "$REPO_ROOT/hooks/cmux-session-ledger.py"
+ensure_symlink "$HOME_DIR/.claude/hooks/idle-return.py"         "$REPO_ROOT/hooks/idle-return.py"
 ensure_symlink "$HOME_DIR/.local/bin/cmux-restore-sessions"     "$REPO_ROOT/bin/cmux-restore-sessions.py"
 if [[ $APPLY -eq 1 ]]; then
     CMUX_CLI="${CMUX_BIN:-/Applications/cmux.app/Contents/Resources/bin/cmux}"

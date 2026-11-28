@@ -83,6 +83,41 @@ The lesson extractor's pass over repeated successful actions is also off. Set
 `ASSISTANT_LESSON_LEDGER_PASS=1` to turn it on. The pass that finds corrections
 in your sessions still runs when `ASSISTANT_LESSON_EXTRACTOR=1`.
 
+## Catch-up when you return to a session
+
+When you send a prompt to a Claude session after an hour or more away, this
+hook tells Claude to check live state first (git, pull requests, running jobs),
+then answer:
+
+- A status question, such as "status?" or "where are we", gets a catch-up of
+  six lines or fewer: the goal, what's done, what's left, and the one thing it
+  needs from you.
+- A one-word decision, such as "yes" or "go", gets one line that says what it
+  approves before Claude acts on it.
+- Any other prompt gets one line on where the work stands and what changed
+  while you were away.
+
+It's off by default. To turn it on, set `ASSISTANT_IDLE_RETURN=1` in
+`~/.zprofile` or in the `env` block of `~/.claude/settings.json`, then start
+or resume a session. `ASSISTANT_IDLE_RETURN_MINUTES` sets the gap in minutes; the
+default is `60`, which is also used when the value isn't a number.
+
+The gap starts at your last prompt, or at Claude's last reply in a turn you
+started. In a session you never typed into, such as one Assistant spawned, it
+starts at Claude's last reply. Resuming a session, hook output, local slash
+commands such as `/model`, API error notices, and turns started by another
+session, a background task, a `claude -p` call, or a message automation typed
+into the terminal while you were away don't reset it. Automation-typed messages
+are recognized by their opening words (for example, "Manager", "Assistant
+picked your session", "The previous turn appears stalled.", or "This comes from
+the readiness judge") or by a `spawn-prompts/` path. A message you queue while
+Claude is busy counts as you being there. An incoming prompt with one of those
+openings, or from a background task or another session, never counts as your
+return. A `claude -p` prompt into a session after the gap does get the catch-up,
+because the hook can't tell it from yours. `install.sh --apply` registers the hook, `hooks/idle-return.py`, on
+`UserPromptSubmit` in `~/.claude/settings.json`. It makes no model calls and
+runs in a few hundredths of a second.
+
 ## Strategist
 
 The Strategist is the model that drafts context for staged goal steps. Set it
