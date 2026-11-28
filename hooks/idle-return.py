@@ -61,11 +61,11 @@ def prompt_kind(record):
                            if isinstance(b, dict) and b.get("type") == "text")
     origin = (record.get("origin") or {}).get("kind")
     source = record.get("promptSource")
+    text = content.strip() if isinstance(content, str) else ""
     if origin in MACHINE_ORIGINS or source in MACHINE_SOURCES:
-        return "machine", None
-    if record.get("isMeta") or not isinstance(content, str) or not content.strip():
+        return "machine", text
+    if record.get("isMeta") or not text:
         return None, None
-    text = content.strip()
     if origin == "human" or source in HUMAN_SOURCES:
         return "human", text
     if text.startswith(MACHINE):
@@ -84,8 +84,9 @@ def stamp(record):
     return datetime.fromisoformat(record["timestamp"].replace("Z", "+00:00"))
 
 
-def last_activity(lines, now):
+def last_activity(lines, now, incoming):
     latest_reply = None
+    newest_prompt = True
     for line in lines:
         try:
             record = json.loads(line.decode("utf-8", "replace"))
@@ -93,9 +94,14 @@ def last_activity(lines, now):
             continue
         if not record.get("timestamp"):
             continue
-        kind, _ = prompt_kind(record)
+        kind, text = prompt_kind(record)
+        just_sent = (now - stamp(record)).total_seconds() < JUST_SENT_SECONDS
+        if kind in ("human", "machine") and newest_prompt:
+            newest_prompt = False
+            if kind == "machine" and just_sent and text == incoming:
+                return None
         if kind == "human":
-            if latest_reply is None and (now - stamp(record)).total_seconds() < JUST_SENT_SECONDS:
+            if latest_reply is None and just_sent:
                 continue
             return latest_reply or stamp(record)
         if kind == "machine":
@@ -133,10 +139,11 @@ def main():
     path = event.get("transcript_path")
     if not path or not os.path.exists(path):
         return
-    if str(event.get("prompt", "")).lstrip().startswith(MACHINE):
+    incoming = str(event.get("prompt", "")).strip()
+    if incoming.startswith(MACHINE):
         return
     now = datetime.now(timezone.utc)
-    then = last_activity(lines_from_end(path), now)
+    then = last_activity(lines_from_end(path), now, incoming)
     if then is None:
         return
     minutes = (now - then).total_seconds() / 60

@@ -194,6 +194,15 @@ def test_an_sdk_prompt_is_not_you_being_there(tmp_path):
     assert "after 3 hours away" in out["additionalContext"]
 
 
+def test_an_sdk_prompt_arriving_after_the_gap_is_not_a_return(tmp_path):
+    text = "You are a verification gate."
+    assert run(tmp_path, [
+        typed(timedelta(hours=3, minutes=1), "ship it"),
+        reply(timedelta(hours=3), "Shipped."),
+        prompt(timedelta(seconds=1), text, origin={"kind": "human"}, promptSource="sdk"),
+    ], text=text) is None
+
+
 def test_resending_the_same_text_after_an_error_is_not_a_return(tmp_path):
     assert run(tmp_path, [
         typed(timedelta(hours=20), "continue"),
