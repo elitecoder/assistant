@@ -385,6 +385,20 @@ def test_tool_results_and_empty_or_meta_records_are_not_you_being_there(tmp_path
     assert "after 3 hours away" in out["additionalContext"]
 
 
+def test_a_hook_that_cannot_load_agent_session_stays_silent(tmp_path):
+    (tmp_path / "hooks").mkdir()
+    copy = tmp_path / "hooks" / "idle-return.py"
+    copy.write_text(HOOK.read_text())
+    transcript = tmp_path / "session.jsonl"
+    transcript.write_text(json.dumps(reply(timedelta(hours=3))) + "\n")
+    result = subprocess.run(
+        [sys.executable, "-I", str(copy)],
+        input=json.dumps({"transcript_path": str(transcript), "prompt": "status?"}),
+        capture_output=True, text=True, env={**clean_env(), "ASSISTANT_IDLE_RETURN": "1"},
+        timeout=30)
+    assert (result.returncode, result.stdout, result.stderr) == (0, "", "")
+
+
 def test_the_hook_can_be_imported_without_running(tmp_path):
     spec = importlib.util.spec_from_file_location("idle_return", HOOK)
     module = importlib.util.module_from_spec(spec)

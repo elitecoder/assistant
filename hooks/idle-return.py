@@ -19,7 +19,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "bin"))
-import agent_session  # noqa: E402
+try:
+    import agent_session  # noqa: E402
+except Exception:
+    agent_session = None
 
 CHUNK_BYTES = 1_000_000
 JUST_SENT_SECONDS = 30
@@ -149,7 +152,7 @@ def humanize(minutes):
 
 
 def main():
-    if not enabled():
+    if not enabled() or agent_session is None:
         return
     event = json.load(sys.stdin)
     path = event.get("transcript_path")
