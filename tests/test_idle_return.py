@@ -185,8 +185,10 @@ def test_a_local_slash_command_does_not_hide_the_gap(tmp_path):
 @pytest.mark.parametrize("text", [
     "Assistant picked your session as one of five that can land fast.",
     "Manager note: read the review and fix it.",
+    "Manager: the gate ran on the new head.",
     "hands-off. Read /Users/me/.assistant/spawn-prompts/brief.md and follow it.",
     "This comes from the readiness judge that Mukul Sharma runs on his sessions.",
+    "The previous turn appears stalled. Re-check the last failed or incomplete step.",
 ])
 def test_a_message_automation_typed_while_you_were_away_does_not_hide_the_gap(tmp_path, text):
     out = run(tmp_path, [
@@ -202,6 +204,8 @@ def test_a_message_automation_typed_while_you_were_away_does_not_hide_the_gap(tm
     "<cross-session-message from=dev-f6>go</cross-session-message>",
     "<agent-message>done</agent-message>",
     "Read ~/.assistant/spawn-prompts/prompt-1.md in full and execute every instruction in it.",
+    "Read ~/.claude/spawn-prompts/td-12.md in full and execute every instruction in it.",
+    "The previous turn appears stalled. Re-check the last failed or incomplete step.",
 ])
 def test_an_automation_prompt_arriving_after_the_gap_is_not_a_return(tmp_path, text):
     assert run(tmp_path, [typed(timedelta(hours=3), "start"), reply(timedelta(hours=3))],
@@ -351,6 +355,7 @@ def test_retyping_a_prompt_seconds_after_the_last_one_is_not_a_return(tmp_path):
     '{"type": "user", "timestamp": "2026-11-27T10:00:00Z", "message": null}',
     '{"type": "user", "timestamp": "2026-11-27T10:00:00Z", "origin": "human", "message": {"content": "hi"}}',
     '{"type": "attachment", "timestamp": "2026-11-27T10:00:00Z", "attachment": {"type": "queued_command", "origin": "human"}}',
+    '{"type": "assistant", "timestamp": "2026-11-27T10:00:00Z", "message": null}',
 ])
 def test_an_odd_record_is_skipped(tmp_path, odd):
     transcript = tmp_path / "session.jsonl"
@@ -405,6 +410,43 @@ def test_the_hook_can_be_imported_without_running(tmp_path):
     spec.loader.exec_module(module)
     assert module.prompt_kind({"type": "user", "timestamp": stamp(timedelta(0)),
                                "message": {"content": "where are we?"}}) == ("human", "where are we?")
+
+
+def test_a_message_you_type_as_a_notice_starts_a_turn_is_still_a_return(tmp_path):
+    out = run(tmp_path, [
+        typed(timedelta(hours=3, minutes=1), "start"),
+        reply(timedelta(hours=3)),
+        prompt(timedelta(seconds=5), "<task-notification> evals done </task-notification>",
+               origin={"kind": "task-notification"}, promptSource="system"),
+    ])
+    assert "after 3 hours away" in out["additionalContext"]
+
+
+def test_a_second_message_before_claude_replies_gets_no_second_catch_up(tmp_path):
+    assert run(tmp_path, [
+        typed(timedelta(hours=3, minutes=1), "start"),
+        reply(timedelta(hours=3)),
+        typed(timedelta(seconds=10), "status?"),
+    ], text="also check CI") is None
+
+
+def test_a_message_that_only_mentions_a_manager_is_yours(tmp_path):
+    out = run(tmp_path, [
+        typed(timedelta(hours=3, minutes=1), "start"),
+        reply(timedelta(hours=3)),
+        typed(timedelta(minutes=20), "Manager sessions keep looping. Why?"),
+        reply(timedelta(minutes=19), "They retry on CI."),
+    ], text="where are we?")
+    assert out is None
+
+
+def test_a_plain_peer_message_arriving_after_the_gap_is_not_a_return(tmp_path):
+    assert run(tmp_path, [
+        typed(timedelta(hours=3, minutes=1), "start"),
+        reply(timedelta(hours=3)),
+        prompt(timedelta(seconds=1), "done with the review", origin={"kind": "peer"},
+               promptSource="system"),
+    ], text="done with the review") is None
 
 
 def test_a_half_written_last_line_does_not_break_prompts(tmp_path):

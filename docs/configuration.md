@@ -108,8 +108,9 @@ starts at Claude's last reply. Resuming a session, hook output, local slash
 commands such as `/model`, API error notices, and turns started by another
 session, a background task, a `claude -p` call, or a message automation typed
 into the terminal while you were away don't reset it. Automation-typed messages
-are recognized by their opening words (for example, "Manager", "Assistant
-picked your session", or "This comes from the readiness judge") or by a path under `~/.assistant/spawn-prompts/`. A
+are recognized by their opening words (for example, "Manager:", "Assistant
+picked your session", "The previous turn appears stalled.", or "This comes from
+the readiness judge") or by a `spawn-prompts/` path. A
 message you queue while Claude is busy counts as you being there. None of these
 automated prompts counts as your return. `install.sh --apply` registers the hook, `hooks/idle-return.py`, on
 `UserPromptSubmit` in `~/.claude/settings.json`. It makes no model calls and

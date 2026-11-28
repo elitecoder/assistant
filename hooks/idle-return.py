@@ -30,9 +30,10 @@ MACHINE_ORIGINS = ("task-notification", "peer")
 MACHINE_SOURCES = ("system", "sdk")
 HUMAN_SOURCES = ("typed", "queued")
 MACHINE = ("<task-notification", "Another Claude session", "<agent-message", "<cross-session-message",
-           "Manager", "Assistant picked your session", "Relayed by Mukul's session manager",
+           "Manager:", "Manager note", "Manager review", "Manager correction",
+           "Assistant picked your session", "The previous turn appears stalled.", "Relayed by Mukul's session manager",
            "Correction from Mukul's session manager", "This comes from the readiness judge")
-STAGED_PROMPTS = "/.assistant/spawn-prompts/"
+STAGED_PROMPTS = "/spawn-prompts/"
 TRANSPARENT = ("This session is being continued", "Caveat:", "<system-reminder", "<user-memory",
                "<command-name>", "<local-command-stdout>")
 
@@ -93,6 +94,10 @@ def prompt_kind(record):
     return "human", text
 
 
+def same_prompt(saved, incoming):
+    return saved == incoming or (saved.startswith("<command-message>") and incoming.startswith("/"))
+
+
 def model_reply(record):
     return (agent_session.record_role(record) == "assistant" and not record.get("isSidechain")
             and record.get("message", {}).get("model") != "<synthetic>")
@@ -102,29 +107,31 @@ def stamp(record):
     return datetime.fromisoformat(record["timestamp"].replace("Z", "+00:00"))
 
 
-def last_activity(lines, now):
+def last_activity(lines, now, incoming):
     latest_reply = None
     newest_reply = None
     newest_prompt = True
     for line in lines:
         try:
             record = json.loads(line.decode("utf-8", "replace"))
-            kind, _ = prompt_kind(record)
+            kind, text = prompt_kind(record)
             just_sent = (now - stamp(record)).total_seconds() < JUST_SENT_SECONDS
+            reply = model_reply(record)
         except (AttributeError, KeyError, TypeError, ValueError):
             continue
         is_newest = newest_prompt and kind in ("human", "machine")
         if is_newest:
             newest_prompt = False
-            if kind == "machine" and just_sent:
+            if kind == "machine" and just_sent and (
+                    text == incoming or record.get("promptSource") == "sdk"):
                 return None
         if kind == "human":
-            if is_newest and latest_reply is None and just_sent:
+            if is_newest and latest_reply is None and just_sent and same_prompt(text, incoming):
                 continue
             return latest_reply or stamp(record)
         if kind == "machine":
             latest_reply = None
-        elif model_reply(record):
+        elif reply:
             latest_reply = latest_reply or stamp(record)
             newest_reply = newest_reply or stamp(record)
     return newest_reply
@@ -158,10 +165,11 @@ def main():
     path = event.get("transcript_path")
     if not path or not os.path.exists(path):
         return
-    if typed_by_automation(str(event.get("prompt", "")).strip()):
+    incoming = str(event.get("prompt", "")).strip()
+    if typed_by_automation(incoming):
         return
     now = datetime.now(timezone.utc)
-    then = last_activity(lines_from_end(path), now)
+    then = last_activity(lines_from_end(path), now, incoming)
     if then is None:
         return
     minutes = (now - then).total_seconds() / 60
