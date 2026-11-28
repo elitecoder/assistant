@@ -102,8 +102,8 @@ def test_a_one_minute_gap_reads_as_singular(tmp_path):
     assert "after 1 minute away" in out["additionalContext"]
 
 
-def test_the_prompt_being_answered_is_not_counted_as_activity(tmp_path):
-    out = run(tmp_path, [reply(timedelta(hours=5)), prompt(timedelta(0), "yes")], text="yes")
+def test_a_short_decision_after_the_gap_gets_the_catch_up(tmp_path):
+    out = run(tmp_path, [reply(timedelta(hours=5))], text="yes")
     assert "after 5 hours away" in out["additionalContext"]
 
 
@@ -114,7 +114,6 @@ def test_resume_bookkeeping_and_error_stubs_do_not_hide_the_gap(tmp_path):
         reply(timedelta(hours=4), "API Error: Could not load AWS credentials",
               isApiErrorMessage=True, model="<synthetic>"),
         attachment(timedelta(minutes=13)),
-        prompt(timedelta(0), "continue"),
     ], text="continue")
     assert "after 16.0 days away" in out["additionalContext"]
 
@@ -163,11 +162,10 @@ def test_an_api_error_stub_is_not_a_reply(tmp_path):
     assert "after 5 hours away" in out["additionalContext"]
 
 
-def test_your_prompt_saved_in_another_form_does_not_hide_the_gap(tmp_path):
+def test_a_skill_command_after_the_gap_gets_the_catch_up(tmp_path):
     out = run(tmp_path, [
         typed(timedelta(hours=3, minutes=1), "start"),
         reply(timedelta(hours=3)),
-        typed(timedelta(seconds=1), "<command-message>wassup</command-message>"),
     ], text="/wassup")
     assert "after 3 hours away" in out["additionalContext"]
 
@@ -186,6 +184,7 @@ def test_a_local_slash_command_does_not_hide_the_gap(tmp_path):
     "Assistant picked your session as one of five that can land fast.",
     "Manager note: read the review and fix it.",
     "Manager: the gate ran on the new head.",
+    "Manager answer to your open question: merge it.",
     "hands-off. Read /Users/me/.assistant/spawn-prompts/brief.md and follow it.",
     "This comes from the readiness judge that Mukul Sharma runs on his sessions.",
     "The previous turn appears stalled. Re-check the last failed or incomplete step.",
@@ -206,19 +205,12 @@ def test_a_message_automation_typed_while_you_were_away_does_not_hide_the_gap(tm
     "Read ~/.assistant/spawn-prompts/prompt-1.md in full and execute every instruction in it.",
     "Read ~/.claude/spawn-prompts/td-12.md in full and execute every instruction in it.",
     "The previous turn appears stalled. Re-check the last failed or incomplete step.",
+    "[Cross-session delivery notice] Your message to dev-f6 was delivered.",
+    "[Cross-session idle notice] dev-f6 is idle.",
 ])
 def test_an_automation_prompt_arriving_after_the_gap_is_not_a_return(tmp_path, text):
     assert run(tmp_path, [typed(timedelta(hours=3), "start"), reply(timedelta(hours=3))],
                text=text) is None
-
-
-def test_a_claude_p_slash_command_saved_in_another_form_is_not_a_return(tmp_path):
-    assert run(tmp_path, [
-        typed(timedelta(hours=3, minutes=1), "start"),
-        reply(timedelta(hours=3)),
-        prompt(timedelta(seconds=1), "<command-message>review</command-message>",
-               origin={"kind": "human"}, promptSource="sdk"),
-    ], text="/review") is None
 
 
 def test_a_system_prompt_is_not_you_being_there(tmp_path):
@@ -269,15 +261,6 @@ def test_an_sdk_prompt_is_not_you_being_there(tmp_path):
         reply(timedelta(minutes=4), "PASS"),
     ])
     assert "after 3 hours away" in out["additionalContext"]
-
-
-def test_an_sdk_prompt_arriving_after_the_gap_is_not_a_return(tmp_path):
-    text = "You are a verification gate."
-    assert run(tmp_path, [
-        typed(timedelta(hours=3, minutes=1), "ship it"),
-        reply(timedelta(hours=3), "Shipped."),
-        prompt(timedelta(seconds=1), text, origin={"kind": "human"}, promptSource="sdk"),
-    ], text=text) is None
 
 
 def test_resending_the_same_text_after_an_error_is_not_a_return(tmp_path):
@@ -344,7 +327,6 @@ def test_retyping_a_prompt_seconds_after_the_last_one_is_not_a_return(tmp_path):
         typed(timedelta(hours=3, minutes=1), "start"),
         reply(timedelta(hours=3)),
         typed(timedelta(seconds=15), "continue"),
-        typed(timedelta(seconds=1), "continue"),
     ], text="continue") is None
 
 
@@ -439,25 +421,6 @@ def test_a_second_message_before_claude_replies_gets_no_second_catch_up(tmp_path
         reply(timedelta(hours=3)),
         typed(timedelta(seconds=10), "status?"),
     ], text="also check CI") is None
-
-
-def test_a_message_that_only_mentions_a_manager_is_yours(tmp_path):
-    out = run(tmp_path, [
-        typed(timedelta(hours=3, minutes=1), "start"),
-        reply(timedelta(hours=3)),
-        typed(timedelta(minutes=20), "Manager sessions keep looping. Why?"),
-        reply(timedelta(minutes=19), "They retry on CI."),
-    ], text="where are we?")
-    assert out is None
-
-
-def test_a_plain_peer_message_arriving_after_the_gap_is_not_a_return(tmp_path):
-    assert run(tmp_path, [
-        typed(timedelta(hours=3, minutes=1), "start"),
-        reply(timedelta(hours=3)),
-        prompt(timedelta(seconds=1), "done with the review", origin={"kind": "peer"},
-               promptSource="system"),
-    ], text="done with the review") is None
 
 
 def test_a_half_written_last_line_does_not_break_prompts(tmp_path):

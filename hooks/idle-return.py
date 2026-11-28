@@ -7,8 +7,8 @@ ASSISTANT_IDLE_RETURN_MINUTES sets the gap, default 60.
 The gap runs from your last prompt, or Claude's last reply in a turn you started.
 Resume bookkeeping, hook output, local slash commands, API error stubs, and turns
 started by another session, a background task, a `claude -p` call, or a message
-automation typed into the terminal don't count as activity, and none of those
-prompts counts as your return. A session you never typed into counts from
+automation typed into the terminal don't count as activity. An incoming prompt
+counts as your return unless its text marks it as automation. A session you never typed into counts from
 Claude's last reply.
 """
 import json
@@ -25,12 +25,11 @@ except Exception:
     agent_session = None
 
 CHUNK_BYTES = 1_000_000
-JUST_SENT_SECONDS = 30
 MACHINE_ORIGINS = ("task-notification", "peer")
 MACHINE_SOURCES = ("system", "sdk")
 HUMAN_SOURCES = ("typed", "queued")
 MACHINE = ("<task-notification", "Another Claude session", "<agent-message", "<cross-session-message",
-           "Manager:", "Manager note", "Manager review", "Manager correction",
+           "[Cross-session delivery notice]", "[Cross-session idle notice]", "Manager",
            "Assistant picked your session", "The previous turn appears stalled.", "Relayed by Mukul's session manager",
            "Correction from Mukul's session manager", "This comes from the readiness judge")
 STAGED_PROMPTS = "/spawn-prompts/"
@@ -94,46 +93,37 @@ def prompt_kind(record):
     return "human", text
 
 
-def same_prompt(saved, incoming):
-    return saved == incoming or (saved.startswith("<command-message>") and incoming.startswith("/"))
-
-
 def model_reply(record):
     return (agent_session.record_role(record) == "assistant" and not record.get("isSidechain")
             and record.get("message", {}).get("model") != "<synthetic>")
 
 
 def stamp(record):
-    return datetime.fromisoformat(record["timestamp"].replace("Z", "+00:00"))
+    moment = datetime.fromisoformat(record["timestamp"].replace("Z", "+00:00"))
+    if moment.tzinfo is None:
+        raise ValueError("timestamp has no time zone")
+    return moment
 
 
-def last_activity(lines, now, incoming):
+def last_activity(lines):
+    """The incoming prompt isn't in the transcript yet when this hook runs."""
     latest_reply = None
     newest_reply = None
-    newest_prompt = True
     for line in lines:
         try:
             record = json.loads(line.decode("utf-8", "replace"))
-            kind, text = prompt_kind(record)
-            just_sent = (now - stamp(record)).total_seconds() < JUST_SENT_SECONDS
+            kind, _ = prompt_kind(record)
             reply = model_reply(record)
+            when = stamp(record)
         except (AttributeError, KeyError, TypeError, ValueError):
             continue
-        is_newest = newest_prompt and kind in ("human", "machine")
-        if is_newest:
-            newest_prompt = False
-            if kind == "machine" and just_sent and (
-                    text == incoming or record.get("promptSource") == "sdk"):
-                return None
         if kind == "human":
-            if is_newest and latest_reply is None and just_sent and same_prompt(text, incoming):
-                continue
-            return latest_reply or stamp(record)
+            return latest_reply or when
         if kind == "machine":
             latest_reply = None
         elif reply:
-            latest_reply = latest_reply or stamp(record)
-            newest_reply = newest_reply or stamp(record)
+            latest_reply = latest_reply or when
+            newest_reply = newest_reply or when
     return newest_reply
 
 
@@ -169,7 +159,7 @@ def main():
     if typed_by_automation(incoming):
         return
     now = datetime.now(timezone.utc)
-    then = last_activity(lines_from_end(path), now, incoming)
+    then = last_activity(lines_from_end(path))
     if then is None:
         return
     minutes = (now - then).total_seconds() / 60
