@@ -87,6 +87,10 @@ def test_it_is_off_unless_the_setting_is_on(tmp_path):
     assert result.stdout == ""
 
 
+def test_the_first_prompt_of_a_new_session_is_not_a_return(tmp_path):
+    assert run(tmp_path, [attachment(timedelta(hours=3))], text="start") is None
+
+
 def test_a_short_gap_is_not_a_return(tmp_path):
     assert run(tmp_path, [reply(timedelta(minutes=20))]) is None
 
