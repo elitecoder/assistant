@@ -238,6 +238,7 @@ is this here?** Focus moves into it, so one Tab reaches **Close**. It lists what
 Assistant recorded about the item, oldest first, each step with its time.
 A second click on **Why?**, **Close** or Esc closes it. Esc closes a note box or
 the list of reasons first if one is open, and otherwise the box you opened last.
+Esc in a search box with words in it clears only the search.
 Changing tabs closes any open box. A Ready for you result shows the steps of the
 row it came from.
 
@@ -317,6 +318,25 @@ plain Open list row there is about 98 px tall where it was 61, and its title has
 the full width. On a phone (390 wide) the link adds no line to an Open list row,
 an agent row, a row with a draft, an email, a row waiting for approval, a Start
 here item or a Ready for you result. At 320 wide a row can gain a line.
+
+### With agents
+
+**With agents** sits under Ready for you and lists each TODO you sent from the
+page that's open or in progress, newest first. Deferred work isn't listed. Each one shows its steps:
+**Queued → Started → PR open → Done**. The steps show only what the TODO store
+records. **Started** means Assistant launched a session for it, not that the
+session is still working. **PR open** links to the pull request the agent
+recorded with `todo_result.py <td-id> --pr <link>`. **Open workspace** works as it does in Ready for you. When the TODO
+finishes, it moves to Ready for you.
+
+### Search this tab
+
+Press `/` to search the tab you're on, or type in **Search this tab**. The
+search matches the words on each row, not its button labels or what you told
+Assistant about it. It hides groups with no shown match and opens collapsed
+sections that have one. **Select all** on Send to agents and **Approve all**
+take only the rows the search shows. Press Escape in the box, or switch tabs, to
+clear it. A refresh keeps it.
 
 ### Ready for you
 
@@ -695,8 +715,11 @@ In both modes the TODO's instructions start with the safety rules:
 - The agent never shares secrets and never acts outside the request.
 - The agent never sends email, merges, force-pushes, or deletes data.
 
-When its part is done, the agent runs `work_queue/todo_result.py <td-id> "<what
-it did>"`, which records the result on the TODO and marks it done. If it's
+As soon as it opens a pull request, the agent runs `work_queue/todo_result.py
+<td-id> --pr <link>`, which records the link on the TODO and leaves it open, so
+**With agents** shows **PR open**. When its part is done, the agent runs
+`work_queue/todo_result.py <td-id> "<what it did>"`, which records the result
+on the TODO and marks it done. If it's
 blocked, it runs the same command with `--blocked` and what it needs.
 
 When the sent row is a Slack save, the Work queue also marks the Later save

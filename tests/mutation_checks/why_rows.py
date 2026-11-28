@@ -419,8 +419,8 @@ CHECKS = (
     (
         "Escape closes a block from anywhere",
         P,
-        "if(ev.key!=='Escape'||!Object.keys(WHY).length)return;",
-        "if(ev.key!=='Never'||!Object.keys(WHY).length)return;",
+        "if(ev.key!=='Escape'||!Object.keys(WHY).length||ev.target.id",
+        "if(ev.key!=='Never'||!Object.keys(WHY).length||ev.target.id",
         TB + "test_the_why_block_takes_focus_reaches_close_with_one_tab_and_closes_every_way_with_focus_back_on_the_link",
     ),
     (

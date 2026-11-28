@@ -113,15 +113,16 @@ def test_the_pulse_prompt_shows_the_note_outside_and_above_the_fence(wq, monkeyp
 
 # ─── what the page hears about sent rows ─────────────────────────────────────
 
-def test_state_lists_each_sent_rows_todo_with_its_result_reason_finish_time_and_workspace(wq):
+def test_state_lists_each_sent_rows_todo_with_its_result_reason_finish_time_workspace_start_and_pr(wq):
     items = [
         {"id": "td-101", "title": "Done one", "status": "done", "resultAt": "2026-11-20T10:00:00+00:00",
-         "statusUpdatedAt": "x", "dispatchedWs": "workspace:7",
+         "statusUpdatedAt": "x", "dispatchedWs": "workspace:7", "dispatchedAt": "2026-11-20T08:00:00Z",
+         "prUrl": "https://github.com/o/r/pull/9",
          "detail": "rules\n\nRESULT: first\n\nRESULT: Wrote file:///x/a.md. See https://e.example/1"},
         {"id": "td-102", "title": "Blocked one", "status": "blocked", "statusReason": "Need access",
          "statusUpdatedAt": "2026-11-20T09:00:00+00:00", "detail": "rules\n\nRESULT: an old result"},
         {"id": "td-103", "title": None, "status": "in-progress", "statusReason": "dispatched to workspace:9",
-         "dispatchedWs": "workspace:9"},
+         "dispatchedWs": "workspace:9", "dispatchedAt": 5, "prUrl": None},
         {"id": "td-104"}, {"id": "td-105", "status": "removed"}]
     wq.todo.write_text(json.dumps({"items": items, "completed": [{"id": "td-106", "status": "done", "title": "Old"}]}))
     config.write_json(wq.data / "queued.json", {f"https://k/{n}": {"id": f"td-10{n}"} for n in range(1, 8)}
@@ -130,15 +131,16 @@ def test_state_lists_each_sent_rows_todo_with_its_result_reason_finish_time_and_
     assert view == {
         "https://k/1": {"id": "td-101", "title": "Done one", "status": "done", "result":
                         "Wrote file:///x/a.md. See https://e.example/1", "reason": "", "finished":
-                        "2026-11-20T10:00:00+00:00", "workspace": "workspace:7"},
+                        "2026-11-20T10:00:00+00:00", "workspace": "workspace:7",
+                        "started": "2026-11-20T08:00:00Z", "pr": "https://github.com/o/r/pull/9"},
         "https://k/2": {"id": "td-102", "title": "Blocked one", "status": "blocked", "result": "", "reason": "Need access",
-                        "finished": "2026-11-20T09:00:00+00:00", "workspace": ""},
+                        "finished": "2026-11-20T09:00:00+00:00", "workspace": "", "started": "", "pr": ""},
         "https://k/3": {"id": "td-103", "title": "", "status": "in-progress", "result": "", "reason": "", "finished": "",
-                        "workspace": "workspace:9"},
+                        "workspace": "workspace:9", "started": "", "pr": ""},
         "https://k/4": {"id": "td-104", "title": "", "status": "open", "result": "", "reason": "", "finished": "",
-                        "workspace": ""},
+                        "workspace": "", "started": "", "pr": ""},
         "https://k/6": {"id": "td-106", "title": "Old", "status": "done", "result": "", "reason": "", "finished": "",
-                        "workspace": ""}}
+                        "workspace": "", "started": "", "pr": ""}}
     assert server.state()["sent"] == sorted(view)
 
 

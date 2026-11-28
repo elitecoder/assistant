@@ -112,6 +112,15 @@ The version is carried in `pyproject.toml` and `src/assistant/__init__.py`
     stops the page from being built.
 
 ### Added
+- The Work queue page shows work you sent to an agent that isn't finished yet,
+  in **With agents** under Ready for you, with its steps: Queued, Started, PR
+  open, and Done. Until now, sent work left the page until it finished. The
+  state the page reads now includes when Assistant started each sent TODO and
+  its pull request. A sent agent now records its pull request as soon as it
+  opens one, with `work_queue/todo_result.py <td-id> --pr <link>`.
+- Press `/` on the Work queue page to search the tab you're on. It matches the
+  words on each row, opens collapsed sections that have a match, and clears on
+  Escape or a tab switch (td-246).
 - Find out why a row is on your Work queue, and what Assistant has done with
   it. Every Open list row, Start here item, email, row waiting for your
   approval and Ready for you result now has a short **Why?** link next to
